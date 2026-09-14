@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "node scripts/dev.cjs",
     "dev-server-only": "vite --port 3005 --strictPort",
-    "build": "tsc --noEmit && vite build",
+    "build": "node scripts/dev-link-guard.cjs && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "smoke": "node scripts/e2e-smoke.cjs",
