@@ -348,7 +348,6 @@ export const useAppStore = create<AppState & AppActions>()((set) => ({
       selection: null,
       cursorSample: 0,
       zoom: defaultZoom(doc),
-      lastSplitMarker: null, // G6 (item 7) — same reset activationReset performs
     }));
   },
 

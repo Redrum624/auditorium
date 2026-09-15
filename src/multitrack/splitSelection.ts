@@ -76,8 +76,18 @@ export function splitSelectionAfter(args: {
   // LEFT edge last time, so the left half (same span this time) is the
   // middle; `clipEnd` -> the anchor cut its RIGHT edge (G3, cutting
   // leftwards), so the NEW right half is the middle.
+  //
+  // `!o.wasMember` (fix round 1, CONFIRMED REGRESSION): piece identity alone
+  // is not enough. A track-mate that was never a selection member and gets
+  // cut a second time (its right half from THIS gesture's own previous pass
+  // happens to be a piece the anchor names) must not suddenly narrow INTO the
+  // selection - the M2/N4 principle the pre-existing '1j' test pins for the
+  // FIRST split ("splits an UNSELECTED track-mate but leaves it out of the
+  // selection") applies to every later split too, not just the first.
   const middleIds: (string | null)[] = outcomes.map((o) => {
-    if (!anchorLive || anchor === null || !anchor.pieceIds.includes(o.leftId)) return null;
+    if (!anchorLive || anchor === null || !o.wasMember || !anchor.pieceIds.includes(o.leftId)) {
+      return null;
+    }
     if (anchor.sample === o.clipStart) return o.leftId;
     if (anchor.sample === o.clipEnd) return o.rightId;
     return null;

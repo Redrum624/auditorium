@@ -1,6 +1,7 @@
 import { createClip, createTrack, type Clip, type Session } from './session';
 import { splitClipsAt, splitTargets, useSessionStore } from './sessionStore';
 import { resolveClipFadeSpecs } from './mixdown';
+import { commitLanding, planLanding } from './sessionLanding';
 import {
   SESSION_UNDO_KEY,
   _resetSessionUndo,
@@ -513,5 +514,78 @@ describe('splitClipsAt — item 7 (G1-G6): the anchor narrows the selection', ()
     const b2 = madeMixed[1]; // session-track order: A's outcome first, then B's
 
     expect(store().selectedClipIds).toEqual([c1, b1, b2, a2]);
+  });
+
+  it('fix round 1 (CONFIRMED REGRESSION, M2/N4) an unselected track-mate cut twice must not narrow into the selection', () => {
+    // One track, two clips: a1 selected, b1 never selected — the exact '1j'
+    // shape ("splits an UNSELECTED track-mate but leaves it out of the
+    // selection"), now exercised a SECOND time on the unselected clip.
+    const { ids } = seed([[6000, 30000], [50000, 30000]]);
+    const t1 = sessionRef().tracks[0].id;
+    const [a1, b1] = ids[0];
+    store().setSelectedClip(a1); // b1 is never selected
+
+    splitClipsAt([t1], 60000); // cuts b1 — the existing 1j pin, restated
+    expect(store().selectedClipIds).toEqual([a1]);
+
+    splitClipsAt([t1], 70000); // cuts b1's own right half a SECOND time
+
+    // Must NOT grow: b1's second-cut middle happens to satisfy gate 2's piece
+    // identity (it IS a piece of the anchor `lastSplit` just wrote), but it
+    // was never a selection member, and gate 2 must refuse it on that alone.
+    expect(store().selectedClipIds).toEqual([a1]);
+    expect(trackClips(0)).toHaveLength(4); // a1, and b1 split into three pieces
+  });
+
+  it('fix round 1 (G4 coverage) drop is scoped to the tracks THIS act narrowed', () => {
+    // Two tracks both cut at 16000 (first split, legacy arm on both — T2's
+    // clip is deliberately too short to reach 24000). Then ONLY T1 qualifies
+    // at 24000: T2's OWN result from the first cut must survive untouched
+    // alongside T1's narrowed middle — replacing the track-scoped `drop` with
+    // `new Set(anchor.pieceIds)` (every anchor piece, not just the ones on
+    // the tracks this act actually narrowed) collapses T2's selection too.
+    const { session, ids } = seed([[6000, 30000]], [[6000, 14000]]);
+    const [t1, t2] = session.tracks.map((t) => t.id);
+    const [a1] = ids[0];
+    const [c1] = ids[1];
+    store().setSelectedClips([a1, c1]);
+
+    const made1 = splitClipsAt([t1, t2], 16000); // both narrow for the first time
+    const [a2, c2] = made1; // track order: t1 then t2
+
+    splitClipsAt([t1, t2], 24000); // legal ONLY on T1 — T2's clip (4000 long) can't reach it
+
+    expect(store().selectedClipIds).toEqual([c1, c2, a2]);
+  });
+
+  it('fix round 1 (item 4a) an appended landing invalidates the anchor via gate 1 alone', () => {
+    const id = seedOne({ startSample: 6000, offsetSample: 0, lengthSample: 30000 });
+    store().setSelectedClip(id);
+    const t1 = sessionRef().tracks[0].id;
+
+    splitClipsAt([t1], 16000);
+    expect(store().lastSplit).not.toBeNull();
+
+    // An APPENDED landing (E2/E3): a brand-new track carrying a document this
+    // session has never seen, landed alongside the existing session.
+    const landedTrack = createTrack('Landed Track');
+    landedTrack.clips = [
+      createClip({ documentId: 'doc-landed', startSample: 0, offsetSample: 0, lengthSample: 5000 }),
+    ];
+    const plan = planLanding('doc-landed');
+    expect(plan.mode).toBe('appended');
+    commitLanding(plan, [landedTrack], 'Land test track');
+
+    // `commitLanding`'s own `setSelectedClip` narrows the selection to the
+    // landed clip alone — no explicit `lastSplit: null` needed; gate 1 fails
+    // on its own the next time a split runs.
+    const landedClipId = landedTrack.clips[0].id;
+    expect(store().selectedClipIds).toEqual([landedClipId]);
+
+    // A further split at the very sample/piece the (still non-null, unread)
+    // anchor names must take the legacy arm — nothing here is a selection
+    // member, so nothing joins.
+    splitClipsAt([t1], 24000);
+    expect(store().selectedClipIds).toEqual([landedClipId]);
   });
 });

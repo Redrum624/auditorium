@@ -449,6 +449,19 @@ export function splitAtCursor(): void {
   // Cursor arm.
   const p = fresh[0];
   const anchor = s.lastSplitMarker;
+  // NAMED ASYMMETRY (fix round 1, X2): this gate is POSITIONAL — "is there a
+  // marker at this sample" — not identity-based. The multitrack anchor
+  // (`SessionState.lastSplit`) explicitly clears on undo AND redo
+  // (`bindSessionUndo`'s `apply`); this one does not, and cannot cheaply:
+  // markers carry no persistent identity a redo could compare against (the
+  // undo entry restores the whole list by VALUE, not by re-adding a
+  // remembered id). So a redo that restores a marker at exactly
+  // `anchor.positionSample` re-arms the anchor here, where the session
+  // surface would have gone stale. Judged benign and left as-is: per G5 the
+  // span this then selects is still a real marker-bounded segment between two
+  // markers that genuinely exist — never a piece that was undone away. Do not
+  // "fix" this to match the multitrack surface without re-reading that
+  // argument.
   const anchorLive =
     anchor !== null &&
     anchor.documentId === doc.id &&
