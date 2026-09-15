@@ -3432,6 +3432,19 @@ async function main() {
         `  source: ${stemSource.activeName}, ${audioSeconds.toFixed(2)}s, ` +
           `${stemSource.sampleRate} Hz, ${stemSource.channels} ch (docCount ${stemSource.docCount})`
       );
+      // Lot E fix round 1: this step's own assertions below (a five-track,
+      // five-clip session named after the source) are the REPLACED arm's
+      // shape, not the appended one — and by this point in the run the open
+      // session already has the clip `insertActiveDocAsClip(0, 0)` put there
+      // at line ~2601, with no `newSession`/clip-delete/session-load between
+      // there and here, so item 5's `hasAnyClip` gate would otherwise take
+      // the appended arm here too. The mixdown-identity check right after
+      // this step is what this step exists to prove end-to-end, and that is
+      // clearest read against a clean, five-track session — so the session
+      // is reset explicitly rather than rewriting these assertions around a
+      // dirty one; the appended/in-place arms are already exercised for real
+      // by the voice/speaker landings further down this file.
+      await page.evaluate((rate) => window.__test.newSession(rate), stemSource.sampleRate);
       const stems = await page.evaluate(() => window.__test.separateStems());
       const stemSeconds = stems.elapsedMs / 1000;
       console.log(`  separateStems: ${JSON.stringify(stems)}`);
@@ -3457,6 +3470,11 @@ async function main() {
       assert(
         afterSummary.docCount === stemSource.docCount + 5,
         `exactly five NEW documents were added (expected ${stemSource.docCount + 5}, actual ${afterSummary.docCount})`
+      );
+      assert(
+        stems.landingMode === 'replaced',
+        `the session reset above had no clips, so this landing must replace it (got ` +
+          `${JSON.stringify(stems.landingMode)})`
       );
       assert(
         stems.sessionName === `${stemSource.activeName} — Stems`,
@@ -7997,6 +8015,17 @@ async function main() {
     }
     await openModuleCard(page, 'Files');
 
+    // Lot E fix round 1: the DOM snapshot BEFORE this landing, because the
+    // open session already has clips (the split/merge/gap block's, still
+    // standing — see the landingMode note below) and this landing therefore
+    // APPENDS rather than replaces. A hardcoded post-landing track/clip count
+    // would contradict the very landingMode assertion two lines down; the
+    // correct invariant is "exactly two more of each", not an absolute count.
+    const mtBeforeVoice = await page.evaluate(() => ({
+      tracks: document.querySelectorAll('[data-testid="track-header"]').length,
+      clips: document.querySelectorAll('[data-testid="clip"]').length,
+    }));
+
     // --- the N <= 1 door: Voice + Backing, still the shipped `landVoice` ---
     const landed = await page.evaluate(() => window.__test.separateVoiceLand());
     console.log(`  separateVoiceLand: ${JSON.stringify(landed)}`);
@@ -8036,9 +8065,16 @@ async function main() {
       tracks: document.querySelectorAll('[data-testid="track-header"]').length,
       clips: document.querySelectorAll('[data-testid="clip"]').length,
     }));
+    // Lot E fix round 1: an APPENDED landing adds exactly two tracks (Voice,
+    // Backing) and two clips to whatever was already there — it does not
+    // reset the session to a two-track one. Matches the `landingMode !==
+    // 'replaced'` assertion above instead of contradicting it.
     assert(
-      voiceLanes.views === 1 && voiceLanes.tracks === 2 && voiceLanes.clips === 2,
-      `the app switched to a two-track session with one clip each (${JSON.stringify(voiceLanes)})`
+      voiceLanes.views === 1 &&
+        voiceLanes.tracks === mtBeforeVoice.tracks + 2 &&
+        voiceLanes.clips === mtBeforeVoice.clips + 2,
+      `the app stayed on the multitrack view and appended two tracks with one clip each ` +
+        `(before ${JSON.stringify(mtBeforeVoice)}, after ${JSON.stringify(voiceLanes)})`
     );
     // Voice + Backing reconstruct the source WITHIN FLOAT32 ROUNDING — summing
     // two tracks rounds where summing all five does not, so this is a bound on
@@ -8118,6 +8154,14 @@ async function main() {
       `…at the name, length and rate the step opened it with (${JSON.stringify(sourceAgain.activeName)}, ` +
         `${sourceAgain.length}@${sourceAgain.sampleRate} vs ${voiceBefore.length}@${voiceBefore.sampleRate})`
     );
+    // Lot E fix round 1: same reasoning as `mtBeforeVoice` above — this
+    // landing also appends, so the correct invariant is a DELTA against the
+    // DOM as it stood right before this call (which already includes the
+    // voice landing's own two appended tracks), not an absolute count.
+    const mtBeforeSpeakers = await page.evaluate(() => ({
+      tracks: document.querySelectorAll('[data-testid="track-header"]').length,
+      clips: document.querySelectorAll('[data-testid="clip"]').length,
+    }));
     const speakers = await page.evaluate(() => window.__test.separateSpeakersLand(2));
     console.log(`  separateSpeakersLand(2): ${JSON.stringify(speakers)}`);
     assert(speakers.ok === true, `the speaker landing ran (${JSON.stringify(speakers)})`);
@@ -8147,9 +8191,17 @@ async function main() {
         ]),
       `each document is named after the source and its track (${JSON.stringify(speakers.documentNames)})`
     );
+    // Lot E fix round 1: an APPENDED landing never renames the session (only
+    // `'replaced'` does — `stemLanding.ts`'s `buildLandingSession`), and the
+    // voice landing above already proved this session is appending. The only
+    // honest oracle for "what is the session named right now" is the live
+    // session itself, captured through the voice landing's own echoed
+    // `sessionName` a few lines up — both landings leave it untouched, so the
+    // two must agree.
     assert(
-      speakers.sessionName === `${voiceBefore.activeName} — Speakers`,
-      `the session is named after the source (${JSON.stringify(speakers.sessionName)})`
+      speakers.sessionName === landed.sessionName,
+      `an appended landing does not rename the session — it should still read what the voice ` +
+        `landing saw (${JSON.stringify(landed.sessionName)}), actual ${JSON.stringify(speakers.sessionName)}`
     );
     assert(
       speakers.lengthSamples === voiceBefore.length && speakers.sampleRate === voiceBefore.sampleRate,
@@ -8166,10 +8218,17 @@ async function main() {
       tracks: document.querySelectorAll('[data-testid="track-header"]').length,
       clips: document.querySelectorAll('[data-testid="clip"]').length,
     }));
+    // Lot E fix round 1: an APPENDED landing adds exactly three tracks
+    // (Speaker 1, Speaker 2, Backing) and three clips to whatever was already
+    // there (which by this point already includes the voice landing's own
+    // two) — matches the `landingMode !== 'replaced'` assertion above instead
+    // of contradicting it.
     assert(
-      speakerLanes.views === 1 && speakerLanes.tracks === 3 && speakerLanes.clips === 3,
-      `the app switched to a three-track session with one clip each ` +
-        `(${JSON.stringify(speakerLanes)})`
+      speakerLanes.views === 1 &&
+        speakerLanes.tracks === mtBeforeSpeakers.tracks + 3 &&
+        speakerLanes.clips === mtBeforeSpeakers.clips + 3,
+      `the app stayed on the multitrack view and appended three tracks with one clip each ` +
+        `(before ${JSON.stringify(mtBeforeSpeakers)}, after ${JSON.stringify(speakerLanes)})`
     );
     // The mask, from BOTH sides — either alone is vacuous. A document silenced
     // end to end would satisfy "nothing outside the turns" and a document left

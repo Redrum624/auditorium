@@ -215,10 +215,6 @@ export interface StemSessionResult {
    * except `'in-place'`, where it is the displaced anchor clip's own
    * `startSample`. */
   landedStartSample: number;
-  /** Lot E (E6) — true when the source document's rate differed from the
-   * session's. Always `false` for `'replaced'`: that arm builds a FRESH
-   * session at the document's own rate, so nothing was converted. */
-  rateConverted: boolean;
 }
 
 export interface StemLandingResult {
@@ -272,10 +268,6 @@ export interface StemLandingResult {
    * except `'in-place'`, where it is the displaced anchor clip's own
    * `startSample`. */
   landedStartSample: number;
-  /** Lot E (E6) — true when the source document's rate differed from the
-   * session's. Always `false` for `'replaced'`: that arm builds a FRESH
-   * session at the document's own rate, so nothing was converted. */
-  rateConverted: boolean;
 }
 
 /** Largest |sample| across every channel; 0 for an empty document. */
@@ -436,7 +428,7 @@ function buildLandingSession(
   name: string,
   gestureLabel: string
 ): StemSessionResult {
-  const plan = planLanding(output.sourceDocId, output.sampleRate);
+  const plan = planLanding(output.sourceDocId);
 
   if (plan.mode === 'replaced') {
     const tracks: Track[] = documentIds.map((documentId, i) => {
@@ -462,7 +454,6 @@ function buildLandingSession(
       sessionName: session.name,
       landingMode: 'replaced',
       landedStartSample: 0,
-      rateConverted: false, // nothing converted — the session took the document's own rate
     };
   }
 
@@ -473,6 +464,15 @@ function buildLandingSession(
   const monoRoutedAsDualMono = output.channelCount === 1;
   const app = useAppStore.getState();
   const sessionRate = useSessionStore.getState().session.sampleRate;
+  // Fix round 1: ONE lookup, shared by both the length computation below and
+  // the warm-up loop after `commitLanding` — the two used independent
+  // `.find()` calls with different null-handling styles (a bare `!` here,
+  // a guarded `if` there), which is exactly the drift risk X2 exists to
+  // close. `documentIds` are the ids `createLandingDocuments` (this
+  // function's own caller, always run first) just created and added via
+  // `app.addDocument`, so every id is guaranteed present here — the `!`
+  // below documents that invariant rather than guessing past it.
+  const docsById = new Map(app.documents.map((d) => [d.id, d]));
 
   const tracks: Track[] = documentIds.map((documentId, i) => {
     const base = createTrack(labels[i]);
@@ -486,15 +486,19 @@ function buildLandingSession(
             offsetSample: plan.window.offsetSample,
             lengthSample: plan.window.lengthSample,
             gainDb: plan.window.gainDb - (monoRoutedAsDualMono ? MONO_PAN_COMPENSATION_DB : 0),
+            // Fix round 1: the displaced clip's edge fades carry onto the
+            // landed clip verbatim — "just splitted" (E1) must not silently
+            // hard-edge audio the user faded in or out.
+            fadeInSample: plan.window.fadeInSample,
+            fadeOutSample: plan.window.fadeOutSample,
+            fadeInCurve: plan.window.fadeInCurve,
+            fadeOutCurve: plan.window.fadeOutCurve,
           })
         : createClip({
             documentId,
             startSample: 0,
             offsetSample: 0,
-            lengthSample: documentClipLength(
-              app.documents.find((d) => d.id === documentId)!,
-              sessionRate
-            ),
+            lengthSample: documentClipLength(docsById.get(documentId)!, sessionRate),
           });
     track.clips = [clip];
     return track;
@@ -503,7 +507,7 @@ function buildLandingSession(
   commitLanding(plan, tracks, gestureLabel);
 
   for (const track of tracks) {
-    const doc = app.documents.find((d) => d.id === track.clips[0].documentId);
+    const doc = docsById.get(track.clips[0].documentId);
     if (doc) warmClipResample(doc, track.clips[0], sessionRate);
   }
 
@@ -512,19 +516,21 @@ function buildLandingSession(
     sessionName: useSessionStore.getState().session.name,
     landingMode: plan.mode,
     landedStartSample: plan.startSample,
-    rateConverted: plan.rateConverted,
   };
 }
 
 /**
- * Lands a completed separation: five documents + a five-track session + the
- * multitrack view. Synchronous and self-contained — the caller (S6's dialog)
- * needs nothing else to finish the flow.
+ * Lands a completed separation: five documents + a session update (whichever
+ * of the three lot-E arms the open session calls for) + the multitrack view.
+ * Synchronous and self-contained — the caller (S6's dialog) needs nothing
+ * else to finish the flow.
  *
  * CC4 (CJ-1): now literally the two halves above, in order, and nothing else.
- * Its behaviour is unchanged and is still pinned by this module's whole suite —
- * the standalone Separate dialog documents that it replaces the session, so it
- * is the caller that WANTS both halves.
+ * Its behaviour is pinned by this module's whole suite — the standalone
+ * Separate dialog wants both halves (documents AND whatever the session half
+ * does with them), so it is the caller that reaches this function rather than
+ * `createStemDocuments` alone. E5 part 2 (lot E, fix round 1): the session
+ * half is no longer always a replacement — see {@link buildLandingSession}.
  */
 export function landStems(output: StemSeparationOutput): StemLandingResult {
   const documents = createStemDocuments(output);
@@ -767,6 +773,15 @@ export function landSpeakers(
  * `startSample` is already 0, so the probe is identical to the live session
  * and every pre-lot-E pin (`mixdownCurrentSession` in this module's own
  * suite) stays green unchanged.
+ *
+ * Fix round 1: also strips `automation` (set to `undefined`, the same "no
+ * lanes" state `resolveAutomation` (`mixdown.ts`) already treats a lane-less
+ * track as). The in-place arm carries the anchor TRACK's automation onto
+ * every landed track verbatim (`sessionLanding.ts`'s `trackParams`, E1's
+ * "just splitted"), so a source track with a volume or pan lane would
+ * otherwise leave the probe's mixdown time-varying — the identity this probe
+ * exists to keep checkable would silently stop being checkable again, the
+ * exact failure mode E5 part 4 was added to close.
  */
 export function landedTracksProbeSession(trackIds: readonly string[]): Session {
   const session = useSessionStore.getState().session;
@@ -781,6 +796,7 @@ export function landedTracksProbeSession(trackIds: readonly string[]): Session {
       pan: 0,
       muted: false,
       solo: false,
+      automation: undefined,
       clips: track.clips.map((c) => ({ ...c, startSample: 0, gainDb: 0 })),
     });
   }

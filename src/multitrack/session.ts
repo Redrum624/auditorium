@@ -159,15 +159,25 @@ export function documentClipLength(doc: AudioDocument, sessionRate: number): num
 }
 
 /** Creates a clip referencing a region of a source AudioDocument, with a
- * sequential 'clip-N' id. `gainDb` defaults to 0 when omitted. */
+ * sequential 'clip-N' id. `gainDb` defaults to 0 when omitted.
+ *
+ * Lot E (fix round 1) — the four fade options are OPTIONAL and, when omitted,
+ * write NOTHING onto the returned clip (not even an `undefined`-valued key):
+ * every existing caller that never passed them gets the exact same object
+ * shape as before. A caller that wants to carry a source clip's fades onto a
+ * newly-minted one (the in-place landing arm) passes them through verbatim. */
 export function createClip(opts: {
   documentId: string;
   startSample: number;
   offsetSample: number;
   lengthSample: number;
   gainDb?: number;
+  fadeInSample?: number;
+  fadeOutSample?: number;
+  fadeInCurve?: FadeCurve;
+  fadeOutCurve?: FadeCurve;
 }): Clip {
-  return {
+  const clip: Clip = {
     id: nextId('clip'),
     documentId: opts.documentId,
     startSample: opts.startSample,
@@ -175,6 +185,11 @@ export function createClip(opts: {
     lengthSample: opts.lengthSample,
     gainDb: opts.gainDb ?? 0,
   };
+  if (opts.fadeInSample !== undefined) clip.fadeInSample = opts.fadeInSample;
+  if (opts.fadeOutSample !== undefined) clip.fadeOutSample = opts.fadeOutSample;
+  if (opts.fadeInCurve !== undefined) clip.fadeInCurve = opts.fadeInCurve;
+  if (opts.fadeOutCurve !== undefined) clip.fadeOutCurve = opts.fadeOutCurve;
+  return clip;
 }
 
 /** The source-document window a clip reads, in the DOCUMENT's own samples:

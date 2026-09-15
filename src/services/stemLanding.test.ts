@@ -19,6 +19,7 @@ import { join } from 'path';
 import { createDocument, docLength, type AudioDocument } from '../audio/AudioDocument';
 import { partitionStems } from '../dsp/stemPartition';
 import { mixdownSession } from '../multitrack/mixdown';
+import { _clipResampleCacheStats, _resetClipResampleCache } from '../multitrack/clipResampleCache';
 import { createClip, createTrack } from '../multitrack/session';
 import { placeDocumentsOnTrack } from '../multitrack/sessionInsert';
 import { useSessionStore } from '../multitrack/sessionStore';
@@ -1481,9 +1482,22 @@ function placeClip(
   documentId: string,
   startSample: number,
   lengthSample: number,
-  gainDb = 0
+  gainDb = 0,
+  fades?: {
+    fadeInSample?: number;
+    fadeOutSample?: number;
+    fadeInCurve?: 'equal-gain' | 'equal-power' | 'smooth' | 'exponential';
+    fadeOutCurve?: 'equal-gain' | 'equal-power' | 'smooth' | 'exponential';
+  }
 ): string {
-  const clip = createClip({ documentId, startSample, offsetSample: 0, lengthSample, gainDb });
+  const clip = createClip({
+    documentId,
+    startSample,
+    offsetSample: 0,
+    lengthSample,
+    gainDb,
+    ...fades,
+  });
   const tracks = useSessionStore.getState().session.tracks;
   useSessionStore.setState({
     session: {
@@ -1551,6 +1565,73 @@ describe('lot E acceptance 1/2 — landVoice lands IN PLACE of the source track 
     expect(restored!.startSample).toBe(220_500);
     expect(tracks.some((t) => t.name === 'Voice')).toBe(false);
     expect(useSessionStore.getState().projectPath).toBe('D:\\p.audm');
+  });
+});
+
+describe('lot E fix round 1 (item 3) — the in-place arm carries the displaced clip’s edge fades', () => {
+  it('every landed clip inherits the anchor’s fadeInSample/fadeOutSample/curves verbatim', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH);
+    placeClip(1, source.id, 220_500, FIXTURE_LENGTH, 0, {
+      fadeInSample: 1500,
+      fadeOutSample: 2000,
+      fadeInCurve: 'equal-gain',
+      fadeOutCurve: 'exponential',
+    });
+
+    const landing = landStems(makeOutput(source));
+    expect(landing.landingMode).toBe('in-place'); // precondition — this is the arm under test
+
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) {
+      expect(c.fadeInSample).toBe(1500);
+      expect(c.fadeOutSample).toBe(2000);
+      expect(c.fadeInCurve).toBe('equal-gain');
+      expect(c.fadeOutCurve).toBe('exponential');
+    }
+  });
+
+  it('an anchor with no fades lands clips with no fades (absent, not zero)', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH);
+    placeClip(1, source.id, 220_500, FIXTURE_LENGTH); // no fades
+
+    const landing = landStems(makeOutput(source));
+    expect(landing.landingMode).toBe('in-place');
+
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) {
+      expect(c.fadeInSample).toBeUndefined();
+      expect(c.fadeOutSample).toBeUndefined();
+      expect(c.fadeInCurve).toBeUndefined();
+      expect(c.fadeOutCurve).toBeUndefined();
+    }
+  });
+
+  it('the appended arm has no anchor to inherit from, so a landed clip carries no fades', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH); // never placed on any clip
+
+    const landing = landStems(makeOutput(source));
+    expect(landing.landingMode).toBe('appended');
+
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) {
+      expect(c.fadeInSample).toBeUndefined();
+      expect(c.fadeOutSample).toBeUndefined();
+    }
   });
 });
 
@@ -1661,7 +1742,10 @@ describe('lot E acceptance 7 — E6: sample-rate mismatch is accepted, converted
     const landing = landStems(makeOutput(source48));
 
     expect(landing.landingMode).toBe('in-place');
-    expect(landing.rateConverted).toBe(true);
+    // `rateConverted` was deleted from the result (fix round 1, reviewer's
+    // Minor 6): nothing outside this module's own tests read it, and no UI
+    // surface tells the user a conversion happened. E6's RULE is unchanged —
+    // proven below by the actual converted lengths, not by an echoed flag.
     expect(useSessionStore.getState().session.sampleRate).toBe(44100); // E6: never adopted
     const landedClips = useSessionStore
       .getState()
@@ -1686,5 +1770,63 @@ describe('lot E acceptance 7 — E6: sample-rate mismatch is accepted, converted
       .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
     expect(landedClips.length).toBeGreaterThan(0);
     for (const c of landedClips) expect(c.lengthSample).toBe(44_100);
+  });
+});
+
+describe('lot E fix round 1 (item 2) — every landed clip is warmed off the play path (E6)', () => {
+  beforeEach(() => {
+    _resetClipResampleCache();
+  });
+
+  it('in-place: a mismatched-rate landing warms every landed document, so play() would find it already converted', () => {
+    jest.useFakeTimers();
+    try {
+      const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+      placeClip(0, foreign.id, 132_300, 2000);
+      const source48 = addSourceDocument(2, 48000, 'Song48', 48_000);
+      const track2 = useSessionStore.getState().session.tracks[1];
+      placeDocumentsOnTrack([source48], track2.id, 300_000);
+
+      const landing = landStems(makeOutput(source48));
+      expect(landing.landingMode).toBe('in-place'); // precondition — this is the arm under test
+
+      // Deferred, not done inline (the whole point of warming OFF the play
+      // path) — same assertion `clipResampleCache.test.ts` pins for the
+      // sibling `sessionInsert.placeDocumentsOnTrack` call.
+      const byIdBefore = new Map(useAppStore.getState().documents.map((d) => [d.id, d]));
+      for (const id of landing.documentIds) {
+        expect(_clipResampleCacheStats(byIdBefore.get(id)!).entries).toBe(0);
+      }
+
+      jest.runOnlyPendingTimers();
+
+      const byId = new Map(useAppStore.getState().documents.map((d) => [d.id, d]));
+      for (const id of landing.documentIds) {
+        expect(_clipResampleCacheStats(byId.get(id)!).entries).toBeGreaterThan(0);
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('appended: same warm-up, for the arm with no anchor to inherit a window from', () => {
+    jest.useFakeTimers();
+    try {
+      const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+      placeClip(0, foreign.id, 132_300, 2000);
+      const source48 = addSourceDocument(2, 48000, 'Song48', 48_000); // never placed on any clip
+
+      const landing = landStems(makeOutput(source48));
+      expect(landing.landingMode).toBe('appended'); // precondition
+
+      jest.runOnlyPendingTimers();
+
+      const byId = new Map(useAppStore.getState().documents.map((d) => [d.id, d]));
+      for (const id of landing.documentIds) {
+        expect(_clipResampleCacheStats(byId.get(id)!).entries).toBeGreaterThan(0);
+      }
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

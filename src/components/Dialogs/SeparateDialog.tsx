@@ -215,7 +215,7 @@ export default function SeparateDialog({
   // do. `useSessionStore` re-runs the selector on every session write, which
   // is deliberately cheap here: `planLanding` is a handful of array scans over
   // the open session's tracks, not a mixdown.
-  const landingMode = useSessionStore(() => planLanding(doc?.id ?? '', doc?.sampleRate ?? 0).mode);
+  const landingMode = useSessionStore(() => planLanding(doc?.id ?? '').mode);
 
   const [stemModel, setStemModel] = useState<StemModelState | null>(null);
   const [speakerModel, setSpeakerModel] = useState<DiarizeModelState | null>(null);

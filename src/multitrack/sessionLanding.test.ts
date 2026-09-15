@@ -35,6 +35,12 @@ function seedSession(): { foreignClipId: string; sourceClipId: string; sourceTra
     offsetSample: 700,
     lengthSample: 5000,
     gainDb: -4,
+    // Fix round 1 (item 3): non-identity fades on the anchor clip, so a
+    // landing test that drops them cannot pass by accident.
+    fadeInSample: 300,
+    fadeOutSample: 450,
+    fadeInCurve: 'equal-gain',
+    fadeOutCurve: 'exponential',
   });
   t1.clips = [foreign];
   t2.clips = [source];
@@ -68,7 +74,7 @@ beforeEach(() => {
 describe('planLanding — the mode gate (E2/E3, amendment E2-a)', () => {
   it('is "replaced" when the open session has no clips, even though newSession minted 4 tracks', () => {
     expect(hasAnyClip(useSessionStore.getState().session)).toBe(false);
-    const plan = planLanding('doc-source', 44100);
+    const plan = planLanding('doc-source');
     expect(plan.mode).toBe('replaced');
     expect(plan.startSample).toBe(0);
     expect(plan.insertIndex).toBeNull();
@@ -80,7 +86,7 @@ describe('planLanding — the mode gate (E2/E3, amendment E2-a)', () => {
 
   it('is "appended" when the session has clips but none carry the source document', () => {
     seedSession();
-    const plan = planLanding('doc-not-open-anywhere', 44100);
+    const plan = planLanding('doc-not-open-anywhere');
     expect(plan.mode).toBe('appended');
     expect(plan.startSample).toBe(0);
     expect(plan.insertIndex).toBeNull();
@@ -90,13 +96,21 @@ describe('planLanding — the mode gate (E2/E3, amendment E2-a)', () => {
 
   it('is "in-place" when a clip carries the source document — anchored to that clip, not sample 0', () => {
     const { sourceClipId, sourceTrackId } = seedSession();
-    const plan = planLanding('doc-source', 44100);
+    const plan = planLanding('doc-source');
     expect(plan.mode).toBe('in-place');
     expect(plan.startSample).toBe(220_500); // E4: the source clip's own startSample
     expect(plan.insertIndex).toBe(1); // track-2's position; no earlier track was displaced
     expect(plan.displacedClipIds).toEqual([sourceClipId]);
     expect(plan.displacedTrackIds).toEqual([sourceTrackId]); // that track carried ONLY this clip
-    expect(plan.window).toEqual({ offsetSample: 700, lengthSample: 5000, gainDb: -4 });
+    expect(plan.window).toEqual({
+      offsetSample: 700,
+      lengthSample: 5000,
+      gainDb: -4,
+      fadeInSample: 300,
+      fadeOutSample: 450,
+      fadeInCurve: 'equal-gain',
+      fadeOutCurve: 'exponential',
+    });
     expect(plan.trackParams).toEqual({ volumeDb: -6, pan: 0.3, muted: false, automation: undefined });
   });
 
@@ -115,23 +129,18 @@ describe('planLanding — the mode gate (E2/E3, amendment E2-a)', () => {
     const session: Session = { name: 'S', sampleRate: 44100, tracks: [t1, t2] };
     useSessionStore.setState({ session });
 
-    const plan = planLanding('doc-source', 44100);
+    const plan = planLanding('doc-source');
     expect(plan.mode).toBe('in-place');
     expect(plan.displacedClipIds.sort()).toEqual([anchor.id, second.id].sort());
     expect(plan.displacedTrackIds).toEqual([t1.id]); // t2 survives — it still has `survivor`
   });
 
-  it('rateConverted is true only when the document rate differs from the OPEN session rate', () => {
-    seedSession();
-    expect(planLanding('doc-source', 44100).rateConverted).toBe(false);
-    expect(planLanding('doc-source', 48000).rateConverted).toBe(true);
-  });
 });
 
 describe('commitLanding — the in-place/appended write', () => {
   it('in-place: removes the displaced clip and its now-empty track, splices the landed tracks in at the anchor position, selects the first landed clip, one undo entry, and touches nothing else (undo shape)', () => {
     const { foreignClipId, sourceTrackId } = seedSession();
-    const plan = planLanding('doc-source', 44100);
+    const plan = planLanding('doc-source');
     const landed = createTrack('Voice');
     landed.clips = [
       createClip({ documentId: 'doc-voice', startSample: plan.startSample, offsetSample: 0, lengthSample: 5000 }),
@@ -164,7 +173,7 @@ describe('commitLanding — the in-place/appended write', () => {
 
   it('appended: inserts at the end when insertIndex is null, leaves every existing track and clip standing', () => {
     seedSession();
-    const plan = planLanding('doc-not-open-anywhere', 44100);
+    const plan = planLanding('doc-not-open-anywhere');
     expect(plan.insertIndex).toBeNull();
     const landedA = createTrack('Speaker 1');
     landedA.clips = [createClip({ documentId: 'doc-s1', startSample: 0, offsetSample: 0, lengthSample: 1000 })];
@@ -185,7 +194,7 @@ describe('commitLanding — the in-place/appended write', () => {
     seedSession();
     useSessionStore.getState().renameTrack(useSessionStore.getState().session.tracks[2].id, 'Renamed');
     expect(canUndoSession()).toBe(true);
-    const plan = planLanding('doc-not-open-anywhere', 44100);
+    const plan = planLanding('doc-not-open-anywhere');
     const landed = createTrack('Backing');
     landed.clips = [createClip({ documentId: 'doc-b', startSample: 0, offsetSample: 0, lengthSample: 1000 })];
 

@@ -22,6 +22,7 @@ import { useAppStore } from '../stores/appStore';
 import { hasAnyClip, useSessionStore } from './sessionStore';
 import { clearSessionHistory, withSessionGesture } from './sessionUndo';
 import { defaultSessionZoom } from './sessionZoom';
+import type { FadeCurve } from '../dsp/fades';
 import type { Session, Track } from './session';
 
 export type LandingMode = 'replaced' | 'in-place' | 'appended';
@@ -45,16 +46,26 @@ export interface LandingPlan {
   displacedTrackIds: string[];
   /** The anchor clip's own window, verbatim — E6's in-place arm inherits
    * `offsetSample`/`lengthSample` rather than recomputing them, because they
-   * are already correct at whatever rate the anchor was placed at. */
-  window: { offsetSample: number; lengthSample: number; gainDb: number } | null;
+   * are already correct at whatever rate the anchor was placed at. Also
+   * carries the anchor's edge fades verbatim (fix round 1): E1's premise is
+   * "the original track is still intact, just splitted", and a landing that
+   * silently hard-edged a faded clip would be an audible change to the mix
+   * the in-place arm otherwise promises not to make. The fade PAIR stays
+   * valid on the landed clip with no reclamping, because `lengthSample` is
+   * inherited unchanged too — the invariant `fadeIn + fadeOut <= lengthSample`
+   * that held on the anchor still holds verbatim. */
+  window: {
+    offsetSample: number;
+    lengthSample: number;
+    gainDb: number;
+    fadeInSample: number | undefined;
+    fadeOutSample: number | undefined;
+    fadeInCurve: FadeCurve | undefined;
+    fadeOutCurve: FadeCurve | undefined;
+  } | null;
   /** The anchor track's mix params, carried onto every landed track so E1's
    * "just splitted" reads as the same mix, not a reset one. */
   trackParams: Pick<Track, 'volumeDb' | 'pan' | 'muted' | 'automation'> | null;
-  /** E6 — true when the source document's rate differs from the OPEN
-   * session's rate. The session rate itself never moves (`adoptSessionRate`
-   * already refuses on a non-empty session) — this only reports that a landed
-   * clip's `lengthSample` required the doc-rate/session-rate conversion. */
-  rateConverted: boolean;
 }
 
 /**
@@ -103,10 +114,22 @@ export function installSession(session: Session, projectPath: string | null): vo
  * CLIPS" (`hasAnyClip`), never "has tracks" — `newSession` mints four empty
  * tracks, so a literal "has tracks" test is always true and would defeat the
  * rule outright.
+ *
+ * E6 (fix round 1: no longer a field on the plan — nothing outside this
+ * module's own tests read `rateConverted`, and no surface tells the user a
+ * conversion happened, so it was reporting a fact nobody consumed). The
+ * RULE stands exactly as before: a mismatched source-document rate is
+ * accepted and silently converted, never refused — the same silent
+ * accept-and-convert `sessionInsert.placeDocumentsOnTrack` already does for
+ * every other placement. The session rate itself never moves once the
+ * session has a clip (`adoptSessionRate` already refuses); the in-place arm
+ * inherits the anchor's already-converted `lengthSample` verbatim, and the
+ * appended arm converts fresh through `documentClipLength` — both in
+ * `stemLanding.ts`'s `buildLandingSession`, which also runs `warmClipResample`
+ * per landed clip so the conversion never lands on the play path.
  */
-export function planLanding(sourceDocId: string, docRate: number): LandingPlan {
+export function planLanding(sourceDocId: string): LandingPlan {
   const session = useSessionStore.getState().session;
-  const rateConverted = docRate !== session.sampleRate;
   const empty = {
     startSample: 0,
     insertIndex: null,
@@ -114,7 +137,6 @@ export function planLanding(sourceDocId: string, docRate: number): LandingPlan {
     displacedTrackIds: [] as string[],
     window: null,
     trackParams: null,
-    rateConverted,
   };
 
   if (!hasAnyClip(session)) return { mode: 'replaced', ...empty };
@@ -153,6 +175,10 @@ export function planLanding(sourceDocId: string, docRate: number): LandingPlan {
       offsetSample: located.clip.offsetSample,
       lengthSample: located.clip.lengthSample,
       gainDb: located.clip.gainDb,
+      fadeInSample: located.clip.fadeInSample,
+      fadeOutSample: located.clip.fadeOutSample,
+      fadeInCurve: located.clip.fadeInCurve,
+      fadeOutCurve: located.clip.fadeOutCurve,
     },
     trackParams: {
       volumeDb: located.track.volumeDb,
@@ -160,7 +186,6 @@ export function planLanding(sourceDocId: string, docRate: number): LandingPlan {
       muted: located.track.muted,
       automation: located.track.automation,
     },
-    rateConverted,
   };
 }
 

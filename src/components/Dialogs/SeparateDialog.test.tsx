@@ -158,7 +158,6 @@ function makeLanding(overrides: Partial<StemLandingResult> = {}): StemLandingRes
     // from the LIVE `planLanding` selector, not from the landing result.
     landingMode: 'replaced',
     landedStartSample: 0,
-    rateConverted: false,
     ...overrides,
   };
 }
