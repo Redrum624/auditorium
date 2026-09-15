@@ -843,4 +843,128 @@ describe('the clip-work drift watcher closes a stale host before Apply can reach
     // Files-panel switch today.
     expect(screen.getByTestId('effect-host')).toBeInTheDocument();
   });
+
+  // Fix round 2 (coordinator finding — the trigger half of the CRITICAL fix
+  // had no test) — the SECOND `useLayoutEffect` (`App.tsx:641-645`), the
+  // TOOL watcher, is a SEPARATE code path from the effect watcher above
+  // (X2). Same generic-drift shape, `tempo.match` instead of `effect.amplify`.
+  it('closes the retained TOOL host when its own target drifts (tool watcher)', async () => {
+    const source = setupMultitrackClip();
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('tempo.match');
+    });
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    const workId = clipWorkTargetId('tool');
+    expect(workId).not.toBeNull();
+    expect(workId).not.toBe(source.id);
+
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+    expect(clipWorkTargetId('tool')).toBeNull();
+    expect(useAppStore.getState().documents.some((d) => d.id === workId)).toBe(false);
+  });
+
+  // Fix round 2 — the CRITICAL sequence itself, end to end, with the REAL
+  // `runEffectOnSelection` (this file mocks nothing effect-related, unlike
+  // `App.effectHost.test.tsx`, which is why that file could never have pinned
+  // this: a mocked runner writes nothing regardless of which document is
+  // active, so "source untouched" would pass there even with the bug
+  // present). Forward order: effect card first, a NON-`CLIP_WORK_COMMANDS`
+  // tool (`edit.transcribe`) second — the exact reproduction the review
+  // constructed. `edit.transcribe` also exercises `primeMultitrackDocTarget`
+  // (R16), which activates `source` itself before opening the dialog, so this
+  // is the reproduction's own priming step, not a stand-in for it.
+  it('CRITICAL sequence (forward): effect card, then Transcribe — Apply never reaches the source document', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+    const workId = clipWorkTargetId('effect');
+    expect(workId).not.toBeNull();
+
+    // Step 3: a clip-scoped pipeline tool that is NOT a `CLIP_WORK_COMMANDS`
+    // member — it primes `activeDocumentId` to `source` (R16) and mints
+    // nothing of its own, which is exactly what let the OLD unconditional
+    // `endClipWork()` discard the effect's slot while leaving `hostedEffect`
+    // untouched.
+    await act(async () => {
+      await runCommand('edit.transcribe');
+    });
+
+    // The effect card is gone — the fix, not a coincidence of this ordering.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(clipWorkTargetId('effect')).toBeNull();
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument(); // Transcribe took the column
+
+    // Step 4: "return to the retained effect card" — the user's own mental
+    // model of what should still be there. Clicking Effects now shows the
+    // CHOOSER, not a re-opened Amplify card with Apply one click away.
+    fireEvent.click(within(screen.getByTestId('sidebar-tabs')).getByRole('button', { name: 'Effects' }));
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(screen.getByTestId('effects-panel')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull();
+
+    // Step 5, defensively: even though Apply is unreachable, the document
+    // itself was never touched.
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+    expect(useAppStore.getState().documents.some((d) => d.id === workId)).toBe(false); // no leak
+  });
+
+  // Fix round 2 — the reverse ordering: a CLIP_WORK_COMMANDS tool
+  // (`tempo.match`, which DOES mint its own working copy) first, the effect
+  // card second. This is the "whole-file, restore.selection === null" shape
+  // the review named: pre-fix, opening the card second discarded the tool's
+  // slot through the SAME unowned `endClipWork()`, and because the tool was
+  // minted directly off a fresh clip selection (`appStore.selection` is
+  // always `null` in multitrack), the discard's captured restore point was
+  // `{activeDocumentId: source, selection: null}` — landing on `source`
+  // WHOLE-FILE the moment anything re-activated it. Post-fix, opening the
+  // effect card mints its OWN slot and the resulting drift closes the tool
+  // (the same watcher pinned above) rather than restoring over it.
+  it('CRITICAL sequence (reverse): Match Tempo, then the effect card — Apply never reaches the source document', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('tempo.match');
+    });
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    const toolWorkId = clipWorkTargetId('tool');
+    expect(toolWorkId).not.toBeNull();
+
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+
+    // The tool auto-closed (the drift watcher, not a leftover slot the
+    // effect's own mint silently inherited) and did not touch the effect's.
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+    expect(clipWorkTargetId('tool')).toBeNull();
+    expect(useAppStore.getState().documents.some((d) => d.id === toolWorkId)).toBe(false);
+    const effectWorkId = clipWorkTargetId('effect');
+    expect(effectWorkId).not.toBeNull();
+    expect(effectWorkId).not.toBe(toolWorkId);
+    expect(useAppStore.getState().activeDocumentId).toBe(effectWorkId);
+
+    // Apply for real (the actual worker mock, not a stubbed resolver) —
+    // proves the effect card's OWN target, not merely its slot bookkeeping,
+    // survived intact.
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('effect-host')).getByRole('button', { name: 'Apply' }));
+    });
+
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+  });
 });

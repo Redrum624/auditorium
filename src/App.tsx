@@ -632,6 +632,26 @@ export default function App() {
   // all (the ordinary case: most commands never mint one), so this is a
   // true no-op for every ordinary single-document edit — it only fires once
   // a slot exists AND the live active document no longer matches it.
+  //
+  // Fix round 2 (review item 4) — DECISION: this close is silent, and stays
+  // silent, by design rather than omission. What it discards is UI state
+  // only (unapplied param edits in a form) — never audio, never anything
+  // Undo could have reached — because a COMMITTED slot's `endClipWork`
+  // no-ops (the clip already points at the finished result) and an
+  // uncommitted one held nothing but a clone the user had not approved yet.
+  // This app already has no confirmation anywhere for that class of loss:
+  // picking a DIFFERENT effect while one is open (`openEffect` replacing
+  // `hostedEffect`) unmounts the first with its in-progress params gone, no
+  // prompt, and always has. A message box here would need to explain a
+  // DIFFERENT thing every time depending on which of the many writers
+  // enumerated above caused it, would fire from an effect with no natural
+  // place to attribute the interruption to, and — checked, not assumed —
+  // `App.effectHost.test.tsx` alone carries 19 `showMessageBox` call-count
+  // assertions; wiring a new one through the busiest release path in the
+  // file risks the exact kind of false-negative regression this fix round
+  // exists to stop compounding. If a future request wants the card to say
+  // WHY it closed, that is a deliberate, separately-scoped feature, not a
+  // silent gap in this one.
   useLayoutEffect(() => {
     if (hostedEffect === null) return;
     const targetId = clipWorkTargetId('effect');

@@ -271,9 +271,26 @@ it('acceptance 7: release — endClipWork stops the subscription from firing', (
 // drift-safe discard that keeps a watcher-triggered close from fighting
 // whatever already moved `activeDocumentId` on. See lot-d-report.md's
 // "Fix round 1" section for the full reproduction and the `activeDocumentId`
-// writer enumeration; the App-level half of the fix (the drift watcher that
-// actually closes a stale host) is pinned in App.effectHost.test.tsx instead
-// — this file can only see clipPass.ts's own half of the contract.
+// writer enumeration.
+//
+// Fix round 2 correction — the line that stood here through fix round 1
+// named the WRONG file for the App-level half of the fix (the drift watcher
+// that actually closes a stale host, `App.tsx:635-645`) and was never
+// verified: it said "pinned in App.effectHost.test.tsx", but no test there
+// ever mentioned the watcher, and that file MOCKS `runEffectOnSelection`
+// (`jest.mock('./services/effectRunner', ...)`), so an Apply there writes
+// nothing regardless of which document is active — even a real regression
+// would read green. The coordinator caught this by disabling the watcher and
+// running exactly that file: 48 passed, 0 failed. The drift watcher is
+// pinned in `App.test.tsx` instead (which mocks nothing effect-related), in
+// the "the clip-work drift watcher closes a stale host..." describe block —
+// four tests: the effect watcher and the tool watcher each verified in
+// isolation (disabling one leaves the other's tests green), plus the full
+// CRITICAL sequence in both orderings with a REAL `runEffectOnSelection`.
+// This module (`clipPass.ts`) still cannot see any of that — it has no
+// React coupling by design — so this file only ever pinned its own half
+// (per-kind ownership, the drift-safe discard) and the correction above
+// is the honest statement of that boundary, not a new unverified claim.
 // ---------------------------------------------------------------------------
 
 // Acceptance-2-adjacent (X3) — `clipPassTarget()`'s fourth refusal, the one
