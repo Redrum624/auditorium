@@ -276,6 +276,10 @@ export function applyEdit(
  * No `bytes` is attached (Task M9 / F15): `before`/`after` are plain marker
  * lists, never a channel array, so their retained cost is negligible next to
  * `MAX_UNDO_BYTES` and isn't counted toward the per-doc budget.
+ *
+ * Since lot B the close prompt reads `dirty` alone (`neverSaved` no longer
+ * arms it), so this stamp is now the ONLY thing standing between a bulk
+ * marker write and a silent close — there is no second flag left to catch it.
  */
 export function pushMarkerUndo(label: string, docId: string, before: Marker[], after: Marker[]): void {
   pushUndo({

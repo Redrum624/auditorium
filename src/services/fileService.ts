@@ -785,9 +785,24 @@ export function newDocument(opts: {
  * undo entry, so it is CLEAN from the moment it exists, and `dirty` cannot be
  * pressed into service to represent it (undoHistory re-derives `dirty` from
  * the save point, which would silently erase a stamped value on the first
- * undo — see AudioDocument.ts and docs/KNOWN_LIMITATIONS.md). */
+ * undo — see AudioDocument.ts and docs/KNOWN_LIMITATIONS.md).
+ *
+ * Three consumers still read this exact predicate: `saveDocument`'s no-op
+ * gate, `projectHasUnsavedWork` and `projectDirtyCount` (the quit guard's
+ * count). The per-document close path does NOT — since lot B it reads
+ * `closeNeedsPrompt` instead, which drops the `neverSaved` half. */
 export function hasUnsavedWork(doc: AudioDocument): boolean {
   return doc.dirty || doc.neverSaved;
+}
+
+/** True when closing THIS document must ask first (lot B, B1): unsaved EDITS
+ * only. `neverSaved` deliberately does NOT arm this — a computed document the
+ * user never touched (stem, Voice/Backing, speaker, Mix Down, `Remix N`,
+ * recording) closes on one click. The flag still arms the QUIT guard
+ * (`projectDirtyCount` → App.tsx), the Save pill and the Save no-op gate, so
+ * quitting with unsaved computed audio still warns (B4). */
+export function closeNeedsPrompt(doc: AudioDocument): boolean {
+  return doc.dirty;
 }
 
 // ---- lot A (M4) — the project predicates -----------------------------------
@@ -828,10 +843,12 @@ export function projectDirtyCount(): number {
 // ---- end lot A ---------------------------------------------------------------
 
 /**
- * Close a document, prompting to save first when closing would lose work —
- * unsaved edits (`dirty`) OR a document that has never been written to a file
- * at all (`neverSaved`, Task S4), which is how every computed document starts
- * out. Shared by the File > Close command and the Files panel's ✕ button.
+ * Close a document, prompting to save first when closing would discard
+ * unsaved EDITS (`dirty`). A never-saved document with no edits (a computed
+ * stem, Voice/Backing, speaker track, Mix Down, `Remix N` or recording) closes
+ * immediately with no prompt (lot B, B1) — the quit guard still counts it
+ * (`projectDirtyCount`, B4), so quitting with unsaved computed audio still
+ * warns. Shared by the File > Close command and the Files panel's ✕ button.
  * Guarantees the per-document undo history and peak cache are freed, playback
  * is stopped, and a noise profile captured FROM this document is cleared (Task
  * F8 — the print belongs to audio that no longer exists), so closing never
@@ -841,7 +858,7 @@ export async function closeDocumentFlow(docId: string): Promise<void> {
   const doc = findDoc(docId);
   if (!doc) return;
 
-  if (hasUnsavedWork(doc)) {
+  if (closeNeedsPrompt(doc)) {
     // Lot A (M4): the offer is a PROJECT save — the document has no file of
     // its own through Save any more (Export is how audio leaves the app). A
     // never-saved document isn't "changed", it exists only in this project;
@@ -863,7 +880,7 @@ export async function closeDocumentFlow(docId: string): Promise<void> {
       // leaves them set.
       await saveProject({ as: false });
       const afterSave = findDoc(docId);
-      if (afterSave && hasUnsavedWork(afterSave)) return;
+      if (afterSave && closeNeedsPrompt(afterSave)) return;
     }
     // choice === 1 ("Don't Save"): discard and close.
   }

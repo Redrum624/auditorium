@@ -593,8 +593,9 @@ async function main() {
     );
     assert(rec.rms > 0, `recording is non-silent (rms ${rec.rms.toFixed(4)} > 0)`);
     // Task S4: a take is COMPUTED audio that has never been on disk. It is
-    // created with no undo entry, so `dirty` is false — `neverSaved` is what
-    // makes closing it (or quitting) ask first instead of discarding it.
+    // created with no undo entry, so `dirty` is false. Since lot B the
+    // per-document close does NOT read `neverSaved` any more (a clean take
+    // closes with no prompt); `neverSaved` is what makes QUITTING ask first.
     const recSummary = await page.evaluate(() => window.__test.getStateSummary());
     assert(
       recSummary.neverSaved === true,
@@ -1038,7 +1039,8 @@ async function main() {
       `freshly opened document is clean before any edit (dirty=${cleanSummary.dirty})`
     );
     // Task S4: a document read off disk is NOT never-saved, so closing it
-    // asks nothing. (The computed-document half is asserted at step 5.)
+    // asks nothing — and since lot B the close prompt reads `dirty` alone, so
+    // this holds regardless. (The computed-document half is asserted at step 5.)
     assert(
       cleanSummary.neverSaved === false,
       `an opened file is not flagged never-saved (neverSaved=${cleanSummary.neverSaved})`

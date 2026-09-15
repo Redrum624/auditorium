@@ -529,6 +529,11 @@ export default function App() {
   // for a dirty session, and at least one for a project that has content but
   // has never been written; an empty untitled project is clean. The busy
   // count also carries an in-flight PROJECT save.
+  //
+  // Lot B deliberately diverges here: the per-document close (closeDocumentFlow)
+  // dropped `neverSaved` from its own predicate, but this quit count keeps it
+  // (B4) — closing one document is a deliberate act, quitting is not, and the
+  // quit guard still warns when unsaved computed audio would be lost.
   useEffect(() => {
     const api = window.electronAPI;
     if (!api?.onCloseRequested) return; // jsdom / older preload

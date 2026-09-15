@@ -17,7 +17,9 @@ function formatDuration(seconds: number): string {
  * Left-sidebar list of open documents. Each row shows the name (with a `*` when
  * dirty), duration, and sample rate. Clicking a row activates that document;
  * the hover ✕ button closes it through the shared closeDocumentFlow (which
- * prompts to save when dirty).
+ * prompts to save when dirty). A clean never-saved document — the amber
+ * `files-neversaved` dot below — closes with no prompt at all (lot B): the dot
+ * is not a close guard, only the quit guard still reads that flag.
  */
 export default function FilesPanel() {
   const documents = useAppStore((s) => s.documents);

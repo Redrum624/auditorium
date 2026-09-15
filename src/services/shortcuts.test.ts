@@ -187,7 +187,7 @@ describe('installShortcuts', () => {
     window.dispatchEvent(keydown({ key: 'w', ctrlKey: true }));
 
     // `file.close` is `closeDocumentFlow`, which prompts before discarding
-    // unsaved work — the accelerator inherits that guard for free.
+    // unsaved EDITS (lot B) — the accelerator inherits that guard for free.
     expect(runCommandSpy).toHaveBeenCalledWith('file.close');
   });
 

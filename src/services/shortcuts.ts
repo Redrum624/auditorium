@@ -63,9 +63,11 @@ export const SHORTCUT_TABLE: Shortcut[] = [
   { combo: 'ctrl+shift+s', commandId: 'file.saveAs' },
   // The File menu has advertised `Ctrl+W` on its Close row since Task 11, but
   // this table never carried the combo, so the label named a key that did
-  // nothing. It routes to `file.close`, i.e. `closeDocumentFlow` — the
-  // prompt-first path — so the accelerator can never discard unsaved work
-  // silently.
+  // nothing. It routes to `file.close`, the same `closeDocumentFlow` the
+  // Files-panel ✕ uses (B3 — the two doors cannot diverge because they are
+  // one function), so it prompts for unsaved EDITS exactly as the ✕ does
+  // (lot B) — a never-saved computed document closes with no prompt either
+  // way.
   { combo: 'ctrl+w', commandId: 'file.close' },
   { combo: 'm', commandId: 'marker.add' },
   { combo: 'ctrl+e', commandId: 'file.export' },

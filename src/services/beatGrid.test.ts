@@ -67,9 +67,10 @@ function seedDerived(parent: AudioDocument, name: string): AudioDocument {
   );
 }
 
-/** Answers every dialog with button index 1 — which for `closeDocumentFlow`'s
- * unsaved-work prompt is "Don't Save", so a fixture document (created in
- * memory, hence `neverSaved`) closes without a save dialog. */
+/** Answers every dialog with button index 1 ("Don't Save"). Since lot B,
+ * `closeDocumentFlow` no longer prompts for a clean never-saved fixture at all
+ * (it reads `dirty` alone), so for these fixtures the mock is armed but goes
+ * unused; it stays installed in case a future fixture here is seeded dirty. */
 function installShowMessageBox(): jest.Mock {
   const showMessageBox = jest.fn(async () => 1);
   (window as unknown as { electronAPI: { showMessageBox: typeof showMessageBox } }).electronAPI = {

@@ -261,9 +261,11 @@ function documentChannels(stem: Float32Array[]): Float32Array[] {
  * Documents are created with the `mixdownToNewFile` pattern (`createDocument`
  * then `addDocument`, no undo entry — creating a document is not an edit to any
  * document, so there is nothing to undo). They carry no `filePath`, so S4's
- * `createDocument` stamps `neverSaved: true` automatically and closing one
- * prompts; this module deliberately does NOT pass the flag, so the protection
- * keeps coming from the one place that owns it.
+ * `createDocument` stamps `neverSaved: true` automatically; since lot B closing
+ * one does NOT prompt (the per-document close reads `dirty` alone), but the
+ * flag still arms the quit guard's count and the Save pill — this module
+ * deliberately does NOT pass the flag, so that provenance keeps coming from
+ * the one place that owns it.
  */
 export function createStemDocuments(output: StemSeparationOutput): StemDocumentsResult {
   return createLandingDocuments(output, STEM_TRACK_LABELS, [

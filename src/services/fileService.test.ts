@@ -10,6 +10,8 @@ import {
   projectHasContent,
   projectHasUnsavedWork,
   exportSessionMixdown,
+  hasUnsavedWork,
+  closeNeedsPrompt,
 } from './fileService';
 import { useAppStore, makeInitialState } from '../stores/appStore';
 import { useSessionStore } from '../multitrack/sessionStore';
@@ -2243,90 +2245,105 @@ describe('closeDocumentFlow', () => {
     });
   });
 
-  describe('never-saved documents (Task S4)', () => {
+  describe('never-saved documents (Task S4 / lot B)', () => {
     /** The live doc, re-read from the store. */
     function live(docId: string) {
       return useAppStore.getState().documents.find((d) => d.id === docId);
     }
 
-    it('prompts before closing a CLEAN never-saved document, with never-saved wording', async () => {
-      const api = installApi({ showMessageBox: jest.fn(async () => 2) }); // Cancel
-      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 1' });
-      expect(live(doc.id)!.dirty).toBe(false); // the exact state that used to close silently
+    it('closes a CLEAN never-saved document with no prompt', async () => {
+      // Mock answers Cancel: if the box fired at all, Cancel would keep the
+      // document open, so a regression fails twice — once on the call, once
+      // on the surviving document.
+      const api = installApi({ showMessageBox: jest.fn(async () => 2) });
+      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 7' });
+      expect(live(doc.id)!.dirty).toBe(false); // the exact state that used to prompt
 
       await closeDocumentFlow(doc.id);
 
-      expect(api.showMessageBox).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'question',
-          title: 'Unsaved document',
-          // Lot A (M4): the offer is a PROJECT save — the document has no file
-          // of its own and never will through Save.
-          message: 'Remix 1 exists only in this project and the project has not been saved. Save the project before closing it?',
-          buttons: ['Save Project', "Don't Save", 'Cancel'],
-        })
-      );
-      expect(useAppStore.getState().documents).toHaveLength(1); // Cancel kept it open
+      expect(api.showMessageBox).not.toHaveBeenCalled();
+      expect(useAppStore.getState().documents).toEqual([]);
     });
 
-    it('discards and closes on "Don\'t Save" without writing', async () => {
-      const api = installApi({ showMessageBox: jest.fn(async () => 1) }); // Don't Save
-      const doc = seedDoc({ filePath: null, dirty: false, name: 'Mixdown 1' });
+    it('closes only the targeted stem and leaves the others', async () => {
+      const api = installApi({ showMessageBox: jest.fn(async () => 2) }); // must not even be offered
+      seedDoc({ filePath: null, dirty: false, name: 'Remix 7' });
+      seedDoc({ filePath: null, dirty: false, name: 'Speaker 2' });
+      seedDoc({ filePath: null, dirty: false, name: 'Mixdown 3' });
+      const target = useAppStore.getState().documents.find((d) => d.name === 'Speaker 2')!;
 
-      await closeDocumentFlow(doc.id);
+      await closeDocumentFlow(target.id);
 
+      expect(useAppStore.getState().documents.map((d) => d.name)).toEqual(['Remix 7', 'Mixdown 3']);
       expect(api.writeFile).not.toHaveBeenCalled();
-      expect(useAppStore.getState().documents).toHaveLength(0);
+      expect(api.showSaveDialog).not.toHaveBeenCalled();
     });
 
-    it('saves the project then closes when the user picks Save Project', async () => {
-      const api = installApi({
-        showMessageBox: jest.fn(async () => 0), // Save Project
-        showSaveDialog: jest.fn(async () => 'D:\\out\\p.audm'),
-      });
-      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 1' });
-
-      await closeDocumentFlow(doc.id);
-
-      expect(api.writeFile).toHaveBeenCalledTimes(1);
-      expect(api.writeFile.mock.calls[0][0]).toBe('D:\\out\\p.audm');
-      expect(useAppStore.getState().documents).toHaveLength(0);
-    });
-
-    it('aborts the close when the save-as dialog is cancelled (the document is still never saved)', async () => {
-      const api = installApi({
-        showMessageBox: jest.fn(async () => 0), // Save
-        showSaveDialog: jest.fn(async () => null), // cancelled
-      });
-      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 1' });
-
-      await closeDocumentFlow(doc.id);
-
-      expect(api.writeFile).not.toHaveBeenCalled();
-      expect(useAppStore.getState().documents).toHaveLength(1);
-    });
-
-    it('STILL prompts after an edit is UNDONE past the creation point — the trap a stamped dirty:true would fall into', async () => {
-      const api = installApi({ showMessageBox: jest.fn(async () => 2) }); // Cancel
-      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 1' });
+    it('closes a never-saved document whose only edit has been UNDONE', async () => {
+      const api = installApi({ showMessageBox: jest.fn(async () => 2) }); // Cancel — must not fire
+      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 7' });
 
       // A real curation edit through the app's single write path, then undo it.
-      useAppStore.getState().setSelection({ start: 2, end: 5 });
+      useAppStore.getState().setSelection({ start: 3, end: 9 });
       deleteSelection();
       expect(live(doc.id)!.dirty).toBe(true);
       undoHistory.undo(doc.id);
       // undoHistory RE-DERIVES dirty from position vs. savePoint, so it is back
-      // to false here: a `dirty: true` stamped at creation would have been
-      // silently erased by exactly this call (KNOWN_LIMITATIONS / P1-0).
+      // to false here.
       expect(live(doc.id)!.dirty).toBe(false);
+      // Still true — this is provenance, not edit state, and it keeps arming
+      // the quit guard's count even though the per-document close ignores it.
       expect(live(doc.id)!.neverSaved).toBe(true);
+
+      await closeDocumentFlow(doc.id);
+
+      expect(api.showMessageBox).not.toHaveBeenCalled();
+      expect(useAppStore.getState().documents).toEqual([]);
+    });
+
+    it('prompts before closing a never-saved document that HAS been edited (B2)', async () => {
+      const api = installApi({ showMessageBox: jest.fn(async () => 2) }); // Cancel
+      const doc = seedDoc({ filePath: null, dirty: false, name: 'Speaker 2' });
+
+      useAppStore.getState().setSelection({ start: 3, end: 9 });
+      deleteSelection();
+      expect(live(doc.id)!.dirty).toBe(true);
 
       await closeDocumentFlow(doc.id);
 
       expect(api.showMessageBox).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Unsaved document' })
       );
-      expect(useAppStore.getState().documents).toHaveLength(1);
+      expect(useAppStore.getState().documents).toHaveLength(1); // Cancel kept it open
+    });
+
+    it('a user marker on a never-saved stem still prompts', async () => {
+      const api = installApi({ showMessageBox: jest.fn(async () => 1) }); // Don't Save
+      const doc = seedDoc({ filePath: null, dirty: false, name: 'song — Drums' });
+
+      useAppStore.getState().addMarker(doc.id, { id: 'm-1', name: 'Verse', positionSample: 12000 });
+
+      await closeDocumentFlow(doc.id);
+
+      expect(api.showMessageBox).toHaveBeenCalled();
+      expect(useAppStore.getState().documents).toEqual([]); // Don't Save still closes
+    });
+
+    it('`hasUnsavedWork` still reports a clean never-saved document as unsaved work', () => {
+      const doc = seedDoc({ filePath: null, dirty: false, name: 'Remix 7' });
+
+      // The deliberate divergence (B1 vs B4): hasUnsavedWork stays true so the
+      // quit guard, projectHasUnsavedWork and the Save no-op gate still see it;
+      // closeNeedsPrompt is false so the per-document close does not.
+      expect(hasUnsavedWork(live(doc.id)!)).toBe(true);
+      expect(closeNeedsPrompt(live(doc.id)!)).toBe(false);
+    });
+
+    it('the quit count still includes clean never-saved documents (B4)', () => {
+      seedDoc({ filePath: null, dirty: false, name: 'Remix 7' });
+      seedDoc({ filePath: null, dirty: false, name: 'Mixdown 3' });
+
+      expect(projectDirtyCount()).toBe(2);
     });
 
     it('keeps the ordinary "Unsaved changes" wording for a doc that has a file on disk', async () => {
