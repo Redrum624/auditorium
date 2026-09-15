@@ -6,7 +6,7 @@ import { MODULE_COLUMN_WIDTH } from './components/Layout/ModuleStrip';
 import { createDocument } from './audio/AudioDocument';
 import { hasOpenDialog } from './services/dialogBus';
 import { isCommandEnabled, runCommand } from './services/menuActions';
-import { _resetPassLock, getRunningPass, isPassRunning } from './services/passLock';
+import { _resetPassLock, acquirePass, getRunningPass, isPassRunning } from './services/passLock';
 import { makeInitialState, useAppStore } from './stores/appStore';
 
 /**
@@ -392,6 +392,74 @@ describe('while a hosted pass is running', () => {
 
     view.unmount();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
+  });
+});
+
+/**
+ * Fix round 4 — the App-level refusal `handleToolModuleLock` surfaces when
+ * `acquirePass` returns `null` (fix round 3, item 1). Round 3's report
+ * claimed this was "exercised implicitly by every row of item 2's table"
+ * (`hostedDialogsPassLock.test.tsx`); that claim was false, caught by the
+ * round-4 review — that table renders each dialog STANDALONE with no
+ * `DialogHostProvider`, so `useDialogHost()` returns `null`,
+ * `host.onModuleLockChange` is never wired, and `handleToolModuleLock` is
+ * never invoked there at all. Nothing else in the suite reached it either:
+ * `App.pipelineHost`/`App.effectHost` render the real `<App/>` but never
+ * call `acquirePass` themselves, so the race this branch exists for was
+ * never constructed. This describe block is that construction, for real,
+ * through `<App/>`.
+ *
+ * `StubTempoDialog` is exactly the fixture this needs: it flips `busy` with
+ * NO gate of its own (unlike the real dialogs' `canApply`), so clicking
+ * "start pass" while a FOREIGN pass already holds the lock reaches
+ * `handleToolModuleLock(true)` with `acquirePass` guaranteed to fail —
+ * reproducing the one gap fix round 1 could not close by dialog-side gating
+ * alone (a hosted dialog whose own gate has a hole).
+ */
+describe('the App-level refusal when a hosted pass loses the acquire race (fix round 4)', () => {
+  afterEach(() => {
+    _resetPassLock();
+  });
+
+  it('names the FOREIGN pass, not the hosted one, and never lets the false-branch release free it', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('tempo.match'); // idle — nothing holds the lock yet
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+    });
+    expect(release).not.toBeNull();
+
+    // The stub has no gate of its own: this flips `busy` (and so
+    // `moduleLock`) regardless of the lock, exactly the case a real
+    // dialog's own `canApply` is supposed to prevent from ever reaching here.
+    fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
+
+    expect(showMessageBox).toHaveBeenCalledTimes(1);
+    const [opts] = showMessageBox.mock.calls[0];
+    // The FOREIGN blocker's name — `blockedByPassReason()` — never the
+    // hosted dialog's own (`describeHostedPass()` would have said 'Match
+    // Tempo', naming the wrong pass).
+    expect(opts.message).toContain('Cover Chain');
+    expect(opts.message).not.toContain('Match Tempo');
+    expect(getRunningPass()?.label).toBe('Cover Chain');
+
+    // The stub's own `busy` is still true (nothing here vetoed it), so this
+    // is the tool's normal "finish" — the false branch of
+    // `handleToolModuleLock`, exercised with `passReleaseRef.current` never
+    // populated by the failed acquire above.
+    fireEvent.click(screen.getByRole('button', { name: 'finish pass' }));
+
+    // If the false-branch release had wrongly freed the foreign pass (the
+    // exact defect this test exists to catch), this would now read `null`.
+    expect(getRunningPass()?.label).toBe('Cover Chain');
+
+    act(() => {
+      release!();
+    });
     expect(isPassRunning()).toBe(false);
   });
 });
