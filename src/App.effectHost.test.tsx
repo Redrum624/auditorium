@@ -1,13 +1,14 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import App from './App';
 import DialogShell from './components/Dialogs/DialogShell';
+import { TOOL_HOST_WIDTH } from './components/Dialogs/PipelineToolHost';
 import { DEFAULT_PANEL, MODULE_COLUMN_WIDTH } from './components/Layout/ModuleStrip';
 import { createDocument } from './audio/AudioDocument';
 import { playbackEngine } from './audio/PlaybackEngine';
 import { installTranscribeBackend, seedTranscript, voiceVector } from './__mocks__/transcribeBackend';
 import { _resetTranscriptsForTest } from './services/transcribeService';
 import { defaultParamsFor, getEffect, getVisibleEffects } from './effects/EffectRegistry';
-import { focusTranscriptPanel, hasOpenDialog } from './services/dialogBus';
+import { hasOpenDialog } from './services/dialogBus';
 import { runEffectOnSelection } from './services/effectRunner';
 import { isCommandEnabled, runCommand } from './services/menuActions';
 import { _resetPassLock, getRunningPass, isPassRunning } from './services/passLock';
@@ -39,11 +40,36 @@ jest.mock('./components/Dialogs/TempoDialog', () => {
         title: 'Match Tempo',
         dismissable: !busy,
         onClose,
-        children: React.createElement(
-          'button',
-          { type: 'button', onClick: () => setBusy((b) => !b) },
-          busy ? 'finish pass' : 'start pass'
-        ),
+        children: [
+          React.createElement(
+            'button',
+            { key: 'toggle', type: 'button', onClick: () => setBusy((b) => !b) },
+            busy ? 'finish pass' : 'start pass'
+          ),
+          // Fix round 1 — the real hand-off shape (see
+          // `App.pipelineHost.test.tsx`'s identical stub): the pass ends and
+          // the panel is asked for in the SAME synchronous block as `onClose`,
+          // exactly what RemixDialog/TranscribeDialog do. Calling
+          // `focusTranscriptPanel()` alone (the old version of this stub's
+          // test) never exercised `onClose` — under lot C, `onClose` is the
+          // ONLY thing that releases the tool's slot of the pass lock
+          // (C-j), so a hand-off that skips it is not a real hand-off.
+          React.createElement(
+            'button',
+            {
+              key: 'handover',
+              type: 'button',
+              onClick: () => {
+                setBusy(false);
+                jest
+                  .requireActual<typeof import('./services/dialogBus')>('./services/dialogBus')
+                  .focusTranscriptPanel();
+                onClose();
+              },
+            },
+            'finish and hand over'
+          ),
+        ],
       });
     },
   };
@@ -57,11 +83,6 @@ const mockRun = runEffectOnSelection as jest.MockedFunction<typeof runEffectOnSe
 const realRun = jest.requireActual<typeof import('./services/effectRunner')>(
   './services/effectRunner'
 ).runEffectOnSelection;
-
-/** The strip's tooltip while an effect Apply runs — written out here rather
- * than imported, so the sentence the user reads is pinned, not echoed. */
-const MODULE_SWITCH_LOCKED_EFFECT =
-  'An effect is being applied — wait for it to finish. The waveform and transport stay usable.';
 
 interface MessageBoxOptions {
   type?: string;
@@ -356,27 +377,59 @@ describe('close paths', () => {
 });
 
 describe('interplay with the pipeline tools', () => {
-  it('an effect replaces an idle hosted tool: the 640 host and the 348 card never coexist', async () => {
+  // Fix round 1 (C5) — OVERTURNS this test's old premise, pinned as "the 640
+  // host and the 348 card never coexist": C5 is explicit that at most ONE
+  // effect card AND ONE hosted tool are retained AT THE SAME TIME — two
+  // independent slots, not one shared slot — so opening an effect while an
+  // idle tool is retained no longer destroys the tool. The invariant the old
+  // test name protected — the VISIBLE surfaces never coexist, so the strip is
+  // always exactly one width — is still real and still checked here: it is
+  // now structural (`columnHost` is a single value), not "only one thing is
+  // ever mounted".
+  it('an effect foregrounds over an idle retained tool — both retained, only the VISIBLE surfaces never coexist (C5)', async () => {
     addDoc();
     render(<App />);
     await openTool('tempo.match');
-    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    const toolNode = screen.getByTestId('tool-host');
+    expect(toolNode).not.toHaveAttribute('data-backgrounded');
 
     await openTool('effect.amplify');
-    expect(screen.queryByTestId('tool-host')).toBeNull();
+    // Still retained — mounted, hidden, not destroyed.
+    expect(screen.getByTestId('tool-host')).toBe(toolNode);
+    expect(screen.getByTestId('tool-host')).toHaveAttribute('data-backgrounded', 'true');
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
+    expect(host()).not.toHaveAttribute('data-backgrounded');
+    // Only ONE visible surface at a time: 348 (the effect card / module
+    // card), never 640 (the tool) while the effect is foregrounded.
     expect(strip().style.width).toBe(`${MODULE_COLUMN_WIDTH}px`);
     expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'effects');
+
+    // And returning to Pipeline foregrounds the SAME retained tool again.
+    fireEvent.click(stripButton('Pipeline'));
+    expect(screen.getByTestId('tool-host')).toBe(toolNode);
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
+    expect(strip().style.width).toBe(`${TOOL_HOST_WIDTH}px`);
   });
 
-  it('a pipeline tool replaces an open effect card', async () => {
+  // Fix round 1 (C5) — the symmetric case (X2), same overturned premise.
+  it('a pipeline tool foregrounds over an open effect card — both retained (C5)', async () => {
     addDoc();
     render(<App />);
     await openTool('effect.amplify');
+    const effectNode = host();
 
     await openTool('lyrics.align');
-    expect(screen.queryByTestId('effect-host')).toBeNull();
+    // Still retained — mounted, hidden, not destroyed.
+    expect(host()).toBe(effectNode);
+    expect(host()).toHaveAttribute('data-backgrounded', 'true');
     expect(screen.getByTestId('tool-host')).toHaveAttribute('data-tool-id', 'lyrics.align');
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
+    expect(strip().style.width).toBe(`${TOOL_HOST_WIDTH}px`);
+
+    fireEvent.click(stripButton('Effects'));
+    expect(host()).toBe(effectNode);
+    expect(host()).not.toHaveAttribute('data-backgrounded');
+    expect(strip().style.width).toBe(`${MODULE_COLUMN_WIDTH}px`);
   });
 
   // Lot M: `effect.<id>`'s own `enabled` now ANDs in `passFree()`
@@ -430,10 +483,23 @@ describe('the module lock, during Apply only (N16)', () => {
     // assertion carried: `describeHostedPass()`'s label for a hosted EFFECT —
     // the real registry name, never the `'A pipeline pass'` fallback.
     expect(getRunningPass()?.label).toBe(getEffect('amplify')!.name);
+    // Fix round 1 (C3) — OVERTURNS this test's old premise: the strip used to
+    // disable every button while Apply ran, because leaving would have
+    // discarded the pass. M2 removes that: switching module now backgrounds
+    // the running Apply instead of blocking the switch, and the pass keeps
+    // running (`getRunningPass()` above still names it). The invariant this
+    // test protects — Apply's OWN controls (the ✕, Cancel) still refuse to
+    // DISCARD a running pass — is unaffected and still checked right below;
+    // only the strip's behaviour changed.
     for (const button of within(strip()).getAllByRole('button')) {
-      expect(button).toBeDisabled();
-      expect(button.title).toBe(MODULE_SWITCH_LOCKED_EFFECT);
+      expect(button).not.toBeDisabled();
     }
+    fireEvent.click(stripButton('Markers'));
+    expect(host()).toHaveAttribute('data-backgrounded', 'true');
+    expect(isPassRunning()).toBe(true);
+    fireEvent.click(stripButton('Effects'));
+    expect(host()).not.toHaveAttribute('data-backgrounded');
+
     expect(within(host()).getByTestId('hosted-tool-close')).toBeDisabled();
     expect(within(host()).getByRole('button', { name: 'Cancel' })).toBeDisabled();
 
@@ -601,7 +667,21 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     expect(showMessageBox).not.toHaveBeenCalled();
   });
 
-  it('a row click in the Files panel switches documents; the effect lands in neither and the caret stays put', async () => {
+  // Fix round 1 (C1/C-e) — OVERTURNS this test's old ordering: it used to
+  // background the effect card BEFORE starting Apply (clicking Files while
+  // idle), then reach `within(host())` for the Apply button — which worked
+  // only because, before lot C, backgrounding did not really exist: the card
+  // stayed fully visible and interactive over every module (the exact bug
+  // C1 fixes). Now that C-e makes a backgrounded card genuinely
+  // non-interactive (`hidden` + `display:none`, correctly excluded from the
+  // accessibility tree `getByRole` queries), clicking its Apply button while
+  // backgrounded is not something a real user could do either. Apply now
+  // starts FIRST, foregrounded; the switch to Files happens AFTER, backgrounding
+  // the RUNNING effect — C3/M2 explicitly allow that, and the pass keeps
+  // running behind it. The invariant this test protects — the mouse stays
+  // live during Apply, and a document swap under a running Apply never
+  // corrupts either document — is unchanged and still proven below.
+  it('a row click in the Files panel switches documents while Apply keeps running backgrounded; the effect lands in neither and the caret stays put', async () => {
     const a = addSavedDoc('take.wav');
     const b = addSavedDoc('other.wav');
     act(() => {
@@ -609,10 +689,12 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     });
     render(<App />);
     await openTool('effect.amplify');
-    // Idle, the strip is free and the card survives the switch (B5); the
-    // Files panel is now the module card beneath the effect.
-    fireEvent.click(stripButton('Files'));
     applyOnFirstHalf();
+    // The strip is free even mid-pass (C3/M2); the Files panel is now the
+    // module card beneath the BACKGROUNDED, still-running effect.
+    fireEvent.click(stripButton('Files'));
+    expect(host()).toHaveAttribute('data-backgrounded', 'true');
+    expect(isPassRunning()).toBe(true);
     const aChannels = docById(a.id)!.channels;
     const bChannels = docById(b.id)!.channels;
 
@@ -759,12 +841,15 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     await openTool('edit.transcribe');
 
     expect(showMessageBox).not.toHaveBeenCalled();
-    // Nothing was released: the strip, the ✕ and the card itself.
+    // Nothing was released: the lock, the ✕ and the card itself. Fix round 1
+    // (C3) — OVERTURNS the old premise that the STRIP stays disabled too: M2
+    // lets a module switch through regardless (the strip was never the thing
+    // this test is about — the registry gate refusing `edit.transcribe`
+    // itself is), so it is checked enabled here instead.
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(true);
     for (const button of within(strip()).getAllByRole('button')) {
-      expect(button).toBeDisabled();
-      expect(button.title).toBe(MODULE_SWITCH_LOCKED_EFFECT);
+      expect(button).not.toBeDisabled();
     }
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
     expect(within(host()).getByTestId('hosted-tool-close')).toBeDisabled();
@@ -788,6 +873,18 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     expect(isPassRunning()).toBe(false);
   });
 
+  // Fix round 1 (C-j) — OVERTURNS this test's old premise: it used to call
+  // `focusTranscriptPanel()` ALONE (never `onClose()`) because `showPanel`'s
+  // hand-off arm itself unmounted the tool and released its lock — calling
+  // the bus function was a valid proxy for the whole hand-off. Lot C's C-j
+  // amendment moves that release to `onClose()` alone (`showPanel` no longer
+  // touches the lock or the mount at all — see its own docblock), so a real
+  // hand-off now needs BOTH calls, exactly what RemixDialog/TranscribeDialog
+  // actually do (`onClose(); focusRemixPanel();` or
+  // `focusTranscriptPanel(); onClose();`) and exactly what the stub's
+  // "finish and hand over" button reproduces. The invariant — a hosted TOOL
+  // still hands over cleanly while it holds the lock, releasing it — is
+  // unchanged; it is proven the way the real dialogs actually trigger it now.
   it('the hand-off itself is untouched: a hosted TOOL still hands over while it holds the lock', async () => {
     addDoc();
     render(<App />);
@@ -796,18 +893,50 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(true);
 
-    // What TranscribeDialog does from inside its own completion handler —
-    // called directly, never through the registry, so it is unaffected by
-    // the gating above.
-    await act(async () => {
-      focusTranscriptPanel();
-    });
+    // What TranscribeDialog does from inside its own completion handler:
+    // `focusTranscriptPanel(); onClose();`, in the SAME synchronous block.
+    fireEvent.click(screen.getByRole('button', { name: 'finish and hand over' }));
 
     expect(showMessageBox).not.toHaveBeenCalled();
     expect(screen.queryByTestId('tool-host')).toBeNull();
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(false);
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'transcript');
     for (const button of within(strip()).getAllByRole('button')) expect(button).not.toBeDisabled();
+  });
+
+  /**
+   * Fix round 1 (C-j, item 4) — the THIRD `showPanel` caller decisions.md's
+   * C-j names: `edit.transcribe`'s mouse-driven reveal arm
+   * (`menuActions.ts`, `getTranscript(id) !== null` -> `focusTranscriptPanel()`).
+   * Before this fix, `showPanel` unconditionally unmounted whatever tool was
+   * hosted — reaching this arm with an IDLE retained tool open (not running,
+   * so `edit.transcribe` is enabled) silently destroyed it. C-j deletes that
+   * unconditional clear; the reveal arm now backgrounds the retained tool
+   * instead, exactly C1's "background, don't discard" promise.
+   */
+  it('reveals an existing transcript by BACKGROUNDING an idle retained tool, not destroying it', async () => {
+    const doc = addDoc();
+    await seedTranscriptFor(doc.id);
+    render(<App />);
+    await openTool('tempo.match');
+    const node = screen.getByTestId('tool-host');
+    expect(node).not.toHaveAttribute('data-backgrounded');
+    expect(isPassRunning()).toBe(false);
+
+    expect(isCommandEnabled('edit.transcribe')).toBe(true);
+    await act(async () => {
+      await runCommand('edit.transcribe');
+    });
+
+    // Backgrounded, not destroyed.
+    expect(screen.getByTestId('tool-host')).toBe(node);
+    expect(screen.getByTestId('tool-host')).toHaveAttribute('data-backgrounded', 'true');
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'transcript');
+
+    fireEvent.click(stripButton('Pipeline'));
+    expect(screen.getByTestId('tool-host')).toBe(node);
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
   });
 });
 
@@ -839,7 +968,18 @@ describe('a Preview the mouse took away (final round)', () => {
     return (stop ?? within(host()).getByRole('button', { name: 'Preview' })) as HTMLButtonElement;
   }
 
-  it('a Files-panel switch ends the preview; the button says Preview and starts a new one', async () => {
+  // Fix round 1 (C1/C-e) — OVERTURNS this test's old mechanism: it used to
+  // switch the document via a click in the Files PANEL, which requires
+  // leaving the Effects module — and under C-e that correctly backgrounds
+  // (hides, non-interactive) the effect card, so a real user could not reach
+  // its Preview button afterward either. What is actually under test is the
+  // active-document SWITCH, not the Files panel specifically: any door that
+  // changes `activeDocumentId` exercises the same "document moved" effect
+  // (`EffectDialog`'s own key: `[activeDocumentId, activeDocChannels,
+  // activeSampleRate]`), so it is driven directly through the store here,
+  // with the card kept FOREGROUNDED throughout — exactly what the invariant
+  // (a preview taken by the mouse leaves no stale button) needs.
+  it('a document switch elsewhere in the app ends the preview; the button says Preview and starts a new one', async () => {
     const a = addSaved('take.wav');
     const b = addSaved('other.wav');
     act(() => {
@@ -847,7 +987,6 @@ describe('a Preview the mouse took away (final round)', () => {
     });
     render(<App />);
     await openTool('effect.amplify');
-    fireEvent.click(stripButton('Files'));
 
     act(() => {
       fireEvent.click(within(host()).getByRole('button', { name: 'Preview' }));
@@ -857,9 +996,7 @@ describe('a Preview the mouse took away (final round)', () => {
     expect(playbackEngine.loadedDocumentId).not.toBe(a.id);
 
     act(() => {
-      fireEvent.click(
-        within(screen.getByTestId('files-list')).getByText('other.wav').closest('button')!
-      );
+      useAppStore.getState().setActiveDocument(b.id);
     });
     expect(useAppStore.getState().activeDocumentId).toBe(b.id);
 
@@ -1014,7 +1151,9 @@ describe('Escape with an effect card open (N18)', () => {
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(true);
     expect(within(host()).getByTestId('hosted-tool-close')).toBeDisabled();
-    for (const button of within(strip()).getAllByRole('button')) expect(button).toBeDisabled();
+    // Fix round 1 (C3) — OVERTURNS the old "strip stays disabled too"
+    // premise: M2 lets a module switch through regardless of a running pass.
+    for (const button of within(strip()).getAllByRole('button')) expect(button).not.toBeDisabled();
     // M6: the keyboard stays live, so the global Escape -> edit.deselect DOES
     // reach the store now.
     expect(useAppStore.getState().selection).toBeNull();

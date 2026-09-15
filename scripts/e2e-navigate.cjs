@@ -468,13 +468,24 @@ async function cancelDialog(page, timeoutMs = 120000) {
  * had — it is `disabled` while `dismissable` is false — so this loop clicks
  * until it takes, exactly as `cancelDialog` presses until it takes, and
  * `presses > 1` is the same observation that the veto was exercised.
+ *
+ * Lot C (C5): scoped to `[data-testid="tool-host"]`, matching
+ * `closeEffectHost`'s own scoping below. Before C5 at most one host was ever
+ * mounted, so an unscoped `[data-testid="hosted-tool-close"]` could only ever
+ * match the tool's own ✕; now that an idle tool and an idle effect can both
+ * be retained at once, `EffectHost` renders FIRST in `App.tsx`'s DOM order
+ * (`{hostedEffect !== null && <EffectHost/>}` precedes the tool host), so an
+ * unscoped query would silently click the EFFECT card's ✕ instead whenever
+ * both happen to be mounted.
  */
 async function closeHostedTool(page, timeoutMs = 120000) {
   const started = Date.now();
   let presses = 0;
   while (Date.now() - started < timeoutMs) {
     const clicked = await page.evaluate(() => {
-      const b = document.querySelector('[data-testid="hosted-tool-close"]');
+      const b = document.querySelector(
+        '[data-testid="tool-host"] [data-testid="hosted-tool-close"]'
+      );
       if (!b || b.disabled) return false;
       b.click();
       return true;

@@ -257,18 +257,6 @@ export interface ModuleStripProps {
    * and two surfaces racing. */
   hasRemix: boolean;
   /**
-   * U2-3: why every entry is refusing clicks right now, or `null`/absent when
-   * they are not. Set while a hosted pipeline tool is MID-PASS.
-   *
-   * The reason is a string rather than a boolean because the honest version of
-   * this control is a disabled button that says why. The alternative — dropping
-   * the click silently, or hiding the strip — teaches the user nothing about a
-   * refusal they did not expect and cannot see the cause of. Why the refusal
-   * exists at all is App's to explain (the pass's state is dialog-local and
-   * unmounting discards it); the strip only carries the sentence.
-   */
-  lockedReason?: string | null;
-  /**
    * W1: whether the column below currently hosts a pipeline tool. The strip
    * follows the open surface's width — `TOOL_HOST_WIDTH` while this is true,
    * `MODULE_COLUMN_WIDTH` otherwise — because the user ruled that the bar and
@@ -292,7 +280,6 @@ export interface ModuleStripProps {
 export default function ModuleStrip({
   activeTab,
   hasRemix,
-  lockedReason = null,
   toolHosted = false,
   hostBadges = [],
   onSelect,
@@ -324,21 +311,18 @@ export default function ModuleStrip({
             type="button"
             aria-label={label}
             title={
-              lockedReason ??
-              (badge
+              badge
                 ? hostBadgeTitle(badge.label, badge.running)
                 : isActive
                   ? `${label} — click to close the card`
-                  : label)
+                  : label
             }
             aria-pressed={isActive}
-            disabled={lockedReason !== null}
             onClick={() => onSelect(isActive ? null : id)}
             className={`glass-rail-btn${isActive ? ' is-active' : ''}`}
             style={{
               ...stripBtn,
               ...(isActive ? stripBtnActive : null),
-              ...(lockedReason !== null ? { opacity: 0.45, cursor: 'default' } : null),
             }}
           >
             <Icon size={17} />

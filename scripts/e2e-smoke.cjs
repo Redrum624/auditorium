@@ -7454,10 +7454,17 @@ async function main() {
     const podcastBefore = await stateOf();
     /** Clicks the hosted tool's ✕ and waits for the host to go. Hosted tools
      * install no Escape handler and raise no backdrop, so Escape closes
-     * nothing — the walker learned this the same way. */
+     * nothing — the walker learned this the same way.
+     *
+     * Lot C (C5): scoped to `[data-testid="tool-host"]` — an idle tool and an
+     * idle effect can both be retained at once now, and `EffectHost` renders
+     * first in `App.tsx`'s DOM order, so an unscoped query would risk
+     * clicking the EFFECT card's ✕ instead whenever both are mounted. */
     const closeHostedTool = async () => {
       await page.evaluate(() => {
-        const b = document.querySelector('[data-testid="hosted-tool-close"]');
+        const b = document.querySelector(
+          '[data-testid="tool-host"] [data-testid="hosted-tool-close"]'
+        );
         if (!b || b.disabled) throw new Error('the hosted tool has no live ✕');
         b.click();
       });

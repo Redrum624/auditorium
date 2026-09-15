@@ -317,6 +317,39 @@ describe('the strip badge reads the lock, not a parallel flag (C4)', () => {
     expect(badge).toHaveAttribute('data-running', 'false');
     expect(stripButton('Pipeline').title).toContain('Match Tempo');
   });
+
+  /**
+   * Fix round 1 (C3/C4) — the badge's `running` state, now reachable: a
+   * pass backgrounded WHILE it runs (C3) shows the running dot, and the dot
+   * clears the instant the pass ends, even though the tool stays retained
+   * (still backgrounded, still showing an idle badge afterward). `running`
+   * reads `usePassLock()` directly, compared by descriptor id — proven by
+   * this test needing NO separate "is it running" flag anywhere in `App.tsx`.
+   */
+  it('shows a RUNNING badge while a backgrounded pass runs, and clears it the instant the pass ends', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('tempo.match');
+    fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
+    fireEvent.click(stripButton('Markers'));
+
+    expect(isPassRunning()).toBe(true);
+    const badge = screen.getByTestId('module-badge-pipeline');
+    expect(badge).toHaveAttribute('data-running', 'true');
+    expect(stripButton('Pipeline').title).toBe(
+      'Match Tempo is running in the background — click to watch it'
+    );
+
+    // Watch it: foreground it again, the stub still reads 'finish pass'.
+    fireEvent.click(stripButton('Pipeline'));
+    expect(screen.getByRole('button', { name: 'finish pass' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'finish pass' }));
+    expect(isPassRunning()).toBe(false);
+
+    fireEvent.click(stripButton('Markers'));
+    // Still retained, still backgrounded — the badge stays, but idle now.
+    expect(screen.getByTestId('module-badge-pipeline')).toHaveAttribute('data-running', 'false');
+  });
 });
 
 describe('every door reaches the same host', () => {
@@ -376,14 +409,35 @@ describe('while a hosted pass is running', () => {
     fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
   }
 
-  it('locks the module strip, with the reason in every tooltip', async () => {
+  // Fix round 1 (C3/M2) — OVERTURNS this test's old premise, pinned here
+  // before lot C's fix round: the strip locked every button while a pass
+  // ran, because leaving used to UNMOUNT the tool (discarding it). M2
+  // (decisions.md, USER): "switching views and modules while a pass runs
+  // stays allowed — that is the whole point of lot C. Only starting another
+  // pass is refused." The invariant this test protected — a running pass is
+  // never silently discarded by a module switch — still holds; it is proven
+  // here the other way: the switch is now ALLOWED, and the pass keeps
+  // running, backgrounded, exactly the "state it has progressed" half of
+  // item 3. FAILS TODAY (pre-fix-round-1): the strip disables every button
+  // mid-pass.
+  it('backgrounds a running pass on a module switch instead of blocking it (C3/M2)', async () => {
     await startPass();
+    fireEvent.click(stripButton('Markers'));
+
+    expect(showMessageBox).not.toHaveBeenCalled();
     for (const button of within(strip()).getAllByRole('button')) {
-      expect(button).toBeDisabled();
-      expect(button.title).toBe(
-        'A pipeline pass is running — switching module would discard it. The waveform and transport stay usable.'
-      );
+      expect(button).not.toBeDisabled();
     }
+    const node = screen.getByTestId('tool-host');
+    expect(node).toHaveAttribute('data-backgrounded', 'true');
+    expect(getRunningPass()?.label).toBe('Match Tempo');
+    expect(isPassRunning()).toBe(true);
+
+    fireEvent.click(stripButton('Pipeline'));
+    // The SAME instance, still running — nothing was discarded.
+    expect(screen.getByTestId('tool-host')).toBe(node);
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
+    expect(screen.getByRole('button', { name: 'finish pass' })).toBeInTheDocument();
   });
 
   it('refuses the tool’s own ✕, saying why', async () => {
@@ -479,16 +533,29 @@ describe('while a hosted pass is running', () => {
   });
 
   /**
-   * The other side of that line: `focusSpatialPanel` is not a hand-off. Its
-   * only caller is the `spatial.position` command — a menu row the user picks —
-   * and taking it mid-pass would unmount the running tool and discard the pass
-   * exactly as switching module would. So that one IS guarded.
+   * Fix round 1 (C3/M2) — OVERTURNS this test's old premise: `spatial.position`
+   * used to be guarded because taking it mid-pass would unmount the running
+   * tool and discard the pass exactly as switching module would. Under M2 a
+   * module switch no longer discards anything, so `focusSpatialPanel` no
+   * longer needs to be a special case — it backgrounds the tool exactly like
+   * every other `showPanel` caller, and the pass keeps running. The invariant
+   * ("a user's deliberate choice to leave never discards a running pass") is
+   * preserved; it is now met by backgrounding rather than by refusal.
    */
-  it('still refuses the Spatial Positioner command, which is a user’s choice to leave', async () => {
+  it('a deliberate choice to leave (Spatial Positioner) backgrounds the pass instead of discarding it (C3/M2)', async () => {
     await startPass();
     await openTool('spatial.position');
-    expect(screen.getByTestId('tool-host')).toHaveAttribute('data-tool-id', 'tempo.match');
-    expect(showMessageBox).toHaveBeenCalledTimes(1);
+
+    expect(showMessageBox).not.toHaveBeenCalled();
+    const node = screen.getByTestId('tool-host');
+    expect(node).toHaveAttribute('data-backgrounded', 'true');
+    expect(getRunningPass()?.label).toBe('Match Tempo');
+    expect(isPassRunning()).toBe(true);
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'spatial');
+
+    fireEvent.click(stripButton('Pipeline'));
+    expect(screen.getByTestId('tool-host')).toBe(node);
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
   });
 
   // M5 — the THIRD release guarantee (App.tsx's `[]`-scoped unmount effect),
