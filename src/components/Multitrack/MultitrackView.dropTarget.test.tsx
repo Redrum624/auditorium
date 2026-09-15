@@ -151,7 +151,15 @@ describe('a clip dropped while the pointer is over another track', () => {
     // The highlight and the commit read the same resolver, so the lane the user
     // sees lit is the lane the clip is about to join.
     expect(lanes[2].style.backgroundColor).toBe('var(--accent-soft)');
-    expect(lanes[0].style.backgroundColor).toBe('transparent');
+    // Fix round 1 (lot K, K2 ruling) — pressing the clip also marks its OWN
+    // track (0, the source track) CURRENT: deliberate, not incidental. The
+    // whole point of the current track (item 12) is "where a paste lands", so
+    // selecting a clip on track 3 and pasting must not land on whatever
+    // background was last clicked — the press that names a clip is itself an
+    // act of naming its track. Lane 0 therefore shows the current-track mark,
+    // a token visually distinct from the drag-target wash above
+    // (`TrackLane.currentTrack.test.tsx` pins the two apart).
+    expect(lanes[0].style.backgroundColor).toBe('var(--lane-current)');
 
     firePointer(clip, 'pointerup', 150);
   });

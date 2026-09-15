@@ -6,6 +6,8 @@
  * so "index 1, not 0" cannot pass by coincidence (X3).
  */
 import { act, render } from '@testing-library/react';
+import fs from 'fs';
+import path from 'path';
 import { createClip, createTrack, type Session, type Track } from '../../multitrack/session';
 import { useSessionStore } from '../../multitrack/sessionStore';
 import TrackLane from './TrackLane';
@@ -151,5 +153,41 @@ describe('X6 — the deferred clear (this lot ships it, not lot J)', () => {
 
     expect(store().selectedClipIds).toEqual([]);
     expect(store().selectedClipId).toBeNull();
+  });
+});
+
+// Fix round 1 (coordinator ruling on `MultitrackView.dropTarget.test.tsx`):
+// the current-track mark and the drag-target wash both light up a lane, and
+// if they were the same (or nearly the same) colour a user could not tell
+// "this is where I'll paste" from "this is where the clip will drop". Pinned
+// straight off the SOURCE tokens (`src/index.css`), the same idiom
+// `glass.test.tsx`'s "glass tokens" describe block already uses, rather than
+// off jsdom's inline `style.backgroundColor` strings — those only prove the
+// two `var(--...)` REFERENCES differ, not that the colours they resolve to
+// do.
+describe('K3 — the current-track mark is visually distinct from the drag-target highlight', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../../index.css'), 'utf8');
+
+  function rgbaOf(token: string): [number, number, number, number] {
+    const m = css.match(new RegExp(`--${token}:\\s*rgba\\(([^)]+)\\)`));
+    if (!m) throw new Error(`token --${token} not found in index.css`);
+    const parts = m[1].split(',').map((n) => parseFloat(n.trim()));
+    return [parts[0], parts[1], parts[2], parts[3]];
+  }
+
+  it('--lane-current and --accent-soft are different rgba values', () => {
+    expect(rgbaOf('lane-current')).not.toEqual(rgbaOf('accent-soft'));
+  });
+
+  it('differ in HUE, not just alpha — a fainter copy of the same colour would still read as one signal', () => {
+    const [lr, lg, lb] = rgbaOf('lane-current');
+    const [ar, ag, ab] = rgbaOf('accent-soft');
+
+    // --lane-current is neutral white/grey (255, 255, 255); --accent-soft is
+    // saturated cyan (38, 198, 218). Asserting the RGB channels themselves
+    // differ (not merely the alpha) is what rules out "same wash, dimmer" —
+    // two same-hue overlays at different alpha over a dark lane can still
+    // look like one signal at a glance, where two different hues do not.
+    expect([lr, lg, lb]).not.toEqual([ar, ag, ab]);
   });
 });
