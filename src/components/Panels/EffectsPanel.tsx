@@ -3,6 +3,7 @@ import type { EffectDefinition } from '../../effects/types';
 import { commandReason, getMenuSections, isCommandEnabled, runCommand } from '../../services/menuActions';
 import { usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
+import { useSessionStore } from '../../multitrack/sessionStore';
 import { SectionLabel } from '../UI/glass';
 
 /** Groups effects by category, preserving the getVisibleEffects() sort order. */
@@ -91,6 +92,12 @@ export default function EffectsPanel() {
   // Lot M: the pass lock is module state, not zustand — subscribe so a row's
   // reason/greying is recomputed the instant the lock moves.
   usePassLock();
+  // Lot D (item 4) — see `PipelinePanel.tsx`'s identical comment: every
+  // effect row's `enabled` (`hasPassTarget`) reads the session store's
+  // `session`/`selectedClipIds` in multitrack, which the `useAppStore`
+  // subscription above cannot see.
+  useSessionStore((s) => s.session);
+  useSessionStore((s) => s.selectedClipIds);
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
   const groups = groupByCategory(getVisibleEffects());
   const mixTools = effectsMenuTools();

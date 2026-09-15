@@ -69,6 +69,13 @@ import { registerEffectCommands } from './services/menuActions';
 import { getPipelineGroups } from './services/pipelineTools';
 import { installShortcuts } from './services/shortcuts';
 import { installTestHooks } from './services/testHooks';
+// ---- lot D ----
+// Item 4 (D1/R16) — the clip-scoped working-copy lifecycle. `openTool`/
+// `openEffect` open a slot (only when the command actually qualifies —
+// `beginClipWork` is itself the no-op gate); `closeTool`/`closeEffect` and the
+// App-unmount safety net below release it. See `clipPass.ts`'s own docblock.
+import { beginClipWork, endClipWork, EFFECT_CARD_WORK_ID } from './services/clipPass';
+// ---- /lot D ----
 import { multitrackRecorder } from './multitrack/multitrackRecord';
 import { stopAll } from './services/transportService';
 import { useAppStore } from './stores/appStore';
@@ -317,6 +324,11 @@ export default function App() {
       // Lot C (C1): the tool opens FOREGROUNDED — a fresh open is never
       // backgrounded on arrival.
       setColumnHost('tool');
+      // Lot D (item 4) — opens a clip-scoped working copy when `commandId` is
+      // one of the five hosted tools D1/D5 cover AND multitrack actually
+      // names a valid clip target; a no-op (beyond releasing whatever was
+      // open before) for every other command/view.
+      beginClipWork(commandId);
     },
     [refuseWhileRunning]
   );
@@ -370,6 +382,10 @@ export default function App() {
     setHostedTool(null);
     // Lot C: only clear the column when THIS host owned it.
     setColumnHost((c) => (c === 'tool' ? null : c));
+    // Lot D (item 4) — the tool's own dismissal releases its clip-work slot,
+    // discarding an uncommitted working copy and restoring the view state it
+    // captured (a no-op when this tool never opened one).
+    endClipWork();
   }, []);
 
   /**
@@ -516,6 +532,17 @@ export default function App() {
     };
   }, []);
 
+  // ---- lot D ----
+  // Item 4 — the structural THIRD release (Risk 1), alongside `beginClipWork`'s
+  // own leading `endClipWork()` and `closeTool`/`closeEffect`: if App itself
+  // unmounts with a clip-work slot open, the working document and its store
+  // subscription must not outlive the render tree, the same guarantee lot M's
+  // pass-lock release above already makes for the two module locks.
+  useEffect(() => {
+    return () => endClipWork();
+  }, []);
+  // ---- /lot D ----
+
   // ---- lot B ----
   /**
    * Item 6 / M6 / N16 / lot C (C5, fix round 1) — host an effect in the
@@ -536,6 +563,11 @@ export default function App() {
       setHostedEffect(effectId);
       // Lot C (C1): opens FOREGROUNDED, same as `openTool`.
       setColumnHost('effect');
+      // Lot D (item 4) — the effect card has no command id of its own
+      // (`effect.<id>` is per-registered-effect); `EFFECT_CARD_WORK_ID` is
+      // its slot key. Same qualification as `openTool`: a no-op outside
+      // multitrack or with no valid clip target.
+      beginClipWork(EFFECT_CARD_WORK_ID);
     },
     [refuseWhileRunning]
   );
@@ -547,6 +579,8 @@ export default function App() {
     // Lot C: only clear the column when THIS host owned it — `openTool` may
     // already have taken over by the time this runs.
     setColumnHost((c) => (c === 'effect' ? null : c));
+    // Lot D (item 4) — see `closeTool`'s identical comment.
+    endClipWork();
   }, []);
   // ---- lot C ----
   // Item 3 (C-i, fix round 1) — the orphan rule, now covering BOTH retained

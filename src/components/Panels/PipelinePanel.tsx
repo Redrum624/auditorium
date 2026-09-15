@@ -2,6 +2,7 @@ import { getPipelineGroups } from '../../services/pipelineTools';
 import { commandReason, isCommandEnabled, runCommand } from '../../services/menuActions';
 import { usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
+import { useSessionStore } from '../../multitrack/sessionStore';
 import { SectionLabel } from '../UI/glass';
 
 /**
@@ -39,6 +40,14 @@ export default function PipelinePanel() {
   // Lot M: the pass lock is module state, not zustand — subscribe so a row's
   // reason/greying is recomputed the instant the lock moves.
   usePassLock();
+  // Lot D (item 4) — `hasPassTarget`'s multitrack arm reads the SESSION
+  // store's `session`/`selectedClipIds` (`clipPassTarget()`), which the
+  // `useAppStore` subscription above cannot see: without these two, a row
+  // would grey/un-grey one render LATE the instant a clip is selected —
+  // acceptance 10's freshness pin. Narrow selectors, not the whole session
+  // store: `EditToolbar.tsx`'s identical precedent for the same reason.
+  useSessionStore((s) => s.session);
+  useSessionStore((s) => s.selectedClipIds);
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
   const hasDoc = activeDocumentId !== null;
   const groups = getPipelineGroups();

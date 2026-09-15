@@ -13,7 +13,7 @@
  */
 
 import { useSyncExternalStore } from 'react';
-import { cloneRegion } from '../audio/AudioDocument';
+import { cloneRegion, type AudioDocument } from '../audio/AudioDocument';
 import { stft } from '../dsp/stft';
 import { useAppStore } from '../stores/appStore';
 import { resolveRegion } from './selectionRegion';
@@ -73,18 +73,41 @@ function getSnapshot(): number {
   return version;
 }
 
-export function captureNoiseProfile(): void {
-  const state = useAppStore.getState();
-  const doc = state.documents.find((d) => d.id === state.activeDocumentId);
-  if (!doc) return;
-
-  // T6-1: the last raw member of the clamp family. It was recorded as "same
-  // shape, verified benign" because its only consumer is `cloneRegion`, which
-  // clamps what it slices — so the spectra were always measured over the clamped
-  // region and this reads identically. Benign is not the same as correct: a
-  // second consumer added beside it would have inherited the raw pair, which is
-  // exactly how the other members of this family were born.
-  const { start, end } = resolveRegion(doc, state.selection);
+/**
+ * Lot D (item 4) — `target` is the additive R16-adjacent parameter multitrack
+ * passes explicitly (`menuActions.ts`'s `noise.capture` run body, via
+ * `clipPassTarget()`): with one, the active-doc lookup and the
+ * `resolveRegion(doc, state.selection)` call below are both skipped — the
+ * caller already resolved the region THROUGH `resolveRegion` itself (X4: this
+ * stays the only re-derivation-free path). With no argument the body is
+ * byte-identical to before this lot: every existing caller and test is
+ * unaffected.
+ *
+ * The profile still keys `docId` to the SOURCE document either way (never a
+ * clip-work working copy) — `fileService.ts` clears the profile when that
+ * document closes, and `NoiseReductionEffect` reads only `spectra`, so
+ * capturing from the source and applying on a working copy elsewhere is
+ * correct.
+ */
+export function captureNoiseProfile(target?: { doc: AudioDocument; start: number; end: number }): void {
+  let doc: AudioDocument | undefined;
+  let start: number;
+  let end: number;
+  if (target) {
+    doc = target.doc;
+    ({ start, end } = target);
+  } else {
+    const state = useAppStore.getState();
+    doc = state.documents.find((d) => d.id === state.activeDocumentId);
+    if (!doc) return;
+    // T6-1: the last raw member of the clamp family. It was recorded as "same
+    // shape, verified benign" because its only consumer is `cloneRegion`, which
+    // clamps what it slices — so the spectra were always measured over the clamped
+    // region and this reads identically. Benign is not the same as correct: a
+    // second consumer added beside it would have inherited the raw pair, which is
+    // exactly how the other members of this family were born.
+    ({ start, end } = resolveRegion(doc, state.selection));
+  }
   const region = cloneRegion(doc, start, end);
 
   const spectra = averageMagnitudeSpectra(region);

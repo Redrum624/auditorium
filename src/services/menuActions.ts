@@ -1,4 +1,4 @@
-import { createDocument, docLength, nextId } from '../audio/AudioDocument';
+import { createDocument, docLength, nextId, type AudioDocument } from '../audio/AudioDocument';
 import type { AppState, Marker } from '../stores/appStore';
 import { applyEditorZoom, useAppStore } from '../stores/appStore';
 import {
@@ -76,6 +76,12 @@ import {
   runExclusivePass,
 } from './passLock';
 // ---- /lot M ----
+// ---- lot D ----
+// Item 4 (D1) — the target-resolution rule for multitrack: `clipPassTarget()`
+// is the ONE place that answers "what document/window does a clip-scoped
+// pass act on"; `clipPassReason` is its refusal sentence (D2/D3/D4).
+import { clipPassReason, clipPassTarget } from './clipPass';
+// ---- /lot D ----
 
 export interface MenuCommand {
   id: string;
@@ -179,6 +185,106 @@ function closeReason(): string | undefined {
   return closeBlockedReason() ?? undefined;
 }
 // ---- /lot M ----
+
+// ---- lot D ----
+/**
+ * D1 — whether a command that acts on "the document" has a valid target:
+ * waveform/spectral read the active document (unchanged — D1's non-multitrack
+ * arm); multitrack reads the single selected clip via `clipPassTarget()`
+ * (D2/D3/D4's refusals collapse to "no target" here).
+ */
+function hasPassTarget(s: AppState): boolean {
+  return s.view === 'multitrack' ? typeof clipPassTarget() !== 'string' : activeDoc(s) !== null;
+}
+
+/**
+ * The D2/D3/D4 refusal sentence for a command with no pass target — PURE
+ * (no pass-lock knowledge), matching the formula decisions.md/the brief state
+ * verbatim. `undefined` outside multitrack: D1's arm there is unchanged
+ * behaviour, so there is nothing new to say. Used directly by `noise.capture`,
+ * whose `enabled` does not gate on the pass lock at all (M-d: synchronous,
+ * mouse-only, never in lot M's start-path table) — composing `passReason()`
+ * into IT would show a "pass running" tooltip on a row whose disablement has
+ * nothing to do with the lock. Every OTHER gated row reads `pipelineReason`
+ * below instead, which composes the two.
+ */
+function passTargetReason(s: AppState): string | undefined {
+  if (s.view !== 'multitrack') return undefined;
+  const target = clipPassTarget();
+  return typeof target === 'string' ? clipPassReason(target) : undefined;
+}
+
+/**
+ * Reason precedence, composing lot D with lot M (Risk 2's "the precedence
+ * rule lives in `commandReason`, not in six surfaces" — every UI surface
+ * reads `commandReason(id)` and trusts what comes back rather than composing
+ * either reason itself; this is the one place that composition happens).
+ * A pass already RUNNING is the more urgent, app-wide fact — it blocks every
+ * pass-start door, not just this one — and a missing TARGET is only
+ * actionable once that pass ends, so the busy reason is checked first. Used
+ * by every row whose `enabled` also gates on `passFree()`: `effect.<id>`,
+ * `tempo.detect`, `tempo.match`, `timing.align`, `effects.vocalChain`,
+ * `effects.podcastChain`, `lyrics.align`.
+ */
+function pipelineReason(s: AppState): string | undefined {
+  return passReason() ?? passTargetReason(s);
+}
+
+/**
+ * R16 — the document one of the five whole-document, document-PRODUCING rows
+ * (`edit.separateStems`, `voice.separate`, `edit.transcribe`, `edit.remix`,
+ * `edit.voiceChanger`) targets. D2-a excludes these from `hasPassTarget`'s
+ * disabling (they mint a NEW document and cannot express "over that clip's
+ * span" — D1's window has nothing for them to absorb), but excluding them
+ * from DISABLING is not the same as excluding them from the WRONG-DOCUMENT
+ * defect: their dialogs resolve their input from `activeDocumentId`
+ * (unchanged by this lot — see each dialog's own `activeDoc` selector), and
+ * in multitrack that id is whatever was last active, which is not
+ * necessarily the SELECTED CLIP's own source document.
+ *
+ * In multitrack, prefers the selected clip's source document
+ * (`clipPassTarget()`'s `.doc` — the input `clipPassTarget()` resolves, never
+ * its window: these five cannot express a sub-document span) when one
+ * resolves; falls back to the active document otherwise — unchanged
+ * behaviour with no clip selected (D2-a's exemption: these five keep working
+ * right where a landing like `stemLanding.ts` leaves the user, with no clip
+ * selected and the freshly landed document active) or with an ambiguous
+ * selection (`multi-clip`/`orphan-clip`/`empty-window` — these five were
+ * never clip-aware before this lot, and D2-a did not ask them to start
+ * refusing on a selection they cannot act on anyway). Outside multitrack,
+ * identical to today: the active document, D1's arm unchanged.
+ */
+function multitrackToolDoc(s: AppState): AudioDocument | null {
+  if (s.view === 'multitrack') {
+    const target = clipPassTarget();
+    if (typeof target !== 'string') return target.doc;
+  }
+  return activeDoc(s);
+}
+
+/**
+ * R16 — call at the TOP of one of the five rows' `run()`, before the dialog
+ * opens. Makes the selected clip's source document active first (mirroring
+ * `showEditorView`'s identical "activate first, and only when it actually
+ * differs" guard — no gratuitous `activationReset` when it is already
+ * active), so the dialog's own `activeDocumentId` read resolves to the clip
+ * the user selected rather than whatever was active before. A no-op outside
+ * multitrack or with no resolvable clip target — see `multitrackToolDoc`'s
+ * docblock for when that is.
+ */
+function primeMultitrackDocTarget(): void {
+  const target = clipPassTarget();
+  if (typeof target === 'string') return;
+  const app = useAppStore.getState();
+  if (app.activeDocumentId !== target.doc.id) app.setActiveDocument(target.doc.id);
+}
+
+/** D1 — `effects.coverChain`'s own multitrack refusal (verbatim, X3: not an
+ * identity value). See that command's own docblock for why it is disabled
+ * outright rather than gated on a clip target. */
+const COVER_CHAIN_MULTITRACK_REASON =
+  'Cover Chain builds a session of its own — switch to Waveform to run it.';
+// ---- /lot D ----
 
 /** Fixed section/item layout. Ids are resolved against the registry live at
  * `getMenuSections()` call time, so registering a command after this module
@@ -1095,8 +1201,12 @@ export function registerEffectCommands(): void {
     cmds.push({
       id: `effect.${effect.id}`,
       label: effect.name,
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      // D1/D2 — was `activeDoc(s) !== null`, which in multitrack read
+      // whatever document happened to be active regardless of any clip
+      // selection: exactly the invisible-edit defect v1.36 removed,
+      // reintroduced by a different door. `hasPassTarget` restores D1's rule.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openEffectDialog(effect.id),
     });
   }
@@ -1165,9 +1275,28 @@ function registerNoiseAndViewCommands(): void {
     {
       id: 'noise.capture',
       label: 'Capture Noise Print',
-      enabled: (s) => activeDoc(s) !== null && s.selection !== null,
+      // D1/D2 — multitrack has no `selection` concept of its own (F1); a
+      // resolved clip target stands in for it there, so the OR's multitrack
+      // arm needs nothing further once `hasPassTarget` already confirmed one.
+      enabled: (s) => hasPassTarget(s) && (s.view === 'multitrack' || s.selection !== null),
+      // M-d: NOT gated on the pass lock — synchronous, mouse-only, never in
+      // lot M's start-path table — so this reads the PURE target reason, not
+      // `pipelineReason` (which would misattribute a disablement that has
+      // nothing to do with the lock to "a pass is running").
+      reason: passTargetReason,
       run: async () => {
-        captureNoiseProfile();
+        // R16-adjacent (D1) — pass the resolved clip window straight through
+        // in multitrack rather than letting `captureNoiseProfile()` re-derive
+        // it from `activeDocumentId`/`selection`, neither of which multitrack
+        // maintains for this purpose.
+        const s = useAppStore.getState();
+        if (s.view === 'multitrack') {
+          const target = clipPassTarget();
+          if (typeof target === 'string') return; // enabled() already refused this
+          captureNoiseProfile({ doc: target.doc, start: target.start, end: target.end });
+        } else {
+          captureNoiseProfile();
+        }
         void window.electronAPI?.showMessageBox({
           type: 'info',
           title: 'Noise Print',
@@ -1552,10 +1681,17 @@ function registerTempoCommands(): void {
     {
       id: 'tempo.detect',
       label: 'Detect Tempo',
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => {
-        const d = activeDoc(useAppStore.getState());
+        // D1 — `tempo.detect` opens no hosted card (no `beginClipWork` seam
+        // to mint a working document for it), and it WRITES nothing to the
+        // document itself (it caches a per-document tempo analysis entry
+        // keyed by doc id): it needs the right document and no working copy.
+        // Multitrack reads the selected clip's own SOURCE document, not a
+        // copy — analysing the source is exactly what should be cached.
+        const t = clipPassTarget();
+        const d = typeof t === 'string' ? activeDoc(useAppStore.getState()) : t.doc;
         if (!d) return;
         // Lot M: `tempo.detect` runs with no hosted card behind it (no
         // dialog, no `moduleLock`), so it is one of the three bodies that
@@ -1570,8 +1706,13 @@ function registerTempoCommands(): void {
     {
       id: 'tempo.match',
       label: 'Match Tempo',
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      // D1 — `tempo.match` IS a `CLIP_WORK_COMMANDS` member: `App.tsx`'s
+      // `openTool` mints and activates a working copy before `TempoDialog`
+      // ever renders, so the dialog's own `activeDoc` read (unchanged, per
+      // this lot's process) already resolves to the right document. Nothing
+      // to prime here.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openTempoDialog(),
     },
     {
@@ -1583,8 +1724,9 @@ function registerTempoCommands(): void {
       // `EffectDefinition.hidden`).
       id: 'timing.align',
       label: 'Align Vocal Timing',
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openAlignTimingDialog(),
     },
   ]);
@@ -1605,12 +1747,20 @@ function registerRemixCommands(): void {
     {
       id: 'edit.remix',
       label: 'Auto-Remix',
+      // R16 — a document-PRODUCING row: D2-a excludes it from `hasPassTarget`
+      // (it mints a NEW document; D1's clip WINDOW is not a target it can
+      // express), but it still needs the RIGHT document, not whatever is
+      // merely active — `multitrackToolDoc` prefers the selected clip's
+      // source in multitrack.
       enabled: (s) => {
-        const d = activeDoc(s);
+        const d = multitrackToolDoc(s);
         return d !== null && docLength(d) > 0 && passFree();
       },
       reason: passReason,
-      run: async () => openRemixDialog(),
+      run: async () => {
+        primeMultitrackDocTarget();
+        openRemixDialog();
+      },
     },
   ]);
 }
@@ -1630,12 +1780,16 @@ function registerStemCommands(): void {
     {
       id: 'edit.separateStems',
       label: 'Separate into Stems',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
+        const d = multitrackToolDoc(s);
         return d !== null && docLength(d) > 0 && passFree();
       },
       reason: passReason,
-      run: async () => openSeparateDialog('stems'),
+      run: async () => {
+        primeMultitrackDocTarget();
+        openSeparateDialog('stems');
+      },
     },
     // D4 — Separate Voice. The SAME separation run as the row above, landed as
     // two tracks (Voice + Backing) instead of five, so it is registered here
@@ -1647,12 +1801,16 @@ function registerStemCommands(): void {
     {
       id: 'voice.separate',
       label: 'Separate Voice',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
+        const d = multitrackToolDoc(s);
         return d !== null && docLength(d) > 0 && passFree();
       },
       reason: passReason,
-      run: async () => openSeparateDialog('voice'),
+      run: async () => {
+        primeMultitrackDocTarget();
+        openSeparateDialog('voice');
+      },
     },
   ]);
 }
@@ -1691,12 +1849,18 @@ function registerTranscribeCommands(): void {
     {
       id: 'edit.transcribe',
       label: 'Transcribe',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
+        const d = multitrackToolDoc(s);
         return d !== null && docLength(d) > 0 && passFree();
       },
       reason: passReason,
       run: async () => {
+        // R16 — primed BEFORE the existing-transcript check below, so in
+        // multitrack that check asks about the SELECTED CLIP's document too:
+        // unprimed, this reveal arm would read whatever was merely active,
+        // showing (or failing to show) the wrong document's transcript.
+        primeMultitrackDocTarget();
         const id = useAppStore.getState().activeDocumentId;
         if (id !== null && getTranscript(id) !== null) {
           focusTranscriptPanel();
@@ -1724,12 +1888,16 @@ function registerVoiceCommands(): void {
     {
       id: 'edit.voiceChanger',
       label: 'Voice Changer',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
+        const d = multitrackToolDoc(s);
         return d !== null && docLength(d) > 0 && passFree();
       },
       reason: passReason,
-      run: async () => openVoiceChangerDialog(),
+      run: async () => {
+        primeMultitrackDocTarget();
+        openVoiceChangerDialog();
+      },
     },
   ]);
 }
@@ -1751,8 +1919,9 @@ function registerVocalChainCommands(): void {
     {
       id: 'effects.vocalChain',
       label: 'Vocal Chain',
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openVocalChainDialog(),
     },
   ]);
@@ -1773,8 +1942,18 @@ function registerCoverChainCommands(): void {
     {
       id: 'effects.coverChain',
       label: 'Cover Chain',
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      // D1 — a THIRD case, disabled in multitrack OUTRIGHT rather than
+      // gated on a clip target: `runCoverJourney` replaces the WHOLE
+      // session (`coverJourney.ts`'s `useSessionStore.setState({session,…})`
+      // + `clearSessionHistory()` + `setView('multitrack')`), so there is no
+      // clip-scoped shape for it to express at all — D1 applied, not a
+      // deviation (F1's shape: a command that cannot express the target is
+      // refused). `passFree()` is KEPT here (a deliberate correction to the
+      // brief's literal `s.view !== 'multitrack' && activeDoc(s) !== null`,
+      // which drops it): dropping the pass-lock gate would let Cover Chain
+      // start while another pass runs, an M1 regression X1 forbids.
+      enabled: (s) => s.view !== 'multitrack' && activeDoc(s) !== null && passFree(),
+      reason: (s) => passReason() ?? (s.view === 'multitrack' ? COVER_CHAIN_MULTITRACK_REASON : undefined),
       run: async () => openCoverChainDialog(),
     },
   ]);
@@ -1795,8 +1974,9 @@ function registerPodcastChainCommands(): void {
     {
       id: 'effects.podcastChain',
       label: 'Podcast Chain',
-      enabled: (s) => activeDoc(s) !== null && passFree(),
-      reason: passReason,
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openPodcastChainDialog(),
     },
   ]);
@@ -1823,11 +2003,21 @@ function registerAlignLyricsCommands(): void {
     {
       id: 'lyrics.align',
       label: 'Align Lyrics',
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      // The non-multitrack arm keeps its own `docLength(d) > 0` clause —
+      // `timing.align`'s `hasPassTarget` alone asks only for a document;
+      // this one hands the region to a model, and an empty document has
+      // nothing to align. The multitrack arm needs no separate check:
+      // `clipPassTarget()`'s `empty-window` refusal already covers it
+      // (D2/D4's "this clip reads nothing from its source file").
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0 && passFree();
+        if (s.view !== 'multitrack') {
+          const d = activeDoc(s);
+          return d !== null && docLength(d) > 0 && passFree();
+        }
+        return hasPassTarget(s) && passFree();
       },
-      reason: passReason,
+      reason: pipelineReason,
       run: async () => openAlignLyricsDialog(),
     },
   ]);

@@ -816,4 +816,28 @@ describe('the card names the region Apply will write (final round 3)', () => {
 
     expect(screen.queryByTestId('effect-scope')).toBeNull();
   });
+
+  // Lot D (item 4), acceptance 11 — the multitrack scope line needs NO new
+  // code (brief §6): a clip-scoped working copy (`clipPass.ts`'s
+  // `beginClipWork`) is minted via `addDocument`, which makes it active AND
+  // clears `selection` — the exact state this dialog already reads via
+  // `resolveRegion(activeDocument, selection)`. Simulated directly here
+  // (rather than through the full working-copy lifecycle) because that state
+  // — an active document, no selection — is the whole of what this line
+  // depends on; `clipPass.test.ts` pins that `beginClipWork` actually
+  // produces it.
+  it('reads the whole working document once it is active, with no multitrack-specific code (acceptance 11)', () => {
+    const workingCopy = createDocument({
+      name: 'Clip Edit 1',
+      sampleRate: 44100,
+      channels: [new Float32Array(44100)],
+    });
+    act(() => {
+      useAppStore.getState().addDocument(workingCopy); // active; selection: null
+    });
+    render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
+
+    expect(scope()).toHaveTextContent('Whole file — 0:01.000');
+    expect(scope()).not.toHaveTextContent('Selection');
+  });
 });

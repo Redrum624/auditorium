@@ -14,6 +14,8 @@ import { getPipelineGroups } from '../../services/pipelineTools';
 import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { createDocument, type AudioDocument } from '../../audio/AudioDocument';
+import { createClip } from '../../multitrack/session';
+import { useSessionStore } from '../../multitrack/sessionStore';
 
 // The REAL registry — every predicate under test has to be the menu's own —
 // with only the runner spied: a click has to reach `runCommand(id)`, and
@@ -327,5 +329,40 @@ describe('EffectsPanel — a running pass disables every effect row (lot M)', ()
     act(() => {
       release!();
     });
+  });
+});
+
+// Lot D (item 4) — the same freshness pin `PipelinePanel.test.tsx` carries
+// (acceptance 10), for this card's identical two selectors: `hasPassTarget`'s
+// multitrack arm reads the SESSION store, which the pre-existing
+// `useAppStore((s) => s)` subscription cannot see on its own.
+describe('EffectsPanel — session-store freshness (lot D, item 4)', () => {
+  it('re-enables the first effect row the render after a clip is selected outside React', () => {
+    useSessionStore.getState().newSession(44100);
+    const doc = addDoc();
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+      useSessionStore.getState().addTrack();
+    });
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: doc.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    act(() => {
+      useSessionStore.getState().addClip(trackId, clip);
+    });
+
+    render(<EffectsPanel />);
+    const row = () => within(screen.getAllByTestId('effects-item')[0]).getByRole('button');
+    expect(row()).toBeDisabled();
+
+    act(() => {
+      useSessionStore.getState().setSelectedClips([clip.id]);
+    });
+
+    expect(row()).not.toBeDisabled();
   });
 });

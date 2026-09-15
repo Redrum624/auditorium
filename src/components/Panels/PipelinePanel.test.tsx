@@ -5,6 +5,8 @@ import { isCommandEnabled, registerCommands, runCommand } from '../../services/m
 import { getPipelineGroups, PIPELINE_GROUP_TITLES } from '../../services/pipelineTools';
 import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { makeInitialState, useAppStore } from '../../stores/appStore';
+import { createClip } from '../../multitrack/session';
+import { useSessionStore } from '../../multitrack/sessionStore';
 
 jest.mock('../../services/menuActions', () => ({
   ...jest.requireActual('../../services/menuActions'),
@@ -209,5 +211,43 @@ describe('PipelinePanel — a running pass greys every row and names itself (lot
     act(() => {
       release!();
     });
+  });
+});
+
+// Lot D (item 4), acceptance 10 — freshness: `hasPassTarget`'s multitrack arm
+// reads the SESSION store (`session`/`selectedClipIds`), which the card's
+// pre-existing `useAppStore((s) => s)` subscription cannot see on its own;
+// without `PipelinePanel.tsx`'s own two narrow selectors this would grey/
+// un-grey one render late. `effects.vocalChain`, not `tempo.detect`: the
+// "follows the registry" test above permanently stubs
+// `getPipelineGroups()[0].commands[0]` (`tempo.detect`) for the rest of this
+// file's run.
+describe('PipelinePanel — session-store freshness (lot D, item 4)', () => {
+  it('re-enables effects.vocalChain the render after a clip is selected outside React', () => {
+    useSessionStore.getState().newSession(44100);
+    const doc = addDoc();
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+      useSessionStore.getState().addTrack();
+    });
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: doc.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    act(() => {
+      useSessionStore.getState().addClip(trackId, clip);
+    });
+
+    render(<PipelinePanel />);
+    expect(button('effects.vocalChain')).toBeDisabled();
+
+    act(() => {
+      useSessionStore.getState().setSelectedClips([clip.id]);
+    });
+
+    expect(button('effects.vocalChain')).not.toBeDisabled();
   });
 });

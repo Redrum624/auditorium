@@ -121,6 +121,46 @@ describe('noiseProfile', () => {
     expect(getNoiseProfileVersion()).toBe(v0);
   });
 
+  // Lot D (item 4), acceptance 12 — the additive `target` parameter
+  // (`menuActions.ts`'s `noise.capture` run body passes the resolved clip
+  // window straight through in multitrack, per R16-adjacent wiring).
+  it('captures from an explicit target, keyed to that document (Task 4 / acceptance 12)', () => {
+    const left = noiseBuffer(240_000, 987);
+    const right = noiseBuffer(240_000, 654);
+    const doc = createDocument({ name: 'source.wav', sampleRate: 44100, channels: [left, right] });
+    // Not added to the store, not active — this is the SOURCE document a
+    // clip-scoped run targets directly, exactly as `clipPassTarget()` would
+    // hand it over; capturing correctly with no active/store document at all
+    // is the point of the additive parameter.
+
+    captureNoiseProfile({ doc, start: 24_000, end: 68_100 });
+
+    const profile = getNoiseProfile();
+    expect(profile).not.toBeNull();
+    expect(profile!.docId).toBe(doc.id);
+    expect(profile!.docSampleRate).toBe(44100);
+    const expected = averageMagnitude(left.subarray(24_000, 68_100));
+    for (let k = 0; k < expected.length; k += 32) {
+      expect(profile!.spectra[0][k]).toBeCloseTo(expected[k], 4);
+    }
+  });
+
+  it('the zero-argument call is unchanged by the additive target parameter', () => {
+    const mono = noiseBuffer(20000, 321);
+    const doc = createDocument({ name: 'm.wav', sampleRate: SR, channels: [mono] });
+    useAppStore.getState().addDocument(doc);
+    useAppStore.getState().setSelection({ start: 4096, end: 24576 });
+
+    captureNoiseProfile();
+
+    const profile = getNoiseProfile();
+    expect(profile!.docId).toBe(doc.id);
+    const expected = averageMagnitude(mono.subarray(4096, 24576));
+    for (let k = 0; k < expected.length; k += 32) {
+      expect(profile!.spectra[0][k]).toBeCloseTo(expected[k], 4);
+    }
+  });
+
   it('useNoiseProfileVersion re-renders subscribers on capture/clear (Task F8)', () => {
     const mono = noiseBuffer(8192, 777);
     const doc = createDocument({ name: 'm.wav', sampleRate: SR, channels: [mono] });
