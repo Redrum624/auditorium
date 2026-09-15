@@ -18,6 +18,8 @@ import { applyEditorZoom, defaultZoom, useAppStore } from '../../stores/appStore
 import { editorLaneWidth } from '../../services/editorViewport';
 import { sessionLaneWidth } from '../../multitrack/sessionViewport';
 import { anchoredZoom } from '../../services/zoomAnchor';
+// A1-A6: the page-flip playhead follow, shared by both position pumps below.
+import { createPlayheadFollow, watchPointerActivity } from '../../services/playheadFollow';
 import { ZOOM_FACTOR } from '../Editor/useEditorGestures';
 import { ChromePill } from '../UI/glass';
 
@@ -311,27 +313,66 @@ export default function Toolbar() {
   }, []);
 
   // Waveform/spectral position pump (only while that view is playing).
+  // A1-A6: also runs the page-flip follow, so a playhead that scrolls off the
+  // right (or left, on a loop wrap) edge pages the view over instead of
+  // stalling out of sight.
   useEffect(() => {
     if (isMultitrack || playback.state !== 'playing') return;
+    const follow = createPlayheadFollow();
+    const pointer = watchPointerActivity();
     let raf = 0;
     const tick = () => {
-      useAppStore.getState().setPlayback({ positionSample: playbackEngine.getPositionSample() });
+      const positionSample = playbackEngine.getPositionSample();
+      useAppStore.getState().setPlayback({ positionSample });
+      const viewport = useAppStore.getState().zoom;
+      const next = follow.next({
+        positionSample,
+        viewport,
+        laneWidth: editorLaneWidth(),
+        pointerBusy: pointer.isDown(),
+      });
+      if (next !== null) {
+        applyEditorZoom({ samplesPerPixel: viewport.samplesPerPixel, scrollSample: next });
+        follow.committed(useAppStore.getState().zoom);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      pointer.dispose();
+    };
   }, [playback.state, isMultitrack]);
 
   // Multitrack position pump (only while the multitrack view is playing).
+  // A1-A6: the same page-flip follow as the editor pump above — see its
+  // comment; the two pumps move together (X2).
   useEffect(() => {
     if (!isMultitrack || mtPlayState !== 'playing') return;
+    const follow = createPlayheadFollow();
+    const pointer = watchPointerActivity();
     let raf = 0;
     const tick = () => {
-      useSessionStore.getState().setMtPlayheadSample(multitrackPlayer.getPositionSample());
+      const positionSample = multitrackPlayer.getPositionSample();
+      useSessionStore.getState().setMtPlayheadSample(positionSample);
+      const viewport = useSessionStore.getState().mtZoom;
+      const next = follow.next({
+        positionSample,
+        viewport,
+        laneWidth: sessionLaneWidth(),
+        pointerBusy: pointer.isDown(),
+      });
+      if (next !== null) {
+        applySessionZoom({ samplesPerPixel: viewport.samplesPerPixel, scrollSample: next });
+        follow.committed(useSessionStore.getState().mtZoom);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      pointer.dispose();
+    };
   }, [isMultitrack, mtPlayState]);
 
   // Live multitrack parameters: while the multitrack view is playing, push track
