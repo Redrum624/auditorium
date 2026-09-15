@@ -85,4 +85,33 @@ describe('a press on an actual control does not set it via the header handler', 
 
     expect(store().currentTrackId).toBeNull();
   });
+
+  // Fix round 3 (BLOCKER) — icon-only buttons (Remove, the envelope toggle)
+  // render a lucide `<svg>` child, and in a REAL browser `e.target` for a
+  // press on the glyph is that svg (or a `<path>` inside it), not the
+  // `<button>` itself. The earlier `target.tagName === 'BUTTON'` guard was
+  // blind to this: an `SVGElement` is not an `HTMLElement`, so it fell
+  // through and hijacked the current track. Dispatched on the SVG CHILD,
+  // never on the button — that is the whole point of this test.
+  it('the Remove-track button’s SVG glyph, pressed directly (not the button)', () => {
+    const { getByLabelText } = render(<TrackHeader track={trackB} />);
+    const button = getByLabelText('Remove track');
+    const svg = button.querySelector('svg');
+    expect(svg).not.toBeNull();
+
+    press(svg as Element);
+
+    expect(store().currentTrackId).toBeNull();
+  });
+
+  it('the Remove-track button’s SVG PATH, pressed directly (the deepest possible target)', () => {
+    const { getByLabelText } = render(<TrackHeader track={trackB} />);
+    const button = getByLabelText('Remove track');
+    const path = button.querySelector('svg path');
+    expect(path).not.toBeNull();
+
+    press(path as Element);
+
+    expect(store().currentTrackId).toBeNull();
+  });
 });

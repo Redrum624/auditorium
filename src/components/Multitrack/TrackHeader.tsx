@@ -129,10 +129,20 @@ export default function TrackHeader({ track }: { track: Track }) {
   // test), so the two cannot collide.
   const onHeaderPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
+    // Fix round 3 (BLOCKER) — `target instanceof HTMLElement &&
+    // target.tagName === 'BUTTON'` missed every icon-only button (Remove,
+    // the envelope toggle): both render a lucide `<svg>` child, and in a
+    // real browser `e.target` for a press on the glyph is that `<svg>` (or a
+    // `<path>` inside it) — an `SVGElement`, not an `HTMLElement` — so the
+    // old guard was simply false and the press fell through to
+    // `setCurrentTrack`, hijacking the current track off a Remove-track or
+    // envelope-toggle press. `closest('button, input')` — the same idiom
+    // `MultitrackView.tsx`'s `resolveTrackAt` already uses for
+    // `[data-track-id]` — walks up from WHATEVER element was actually
+    // pressed (the svg/path included) to the nearest real control,
+    // regardless of how deep the press landed inside it.
     const target = e.target;
-    if (target instanceof HTMLElement && (target.tagName === 'INPUT' || target.tagName === 'BUTTON')) {
-      return;
-    }
+    if (target instanceof Element && target.closest('button, input')) return;
     setCurrentTrack(track.id);
   };
 

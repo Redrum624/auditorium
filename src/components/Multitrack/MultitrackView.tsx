@@ -436,6 +436,19 @@ export default function MultitrackView() {
       // always true for it, so a Shift press-and-release still deselects
       // (X6, fix round 2).
       if (rec.deferredClear) setSelectedClip(null);
+      // Item 3, fix round 3 — the GUTTER has no `TrackLane` to run its own
+      // gap-clearing check (`TrackLane.tsx`'s D3 block, which clears a
+      // standing gap unconditionally on modifiers whenever the press is not
+      // INSIDE that gap's own span on its own lane). A gutter press can
+      // never be "inside" any track's gap band — there is no lane under it
+      // — so there is no exception to preserve, and the gutter's own
+      // click-away must clear unconditionally too, or a plain gutter click
+      // would drop the clip selection while leaving a selected gap painted:
+      // two click-away surfaces with different results, exactly the
+      // asymmetry item 6 existed to remove. `rec.targetEl === scrollRef.current`
+      // is the same test `isScrollerBg` used at press time, re-read off the
+      // stored target rather than a second stored flag.
+      if (rec.targetEl === scrollRef.current) setSelectedGap(null);
       return;
     }
     // K1's commit — the swept clip selection — is `'add'`/`'replace'` only.

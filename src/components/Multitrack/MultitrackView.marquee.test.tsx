@@ -348,7 +348,16 @@ describe('the gutter (scroller background) is consistent with the lane, by an in
     expect(store().selectedClipIds).toEqual([b1, b2]);
   });
 
-  it('a Shift gutter click does NOT clear either', () => {
+  // Fix round 3, item 4(b) — honesty label. This is a PIN, not evidence: the
+  // PRE-fix-round-2 code (which bailed on `mode === 'range'` before writing
+  // any record at all) also left `[b1, b2]` untouched here, for an unrelated
+  // reason (nothing ran, full stop) that happens to coincide with the rule
+  // this test names ("Shift-gutter specifically does not clear"). A revert
+  // of THIS test's own production line (the gutter's inverted `deferredClear`
+  // formula) would not turn it red on its own — only reverting fix round 2's
+  // Shift-record fix together with it would. Kept anyway because the OUTCOME
+  // it states is still a real, load-bearing fact about the shipped behaviour.
+  it('a Shift gutter click does NOT clear either (PIN — see the comment above; not independently discriminating)', () => {
     const { overlay, scroller } = renderView();
     act(() => {
       store().setSelectedClip(b1);
@@ -361,9 +370,32 @@ describe('the gutter (scroller background) is consistent with the lane, by an in
 
     expect(store().selectedClipIds).toEqual([b1, b2]);
   });
+
+  // Fix round 3, item 3 — the gutter has no `TrackLane` to run its own
+  // unconditional gap-clear (`TrackLane.tsx`'s D3 block), so before this fix
+  // a plain gutter click dropped the clip selection but left a selected gap
+  // painted: two click-away surfaces, two different outcomes, exactly the
+  // asymmetry item 6 existed to remove.
+  it('a PLAIN gutter click also clears a standing gap band', () => {
+    const { overlay, scroller } = renderView();
+    act(() => {
+      store().setSelectedGap({ trackId: bId, startSample: 130_000, endSample: 200_000 });
+    });
+
+    firePointer(scroller, 'pointerdown', { clientX: atLaneX(300), clientY: 150 });
+    firePointer(overlay, 'pointerup', { clientX: atLaneX(300), clientY: 150 });
+
+    expect(store().selectedGap).toBeNull();
+  });
 });
 
-describe('J7 — Shift is reserved for lot J; lot K starts no gesture under it', () => {
+// Fix round 3, item 4(c) — renamed. K DOES write a record under Shift now
+// (fix round 2, X6): the stale title claimed K "starts no gesture under it"
+// at all, which stopped being true the moment the Shift blocker was fixed.
+// What is still true, and what this block actually pins, is narrower: Shift
+// draws no RUBBER-BAND rectangle and commits no CLIP SELECTION — the sweep
+// itself (whatever lot J draws and selects) is not K's to build.
+describe('J7 — Shift draws no rubber-band and commits no clip selection; the sweep itself is lot J’s', () => {
   it('a Shift-drag across a1 and c1 selects nothing and leaves the standing selection alone', () => {
     const { overlay, lanes } = renderView();
     act(() => {
@@ -476,17 +508,35 @@ describe('risk 4 — a header control press starts no marquee (the positive targ
   });
 });
 
-describe('risk 1 — the gap double-click still works with the capture-phase gate installed', () => {
+describe('risk 1 — the capture-phase gate does not disturb the gap double-click', () => {
   // Fix round 2 (item 4) — the ORIGINAL version of this test fired a bare
   // `dblclick` with no preceding `pointerdown` at all, so
-  // `onOverlayPointerDownCapture` never ran and the test passed identically
-  // whether capture was taken on `e.target` or on `overlayRef`. It proved
-  // nothing about the hazard it names. This version dispatches the REAL
-  // sequence a double-click is — two full sub-threshold press/release
+  // `onOverlayPointerDownCapture` never ran. This version dispatches the
+  // REAL sequence a double-click is — two full sub-threshold press/release
   // cycles, THEN the native `dblclick` — so the capture-phase gate genuinely
   // takes and releases pointer capture on the lane twice before the
   // double-click resolves, exercising the actual code path.
-  it('a double-click on empty lane space (the real press/release x2 sequence) still selects the gap', () => {
+  //
+  // Fix round 3, item 4(a) — HONESTY CORRECTION on what this proves. It does
+  // NOT and CANNOT prove the retargeting hazard is safe: jsdom implements no
+  // event retargeting under pointer capture, so this test would pass
+  // identically even if capture were taken on `overlayRef` instead of
+  // `e.target` — there is no jsdom mechanism that could turn it red for that
+  // regression. What it DOES prove is narrower and real: that installing the
+  // capture-phase gate (`onOverlayPointerDownCapture`, taking and releasing
+  // capture on the lane twice) does not itself disturb `TrackLane`'s
+  // `onDoubleClick` resolution — no swallowed event, no `e.target` corrupted
+  // by THIS code's own doing.
+  //
+  // The retargeting hazard itself is SETTLED, by two independent facts, not
+  // by this test: (1) capture is taken on `e.target`, which for a gap
+  // double-click IS the lane element carrying `onDoubleClick` — retargeting
+  // to "the element capture was taken on" is an identity operation for this
+  // specific gesture, whichever way Blink implements it; (2) the packaged
+  // Playwright smoke (run against real Chromium, not jsdom) exercised the
+  // full D3 gap flow — select, Escape, Delete, Ctrl+Z — and passed. Do not
+  // re-open this as a jsdom problem; it structurally cannot be one.
+  it('two real sub-threshold press/release cycles, then the native dblclick, still select the gap', () => {
     const { lanes } = renderView();
     // Track B's leading gap: [0, 100_000) — before b1.
     const x = atLaneX(500); // sample 50_000, inside the leading gap
