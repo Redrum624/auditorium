@@ -74,6 +74,12 @@ export const SESSION_UNDO_KEY = 'session\u0000multitrack';
  * entry's retained cost is a few KB of structural objects (measured in
  * sessionUndo.test.ts). That is why entries carry no `bytes` — the same
  * exemption `pushMarkerUndo` documents for marker-list snapshots.
+ *
+ * G6 (item 7) — `SessionState.lastSplit`, the "last cut point" anchor, is NOT
+ * on this list and never rides the snapshot: `sessionStore.ts`'s `apply`
+ * binding actively CLEARS it on every undo and redo instead, so an anchor can
+ * never be re-armed for a cut a restore just removed (or made ambiguous by
+ * bringing back ids the live session had moved past).
  */
 export interface SessionSnapshot {
   session: Session;

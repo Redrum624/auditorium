@@ -12,7 +12,7 @@ import { useAppStore } from '../stores/appStore';
 import { pushUndo } from './undoHistory';
 import { getClipboard, setClipboard } from './clipboard';
 import { resolveRegion } from './selectionRegion';
-import { cursorSegment } from './segments';
+import { cursorSegment, segmentAt } from './segments';
 import { resampleChannel } from '../dsp/resample';
 
 interface AfterState {
@@ -378,18 +378,53 @@ export function cutSelection(): void {
  * as ONE History entry. Positions are consumed verbatim, never snapped (N1);
  * the resolved selection edges are used, not the raw pair. A position at 0 or
  * at the document end is implicit (M3) and a position that already carries a
- * marker is skipped; when nothing is left nothing is recorded. Selection and
- * cursor are not touched.
+ * marker is skipped; when nothing is left nothing is recorded (and the anchor
+ * below is left untouched — a press that cuts nothing has nothing to anchor).
+ *
+ * Item 7 (G1-G6): what happens to the SELECTION after that marker write, now
+ * narrowed from "selection and cursor are not touched" (the original
+ * contract, overturned here per X1) to this:
+ *
+ *  - SELECTION ARM (a selection was standing): still writes no selection —
+ *    the standing selection already IS the span between the two cut points it
+ *    just marked (G1, pinned at `editOps.test.ts`'s "with a selection" case).
+ *    The anchor becomes this cut's own trailing edge (the resolved selection's
+ *    `end`); when that edge is the document end it carries no marker (the
+ *    `fresh` filter above skips implicit positions), so a later split's anchor
+ *    gate fails and falls back to no-anchor, correctly.
+ *  - CURSOR ARM: honours `lastSplitMarker` (G6) only when it names THIS
+ *    document and a marker still stands at its `positionSample` in the
+ *    PRE-split marker list — an undo of the split that made it, the marker
+ *    being moved/deleted, or a document switch (`activationReset` clears the
+ *    field outright) all read as "no anchor". When live, the two markers
+ *    (the anchor's and this cut's, `p`) bound a segment via `segmentAt` — the
+ *    ONE segment definition this module shares with the double-click gesture
+ *    and `cutSelection` (G5: "the pieces are marker-bounded segments") — found
+ *    by probing one sample INSIDE the newer cut, on the anchor's side of it
+ *    (leftward cuts, G3, probe the other direction). `p` can never equal the
+ *    anchor's position: `taken` already excluded it above.
+ *
+ * Both arms finish by writing `lastSplitMarker` to this cut's own position, so
+ * a THIRD cut keeps narrowing to the newest pair (G1's "every later split").
+ * The selection write is deliberately OUTSIDE the undo entry: `pushMarkerUndo`
+ * snapshots only the marker list, and undoing a split restores the markers
+ * while leaving the selection exactly where this call left it. One visible
+ * consequence: after a second cut, `Ctrl+X` (`cutSelection`) cuts the selected
+ * MIDDLE PIECE rather than the cursor's segment (`editOps.ts`'s `cutSelection`,
+ * `menuActions.ts`'s `edit.cut`) — the flow item 7 asks for.
  */
 export function splitAtCursor(): void {
   const doc = activeDoc();
   if (!doc) return;
   const s = useAppStore.getState();
   const length = docLength(doc);
+  const hasSelection = s.selection !== null;
   let positions: number[];
+  let selectionEnd = 0; // meaningful only when hasSelection
   if (s.selection) {
     const { start, end } = resolveSelection(doc, s.selection);
     positions = [start, end];
+    selectionEnd = end;
   } else {
     positions = [Math.min(Math.max(s.cursorSample, 0), length)];
   }
@@ -403,6 +438,27 @@ export function splitAtCursor(): void {
   }
   const after = useAppStore.getState().markers[doc.id] ?? [];
   pushMarkerUndo('Split', doc.id, before, after);
+
+  if (hasSelection) {
+    // Selection arm (G1/G2): nothing to select, the standing selection is
+    // already the span. Anchor to its trailing edge.
+    s.setLastSplitMarker({ documentId: doc.id, positionSample: selectionEnd });
+    return;
+  }
+
+  // Cursor arm.
+  const p = fresh[0];
+  const anchor = s.lastSplitMarker;
+  const anchorLive =
+    anchor !== null &&
+    anchor.documentId === doc.id &&
+    before.some((m) => m.positionSample === anchor.positionSample);
+  if (anchorLive && anchor !== null) {
+    const probe = anchor.positionSample < p ? p - 1 : p + 1;
+    const mid = segmentAt(after.map((m) => m.positionSample), length, probe);
+    if (mid !== null) s.setSelection(mid);
+  }
+  s.setLastSplitMarker({ documentId: doc.id, positionSample: p });
 }
 
 /** Copies the selection to the clipboard without changing the document. */

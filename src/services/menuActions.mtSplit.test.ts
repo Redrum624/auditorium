@@ -38,6 +38,7 @@ function seed(
     session,
     selectedClipId: null,
     selectedClipIds: [],
+    lastSplit: null, // G6 (item 7) — every fixture starts with a clean anchor
     mtCursorSample: 0,
     mtPlayState: 'stopped',
     mtPlayheadSample: 0,
@@ -227,5 +228,26 @@ describe('edit.split in the Multitrack view — what it must NOT touch (M1/M7)',
     // Fully armed for the multitrack arm, but no document is open, and item
     // 8's editor arm needs one.
     expect(isCommandEnabled('edit.split')).toBe(false);
+  });
+});
+
+describe('edit.split in the Multitrack view — item 7 (G1-G6): Delete narrows to the middle piece', () => {
+  it('3i after two cuts, edit.delete removes only the middle piece — FAILS TODAY', async () => {
+    // X3: startSample 6000 (never 0), lengthSample 30000, cuts at 16000/24000.
+    const { ids } = seed([[[6000, 30000]]]);
+    store().setSelectedClip(ids[0][0]);
+
+    store().setMtCursor(16000);
+    await runCommand('edit.split');
+    store().setMtCursor(24000);
+    await runCommand('edit.split');
+
+    expect(store().selectedClipIds).toHaveLength(1);
+
+    await runCommand('edit.delete');
+
+    const clips = clipsOn(0);
+    expect(clips.map((c) => c.startSample)).toEqual([6000, 24000]);
+    expect(clips.map((c) => c.lengthSample)).toEqual([10000, 12000]);
   });
 });

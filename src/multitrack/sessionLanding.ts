@@ -83,6 +83,14 @@ export function installSession(session: Session, projectPath: string | null): vo
   useSessionStore.setState({
     session,
     selectedClipId: null,
+    // G6 (item 7) — every wholesale replacement is a "session load" site
+    // (Open Project, a stem/voice/speaker landing with no clips open, a
+    // cover journey), so the "last cut point" anchor is dropped explicitly
+    // rather than left to gate 1: `.audm` persists clip ids, so a reload of
+    // the very file a split anchor was captured against could otherwise
+    // satisfy gate 1's selection-identity check AND gate 2's piece-identity
+    // check by literal coincidence.
+    lastSplit: null,
     mtCursorSample: 0,
     // MT1 (C1): fitted, not a hardcoded samples/px — see sessionZoom's own
     // ruling. A landing or a project load is how a user most often arrives at

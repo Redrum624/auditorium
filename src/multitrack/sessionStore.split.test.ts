@@ -44,6 +44,7 @@ function install(tracks: ReturnType<typeof createTrack>[]): void {
     session: { name: 'Split Fixture', sampleRate: 44100, tracks },
     selectedClipId: null,
     selectedClipIds: [],
+    lastSplit: null, // G6 — every fixture starts with a clean anchor
     mtCursorSample: 0,
     mtPlayState: 'stopped',
     mtPlayheadSample: 0,
@@ -364,5 +365,153 @@ describe('splitClipsAt — the group verb (one gesture, N4 selection)', () => {
     expect(trackClips(0).map((c) => c.id)).toEqual([a1, made[0], b1]);
     expect(store().selectedClipIds).toEqual([b1]);
     expect(store().selectedClipId).toBe(b1);
+  });
+});
+
+/**
+ * Item 7 (G1-G6) — the second and later split narrows the selection to the
+ * single piece between the last two cut points, via the `lastSplit` anchor
+ * (`SessionState.lastSplit`) and `splitSelectionAfter`. X3: every fixture
+ * below uses a clip at `startSample` 6000 (never 0) and cuts at 16000, 24000
+ * and 20000 — the values named in the brief's Acceptance section, none of
+ * them identity values.
+ */
+describe('splitClipsAt — item 7 (G1-G6): the anchor narrows the selection', () => {
+  it('1 (G1) the SECOND split narrows to the single middle piece — FAILS TODAY', () => {
+    const id = seedOne({ startSample: 6000, offsetSample: 0, lengthSample: 30000 });
+    store().setSelectedClip(id);
+    const t1 = sessionRef().tracks[0].id;
+
+    const made1 = splitClipsAt([t1], 16000);
+    splitClipsAt([t1], 24000);
+
+    const r1 = made1[0]; // the FIRST split's right half is this track's post-2nd-cut middle
+    expect(store().selectedClipIds).toEqual([r1]);
+    expect(store().selectedClipId).toBe(r1);
+    const middle = clipById(r1)!;
+    expect(middle.startSample).toBe(16000);
+    expect(middle.lengthSample).toBe(8000);
+  });
+
+  it('2 (G3) cutting leftwards still selects the span between the two cuts', () => {
+    const id = seedOne({ startSample: 6000, offsetSample: 0, lengthSample: 30000 });
+    store().setSelectedClip(id);
+    const t1 = sessionRef().tracks[0].id;
+
+    splitClipsAt([t1], 16000);
+    const made2 = splitClipsAt([t1], 10000); // leftward: before the first cut
+
+    expect(store().selectedClipIds).toEqual([made2[0]]); // the NEW right half, not the original
+    const middle = clipById(made2[0])!;
+    expect(middle.startSample).toBe(10000);
+    expect(middle.lengthSample).toBe(6000);
+  });
+
+  it('3 (G1) a third split keeps narrowing to the newest middle', () => {
+    const id = seedOne({ startSample: 6000, offsetSample: 0, lengthSample: 30000 });
+    store().setSelectedClip(id);
+    const t1 = sessionRef().tracks[0].id;
+
+    splitClipsAt([t1], 16000);
+    splitClipsAt([t1], 24000);
+    splitClipsAt([t1], 20000);
+
+    expect(store().selectedClipIds).toHaveLength(1);
+    const middle = clipById(store().selectedClipIds[0])!;
+    expect(middle.startSample).toBe(20000);
+    expect(middle.lengthSample).toBe(4000);
+  });
+
+  it('4 (G4) a track not cut at the previous point keeps its own result, in one undo step', () => {
+    const { session, ids } = seed([[6000, 30000]], [[40000, 20000]]);
+    const [t1, t2] = session.tracks.map((t) => t.id);
+    const [a1] = ids[0];
+    const [b1] = ids[1];
+    store().setSelectedClips([a1, b1]);
+
+    const made1 = splitClipsAt([t1, t2], 16000); // 16000 is only legal on T1
+    expect(made1).toHaveLength(1);
+    splitClipsAt([t1, t2], 24000); // still only T1 (T2's clip starts at 40000)
+
+    expect(doneLabels()).toEqual(['Split clip', 'Split clip']); // two SINGLE-target gestures
+    expect(store().selectedClipIds).toEqual([b1, made1[0]]);
+  });
+
+  it('5 (G4) both tracks cut land two middles', () => {
+    const { session, ids } = seed([[6000, 30000]], [[6000, 30000]]);
+    const [t1, t2] = session.tracks.map((t) => t.id);
+    const [a1] = ids[0];
+    const [b1] = ids[1];
+    store().setSelectedClips([a1, b1]);
+
+    splitClipsAt([t1, t2], 16000);
+    splitClipsAt([t1, t2], 24000);
+
+    expect(store().selectedClipIds).toHaveLength(2);
+    const spans = store()
+      .selectedClipIds.map((id) => clipById(id)!)
+      .map((c) => ({ start: c.startSample, end: c.startSample + c.lengthSample }));
+    expect(spans).toEqual([
+      { start: 16000, end: 24000 },
+      { start: 16000, end: 24000 },
+    ]);
+  });
+
+  it('6 (G6) an unrelated click resets the anchor', () => {
+    const id = seedOne({ startSample: 6000, offsetSample: 0, lengthSample: 30000 });
+    store().setSelectedClip(id);
+    const t1 = sessionRef().tracks[0].id;
+
+    splitClipsAt([t1], 16000);
+    store().setSelectedClip(id); // an unrelated selection act (a click)
+    splitClipsAt([t1], 24000);
+
+    // The legacy arm wrote nothing: the second cut's target (the piece cut
+    // at 16000) was not a selection member, so nothing joined it.
+    expect(store().selectedClipIds).toEqual([id]);
+    expect(trackClips(0)).toHaveLength(3);
+  });
+
+  it('7 (G6) undo resets the anchor', () => {
+    const id = seedOne({ startSample: 6000, offsetSample: 0, lengthSample: 30000 });
+    store().setSelectedClip(id);
+    const t1 = sessionRef().tracks[0].id;
+
+    splitClipsAt([t1], 16000);
+    splitClipsAt([t1], 24000);
+    expect(store().lastSplit).not.toBeNull();
+
+    undoSession();
+
+    expect(store().lastSplit).toBeNull();
+  });
+
+  // 8 (G2) — the first split is unchanged: pinned by the pre-existing '1j'
+  // tests in the `splitClipsAt` describe block above ('adds the right halves
+  // of SELECTION MEMBERS only...' and 'splits an UNSELECTED track-mate...'),
+  // which this lot did not modify and which still pass.
+
+  it('a mixed act: one track matches the anchor, a different track is split for the first time', () => {
+    // Track A already has a live anchor from a previous split; Track B is cut
+    // for the first time in the SAME gesture. A's selection narrows to its
+    // middle; B's pre-existing selected clip gains its new right half exactly
+    // as a first split would (the legacy arm), and the untouched survivor on
+    // a third track keeps its place. Exercises `splitSelectionAfter`'s mixed
+    // branch (survivors + a legacy pair + a middle) through the real store:
+    // B's own id is produced BOTH as a survivor and by the legacy pair, and
+    // `setSelectedClips` de-duplicates it down to one.
+    const { session, ids } = seed([[6000, 30000]], [[6000, 40000]], [[100000, 5000]]);
+    const [tA, tB] = session.tracks.map((t) => t.id);
+    const [a1] = ids[0];
+    const [b1] = ids[1];
+    const [c1] = ids[2];
+    store().setSelectedClips([c1, a1, b1]);
+
+    const made1 = splitClipsAt([tA], 16000); // A only — establishes A's anchor
+    const a2 = made1[0]; // A's middle after the next cut
+    const madeMixed = splitClipsAt([tA, tB], 24000); // A narrows; B is cut for the first time
+    const b2 = madeMixed[1]; // session-track order: A's outcome first, then B's
+
+    expect(store().selectedClipIds).toEqual([c1, b1, b2, a2]);
   });
 });

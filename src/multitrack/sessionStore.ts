@@ -25,6 +25,7 @@ import {
 import { laneWidthFromScrollerWidth, sessionLaneWidth, setSessionLaneWidth } from './sessionViewport';
 import { clampGroupDelta } from './groupDrag'; // T5
 import { closeGapShifts, gapAt, gapProbeSample, type TrackGap } from './gaps'; // D3
+import { splitSelectionAfter, type LastSplit, type SplitOutcome } from './splitSelection'; // G6 (item 7)
 
 export interface SessionState {
   session: Session;
@@ -73,6 +74,40 @@ export interface SessionState {
    * lie the delete verbs would then act on.
    */
   selectedGap: TrackGap | null;
+  /**
+   * G6 (item 7) - the "last cut point" anchor: what `splitClipsAt` cut last,
+   * every piece that cut made, and the selection it left standing. `null`
+   * when there is nothing to remember - no split yet, or an intervening act
+   * broke it.
+   *
+   * Honoured by a LATER `splitClipsAt` only when BOTH gates hold (the pure
+   * rule lives in `splitSelectionAfter`, `./splitSelection`):
+   *
+   *   1. SELECTION IDENTITY - the live `selectedClipIds` still equals
+   *      `selectionAfter` element-for-element. Any intervening selection act
+   *      breaks this by construction: `setSelectedClip`, `toggleSelectedClip`,
+   *      `setSelectedClips`, `extendSelectionToClip`, `setSelectedGap` (a
+   *      non-null gap empties the clip fields), and a reconcile that strands
+   *      a member. ONE check here, rather than a `lastSplit: null` clause in
+   *      every selection writer's several return branches.
+   *   2. PIECE IDENTITY - the clip a later split targets is literally a
+   *      piece THIS anchor's cut made (`leftId` is one of `pieceIds`, since
+   *      `splitClip`'s left half always keeps the original clip's id) AND
+   *      the anchor's cut point sits on that clip's own outer edge - its
+   *      `startSample` (the middle is the LEFT half) or its end (the user
+   *      cut leftwards, G3, and the middle is the NEW right half).
+   *
+   * UI-only state, in the sense `selectedGap` and `mtEnvelope` already are
+   * (ruling 3): NOT on `Session`, NOT in `SessionSnapshot`. An undo/redo
+   * CLEARS it outright (`bindSessionUndo`'s `apply`, below) rather than
+   * restoring or inheriting it, so an anchor can never outlive the split it
+   * names. Every load-shaped session replacement resets it too (`newSession`,
+   * the store literal, and `sessionLanding.installSession` - the one shared
+   * REPLACE arm every wholesale swap now goes through post lot E) because
+   * `.audm` persists clip ids and a reloaded file could otherwise satisfy
+   * gate 2 against a stale `pieceIds` by coincidence.
+   */
+  lastSplit: LastSplit | null;
   mtCursorSample: number;
   mtZoom: { samplesPerPixel: number; scrollSample: number };
   mtPlayState: 'stopped' | 'playing';
@@ -824,6 +859,7 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
   selectedClipId: null,
   selectedClipIds: [], // K1
   selectedGap: null, // D3
+  lastSplit: null, // G6 (item 7)
   mtCursorSample: 0,
   mtPlayState: 'stopped',
   mtPlayheadSample: 0,
@@ -841,6 +877,7 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
         selectedClipId: null,
         selectedClipIds: [], // K1
         selectedGap: null, // D3
+        lastSplit: null, // G6 (item 7)
         mtCursorSample: 0,
         mtPlayState: 'stopped',
         mtPlayheadSample: 0,
@@ -1621,7 +1658,10 @@ export function applySessionZoom(requested: SessionZoomRequest): void {
  * the re-denominated timeline. There is no multitrack selection or loop range
  * to carry (only the cursor exists), and the snap targets are derived per
  * render from the session and the cursor (`sessionSnapTargets`), so they follow
- * for free.
+ * for free. `lastSplit` (G6, item 7) is likewise not extended by
+ * `viewStateAtRate` below — adoption is refused outright once the session
+ * holds any clip (`hasAnyClip`), so an anchor can never exist yet to mis-
+ * denominate.
  *
  * Returns `newRate / oldRate` — the factor a caller must apply to any session
  * sample it computed BEFORE calling (a drop position resolved against the lane's
@@ -1827,17 +1867,29 @@ export function splitTargets(
   return out;
 }
 
-/** Item 1 - splits every target of `splitTargets` in ONE undo entry ('Split
- * clip' / 'Split clips'), then, per N4, adds the right half of every original
- * that WAS a selection member to `selectedClipIds` (the primary is unchanged:
- * the left half keeps the id). The right half of an unselected track-mate - one
- * cut only because its track owns some other selected clip (M2) - stays
- * unselected, so the selection after the act still names what the user picked.
+/** Item 1 (M2/N1-N5), item 7 (G1-G6) - splits every target of `splitTargets`
+ * in ONE undo entry ('Split clip' / 'Split clips'), then decides what stays
+ * selected through `splitSelectionAfter` (`./splitSelection`) - the pure rule
+ * this function is a thin shell around.
+ *
+ * THE FIRST split on a track (no live `lastSplit` anchor - G2/G6): the
+ * ORIGINAL N4 rule, unchanged - the right half of every original clip that
+ * WAS a selection member joins `selectedClipIds` (the primary is unchanged:
+ * the left half keeps the id). The right half of an unselected track-mate -
+ * one cut only because its track owns some other selected clip (M2) - stays
+ * unselected.
+ *
+ * THE SECOND and every later split on a track whose previous cut is still
+ * "live" (G1, G6 - see `SessionState.lastSplit`): that track's selection is
+ * REPLACED by the single piece between the last two cut points, leftward cuts
+ * included (G3). A track this act did not narrow (no live anchor for it, or
+ * it was not among this act's targets - a mixed act, G4) keeps whatever the
+ * N4 rule above gives it - the narrowing is per track, inside ONE undo step.
  *
  * `docRateOf` answers the source document's sample rate for a clip (N3); this
  * store holds document ids and never the documents, so the caller supplies it.
  * Returns the new right-half ids in track order, or `[]` - with no gesture at
- * all - when nothing qualifies. */
+ * all, and the anchor untouched - when nothing qualifies. */
 export function splitClipsAt(
   trackIds: readonly string[],
   sample: number,
@@ -1845,19 +1897,46 @@ export function splitClipsAt(
 ): string[] {
   const targets = splitTargets(useSessionStore.getState().session, trackIds, sample);
   if (targets.length === 0) return [];
-  const made: { leftId: string; rightId: string }[] = [];
+  const made: Omit<SplitOutcome, 'wasMember'>[] = [];
   withSessionGesture(targets.length === 1 ? 'Split clip' : 'Split clips', () => {
-    for (const { clip } of targets) {
+    for (const { trackId, clip } of targets) {
       const rightId = useSessionStore
         .getState()
         .splitClip(clip.id, sample, { docRate: docRateOf?.(clip.documentId) });
-      if (rightId !== null) made.push({ leftId: clip.id, rightId });
+      if (rightId !== null) {
+        made.push({
+          trackId,
+          leftId: clip.id,
+          rightId,
+          clipStart: clip.startSample,
+          clipEnd: clip.startSample + clip.lengthSample,
+        });
+      }
     }
   });
-  const { selectedClipIds, setSelectedClips } = useSessionStore.getState();
+  // Read once, AFTER the gesture (today's behaviour, N4): a split kills no
+  // clip, so the reconcile subscriber leaves `selectedClipIds` exactly as the
+  // gesture found it.
+  const { session, selectedClipIds, lastSplit, setSelectedClips } = useSessionStore.getState();
   const member = new Set(selectedClipIds);
-  const joining = made.filter((m) => member.has(m.leftId)).map((m) => m.rightId);
-  if (joining.length > 0) setSelectedClips([...selectedClipIds, ...joining]);
+  const outcomes: SplitOutcome[] = made.map((o) => ({ ...o, wasMember: member.has(o.leftId) }));
+  const next = splitSelectionAfter({
+    anchor: lastSplit,
+    selectionBefore: selectedClipIds,
+    outcomes,
+    trackOfPiece: (id) => locateClip(session, id)?.trackId ?? null,
+  });
+  if (next !== null) setSelectedClips(next);
+  // Written AFTER the selection write, reading back what it actually landed -
+  // `setSelectedClips` de-duplicates and drops dangling ids, so `selectionAfter`
+  // names the anchor's own true post-state rather than what was merely asked for.
+  useSessionStore.setState({
+    lastSplit: {
+      sample,
+      pieceIds: outcomes.flatMap((o) => [o.leftId, o.rightId]),
+      selectionAfter: useSessionStore.getState().selectedClipIds,
+    },
+  });
   return made.map((m) => m.rightId);
 }
 
@@ -2186,6 +2265,16 @@ bindSessionUndo({
       // carried no clip selection restores no selection either, and must leave
       // a standing gap exactly as it was (the ruling-3 pin).
       ...(snapshot.selectedClipId !== null ? { selectedGap: null } : null),
+      // G6 (item 7) — an undo/redo CLEARS the "last cut point" anchor rather
+      // than restoring or inheriting it: `lastSplit` is not part of
+      // `SessionSnapshot` (ruling 3), so the alternative would be leaving it
+      // exactly as it stood before this restore, which could name pieces the
+      // restore just brought back into existence (or removed) under IDS that
+      // happen to coincide. Gate 1 would usually catch this anyway (the
+      // restored `selectedClipId`/`selectedClipIds` rarely equal the anchor's
+      // `selectionAfter`), but stating it here makes the rule legible in code
+      // rather than emergent from another invariant.
+      lastSplit: null,
       ...redenominate,
     });
   },
