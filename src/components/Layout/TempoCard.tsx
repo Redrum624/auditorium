@@ -8,7 +8,8 @@ import {
   regridTempo,
   useTempoVersion,
 } from '../../services/tempoAnalysis';
-import { runCommand } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, runCommand } from '../../services/menuActions';
+import { usePassLock } from '../../services/passLock';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { clusterColor, meterLabel, structureRuns } from '../../utils/structureStrip';
 import { GlassCard } from '../UI/glass';
@@ -73,6 +74,9 @@ export default function TempoCard() {
   // FIRST — run start/progress/completion/invalidation re-render this card
   // (module-state store, not zustand; StatusBar.tsx precedent).
   useTempoVersion();
+  // Lot M: same reason, for the app-wide pass lock — called unconditionally,
+  // ahead of the early `return null` below, like every other hook here.
+  usePassLock();
   const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
   const [correctionFailed, setCorrectionFailed] = useState(false);
 
@@ -186,8 +190,8 @@ export default function TempoCard() {
         <button
           type="button"
           aria-label="Re-detect tempo"
-          title="Re-run tempo detection on this document"
-          disabled={running}
+          title={commandReason('tempo.detect') ?? 'Re-run tempo detection on this document'}
+          disabled={running || !isCommandEnabled('tempo.detect')}
           onClick={() => void runCommand('tempo.detect')}
           className="glass-pill-btn"
           style={chipStyle}

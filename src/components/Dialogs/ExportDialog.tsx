@@ -5,6 +5,7 @@ import { exportDocument, exportSessionMixdown } from '../../services/fileService
 import { useAppStore } from '../../stores/appStore';
 import { useSessionStore } from '../../multitrack/sessionStore';
 import { FieldLabel, GlassButton, GlassSelect } from '../UI/glass';
+import { PASS_REFUSED, runExclusivePass } from '../../services/passLock';
 import DialogShell from './DialogShell';
 
 const WAV_BIT_DEPTHS: WavBitDepth[] = [16, 24, 32];
@@ -36,10 +37,21 @@ export default function ExportDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     try {
       const opts = { format, wavBitDepth, mp3Kbps, oggBitrate };
-      const path = isMultitrack
-        ? await exportSessionMixdown(opts)
-        : await exportDocument(activeDocumentId as string, opts);
-      if (path) onClose();
+      // Lot M: this MODAL publishes no `moduleLock` (`DialogShell.tsx`'s
+      // `if (!host) return;`), so without its own hold here Export would be
+      // the one pass that takes no lock at all — `file.export`'s own
+      // `enabled` only gates OPENING this dialog, not the encode itself. A
+      // refusal here (another pass won a race after the dialog opened)
+      // leaves the dialog open with no `onClose()`, exactly like a
+      // cancelled save-dialog does below.
+      const result = await runExclusivePass(
+        { id: 'file.export', label: 'Export', kind: 'export' },
+        () =>
+          isMultitrack
+            ? exportSessionMixdown(opts)
+            : exportDocument(activeDocumentId as string, opts)
+      );
+      if (result !== PASS_REFUSED && result) onClose();
     } finally {
       setBusy(false);
     }

@@ -70,10 +70,11 @@ describe('DialogShell hosted in the module column', () => {
    * away for as long as it was open, idle or not.
    *
    * Note the scope carefully: this is about the tool being MOUNTED, not about a
-   * pass running. Once one is, App re-asserts the same guard through
-   * `setHostedToolRunning` and the keyboard IS suspended for its duration —
-   * deliberately, and asserted in `App.pipelineHost.test`. Mouse interaction is
-   * never suspended by either.
+   * pass running. Once one is, App acquires `passLock.ts`'s app-wide lock
+   * through `handleToolModuleLock` (lot M) — the KEYBOARD is no longer
+   * suspended for that (M6: only the commands that would start ANOTHER pass
+   * or replace the document are disabled), asserted in `App.pipelineHost.test`.
+   * Mouse interaction is never suspended by either.
    */
   it('does not register on the open-dialog stack, so an idle tool takes no keys', () => {
     expect(hasOpenDialog()).toBe(false);

@@ -1,7 +1,7 @@
 import { getVisibleEffects } from '../../effects/EffectRegistry';
 import type { EffectDefinition } from '../../effects/types';
-import { openEffectDialog } from '../../services/dialogBus';
-import { getMenuSections, isCommandEnabled, runCommand } from '../../services/menuActions';
+import { commandReason, getMenuSections, isCommandEnabled, runCommand } from '../../services/menuActions';
+import { usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
 import { SectionLabel } from '../UI/glass';
 
@@ -88,6 +88,9 @@ export default function EffectsPanel() {
   // same reason: `spatial.position`'s predicate is session-scoped, not a
   // function of the active document id alone.
   useAppStore((s) => s);
+  // Lot M: the pass lock is module state, not zustand — subscribe so a row's
+  // reason/greying is recomputed the instant the lock moves.
+  usePassLock();
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
   const groups = groupByCategory(getVisibleEffects());
   const mixTools = effectsMenuTools();
@@ -105,19 +108,35 @@ export default function EffectsPanel() {
                   shared SectionLabel primitive; rows get white-alpha hover. */}
               <SectionLabel className="px-2 pb-1 pt-2">{category}</SectionLabel>
               <ul>
-                {effects.map((e) => (
-                  <li key={e.id} data-testid="effects-item">
-                    <button
-                      type="button"
-                      disabled={!hasDoc}
-                      onClick={() => hasDoc && openEffectDialog(e.id)}
-                      title={hasDoc ? `Click to open ${e.name}` : 'Open a file first'}
-                      className={ROW_BUTTON_CLASS}
-                    >
-                      {e.name}
-                    </button>
-                  </li>
-                ))}
+                {effects.map((e) => {
+                  // Lot M: routed through the registry — `isCommandEnabled` /
+                  // `runCommand` — instead of calling `openEffectDialog`
+                  // directly. That direct call was the one caller left that
+                  // bypassed `isCommandEnabled` (App.tsx's `openEffect` guard
+                  // existed as defence in depth specifically for it); going
+                  // through the command is what lets the pass lock gate this
+                  // row the same way it gates every other door.
+                  const commandId = `effect.${e.id}`;
+                  const enabled = isCommandEnabled(commandId);
+                  return (
+                    <li key={e.id} data-testid="effects-item">
+                      <button
+                        type="button"
+                        disabled={!enabled}
+                        onClick={() => void runCommand(commandId)}
+                        title={
+                          enabled
+                            ? `Click to open ${e.name}`
+                            : (commandReason(commandId) ??
+                              (hasDoc ? `${e.name} — not available right now` : 'Open a file first'))
+                        }
+                        className={ROW_BUTTON_CLASS}
+                      >
+                        {e.name}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}
@@ -153,9 +172,8 @@ function toolRow(id: string, label: string, hasDoc: boolean) {
         title={
           enabled
             ? `Click to run ${label}`
-            : hasDoc
-              ? `${label} — not available for this file right now`
-              : 'Open a file first'
+            : (commandReason(id) ??
+              (hasDoc ? `${label} — not available for this file right now` : 'Open a file first'))
         }
         className={ROW_BUTTON_CLASS}
       >

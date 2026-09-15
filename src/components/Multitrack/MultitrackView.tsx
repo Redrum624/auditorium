@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { FileDown, FilePlus2, Plus } from 'lucide-react';
 import { GlassButton } from '../UI/glass';
-import { runCommand } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, runCommand } from '../../services/menuActions';
+import { usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
 import { hasAnyClip, publishSessionLaneWidth, useSessionStore } from '../../multitrack/sessionStore';
 import { sessionLaneWidth } from '../../multitrack/sessionViewport';
@@ -70,6 +71,9 @@ const CURSOR_HANDLE_Z = 20;
  * is Ctrl/Shift-wheel over the lanes (see useMultitrackZoom).
  */
 export default function MultitrackView() {
+  // Lot M: the pass lock is module state, not zustand — subscribe so Mix
+  // Down's `disabled`/`title` recompute the instant the lock moves.
+  usePassLock();
   const session = useSessionStore((s) => s.session);
   const mtZoom = useSessionStore((s) => s.mtZoom);
   const selectedClipId = useSessionStore((s) => s.selectedClipId);
@@ -664,7 +668,8 @@ export default function MultitrackView() {
           <FilePlus2 size={13} /> Insert Active File
         </GlassButton>
         <GlassButton
-          disabled={!hasClips}
+          disabled={!isCommandEnabled('multitrack.mixdown')}
+          title={commandReason('multitrack.mixdown') ?? undefined}
           onClick={() => void runCommand('multitrack.mixdown')}
           className="disabled:opacity-40"
           style={{ padding: '5px 12px', fontSize: 12, gap: 6 }}

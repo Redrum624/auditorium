@@ -43,11 +43,16 @@ import { GlassCard, IconTile } from './components/UI/glass';
 import { getEffect } from './effects/EffectRegistry';
 // ---- /lot B ----
 import { registerAllEffects } from './effects/registerAll';
+import { registerDialogSetters, type ConvertMode } from './services/dialogBus';
+// ---- lot M ----
+// Item 13 / M1/M4/M5: the app-wide single-pass lock, and the ONE seam that
+// acquires/releases it for every HOSTED dialog (pipeline tool or effect) —
+// see `handleToolModuleLock` below.
 import {
-  registerDialogSetters,
-  setHostedToolRunning,
-  type ConvertMode,
-} from './services/dialogBus';
+  acquirePass,
+  type PassDescriptor,
+} from './services/passLock';
+// ---- /lot M ----
 import { getInFlightSaveCount, projectDirtyCount } from './services/fileService';
 import { isProjectSaveInFlight } from './multitrack/sessionFile';
 import { getRemixSession, useRemixVersion } from './services/remixService';
@@ -131,8 +136,8 @@ export default function App() {
   const [recordOpen, setRecordOpen] = useState(false);
   // U2-3: the nine `useState` flags that used to mount nine modals became ONE
   // command id — the pipeline tool the module column is hosting, or null.
-  // One at a time by construction, which is what makes `setHostedToolRunning`
-  // a boolean rather than a counter.
+  // One at a time by construction, which is what makes the pass lock
+  // (`passLock.ts`, lot M) a single acquire/release rather than a counter.
   const [hostedTool, setHostedTool] = useState<string | null>(null);
   // The hosted dialog's own `dismissable`, inverted: true while a pass is
   // running and the tool refuses to be discarded.
@@ -211,34 +216,38 @@ export default function App() {
    * Every unmount-shaped exit is now genuinely safe: the strip, the ✕, another
    * pipeline tool, `focusSpatialPanel`.
    *
-   * Relaxing the lock for these two was considered and REFUSED, because
-   * `moduleLock` is one flag driving four things and only three of them are
-   * unmount-shaped. The fourth is the keyboard suspension below, and the hazard
-   * it guards happens with the tool STILL MOUNTED — so no cancel ref can see it.
-   * `Ctrl+O` mid-pass makes another document active; the pass is pinned to its
-   * own `docId` and commits to the right audio, but `applyEdit` writes the
-   * GLOBAL selection and cursor (`editOps.ts`), which now belong to the document
-   * the user moved to. `Ctrl+W` on the running document is worse: `applyEdit`
-   * throws and the user is shown an "Effect failed" they did not cause. Trading
-   * a lock for that race is exactly what the retrofit was not for. The two are
-   * separable in principle — a second seam distinguishing "hold the module
-   * column" from "hold the keyboard" — and that is a change of its own, with its
-   * own evidence, not a side effect of this one.
+   * Relaxing the lock for these two was considered and REFUSED at the time,
+   * because `moduleLock` was one flag driving four things and only three of
+   * them were unmount-shaped. The fourth was the keyboard suspension, and the
+   * hazard it guarded happened with the tool STILL MOUNTED — so no cancel ref
+   * could see it. `Ctrl+O` mid-pass makes another document active; the pass
+   * is pinned to its own `docId` and commits to the right audio, but
+   * `applyEdit` writes the GLOBAL selection and cursor (`editOps.ts`), which
+   * now belong to the document the user moved to.
    *
-   * Worth stating plainly: even relaxed, switching module mid-pass would now
-   * DISCARD the run rather than orphan it. The retrofit turned a silent wrong
-   * commit into a silent loss of minutes of work. Safe is not the same as free,
-   * and blocking is still the better answer to "the user is about to lose this".
+   * **Lot M (item 13 / M6) is the separation this comment predicted.**
+   * `passLock.ts` — the app-wide single-pass lock — now owns the keyboard
+   * question on its own terms: `dialogBus.hasOpenDialog()` narrows to the
+   * MODAL stack only, and the four commands that could actually change which
+   * document a pass is pinned to — `file.open`, `file.new`, `file.close`,
+   * `session.open` — are disabled with a reason while the lock is held
+   * (`menuActions.ts`, decisions.md's M-c), gating the hazard at the exact
+   * seam it lives in instead of behind a blanket suspension. Everything else
+   * — Space, Ctrl+Z, Home/End, the bare letters lot H added, the arrows —
+   * reaches its command exactly as it would idle, because none of it can
+   * touch which document the pass is pinned to.
    *
-   * What "the app stays live" does and does not mean. MOUSE interaction is
-   * untouched throughout: the waveform, the transport, the toolbar, selection,
+   * What "the app stays live" now means, in full. MOUSE interaction was
+   * always untouched: the waveform, the transport, the toolbar, selection,
    * the playhead and the view segment all keep working, which is the point of
-   * hosting. The KEYBOARD is not — for the duration of a run only,
-   * `hasOpenDialog()` reports true and `shortcuts.ts` bails out of every global
-   * shortcut, so Space, Ctrl+Z and the arrows are suspended. That is deliberate
-   * and it is the F10 guard kept where it is still earned: these tools resolve
-   * their target document from the live `activeDocumentId`, so a Ctrl+O behind
-   * a running pass would land it on a document the user had just replaced.
+   * hosting. The KEYBOARD now stays live too, for the duration of a run —
+   * only the pass-start doors and the four document-lifecycle commands above
+   * grey out. `refuseWhileRunning` below is kept as App-level defence in
+   * depth for the one caller left that bypasses the command registry
+   * (`TranscriptPanel.tsx`'s "Transcribe again…" button reaches
+   * `openTranscribeDialog` directly); every other door now reads its own
+   * refusal off `isCommandEnabled`/`commandReason` before it ever calls in
+   * here at all.
    */
   const toolRunningRef = useRef(false);
   const hostedToolRef = useRef<string | null>(null);
@@ -247,16 +256,40 @@ export default function App() {
   const hostedEffectRef = useRef<string | null>(null);
   hostedEffectRef.current = hostedEffect;
   // ---- /lot B ----
+  // ---- lot M ----
+  // Item 13 / M1/M4/M5: the release closure for whatever hosted pass
+  // currently holds `passLock.ts`'s app-wide lock, or `null` when nothing
+  // here does. `??=` in `handleToolModuleLock` below makes the acquire
+  // idempotent (a dialog whose `locked` prop flips true→true never double-
+  // acquires); the optional-chained call at every clearing site below makes
+  // the release idempotent the same way `passLock.acquirePass`'s own closure
+  // already is.
+  const passReleaseRef = useRef<null | (() => void)>(null);
+
+  /** Item 13 (M-a's evidence) — the running hosted pass's own descriptor: the
+   * Pipeline registry's label for a hosted TOOL, the effect registry's name
+   * for a hosted EFFECT, kind `'pipeline'` or `'effect'` to match. Shared by
+   * `refuseWhileRunning` (the message box) and `handleToolModuleLock` (the
+   * lock) so the two can never name different passes — extracted from the
+   * label derivation `refuseWhileRunning` used to do inline. */
+  const describeHostedPass = useCallback((): PassDescriptor => {
+    const pipeline = getPipelineGroups()
+      .flatMap((g) => g.commands)
+      .find((c) => c.id === hostedToolRef.current);
+    if (pipeline) {
+      return { id: pipeline.id, label: pipeline.label, kind: 'pipeline' };
+    }
+    const effect = hostedEffectRef.current ? getEffect(hostedEffectRef.current) : undefined;
+    if (effect) {
+      return { id: `effect.${effect.id}`, label: effect.name, kind: 'effect' };
+    }
+    return { id: 'pipeline.unknown', label: 'A pipeline pass', kind: 'pipeline' };
+  }, []);
+  // ---- /lot M ----
 
   const refuseWhileRunning = useCallback(() => {
-    const pipelineLabel = getPipelineGroups()
-      .flatMap((g) => g.commands)
-      .find((c) => c.id === hostedToolRef.current)?.label;
     // Item 6: the running pass may be a hosted effect's Apply (N16) — name it.
-    const label =
-      pipelineLabel ??
-      (hostedEffectRef.current ? getEffect(hostedEffectRef.current)?.name : undefined) ??
-      'A pipeline pass';
+    const label = describeHostedPass().label;
     void window.electronAPI?.showMessageBox({
       type: 'info',
       title: 'A pass is running',
@@ -267,7 +300,7 @@ export default function App() {
         'usable with the mouse while it runs (keyboard shortcuts resume when it ' +
         'is done).',
     });
-  }, []);
+  }, [describeHostedPass]);
 
   /** U2-3: mount a pipeline tool in the module column, with the strip showing
    * Pipeline as the active module. */
@@ -337,7 +370,14 @@ export default function App() {
       // stale `true` would lock the strip for the session.
       toolRunningRef.current = false;
       setToolRunning(false);
-      setHostedToolRunning(false);
+      // Lot M: this is a CLEARING site, not the natural `locked` → `false`
+      // transition `handleToolModuleLock` below would otherwise see — the
+      // hand-off calls this from inside the SAME synchronous handler that
+      // just finished the pass, before React has re-rendered the dialog's
+      // own `busy` → `dismissable` flip. Releasing here is what stops that
+      // window from stranding the lock.
+      passReleaseRef.current?.();
+      passReleaseRef.current = null;
       setHostedTool(null);
       setSidebarTab(panel);
     },
@@ -350,13 +390,16 @@ export default function App() {
   const closeTool = useCallback(() => {
     toolRunningRef.current = false;
     setToolRunning(false);
-    setHostedToolRunning(false);
+    passReleaseRef.current?.();
+    passReleaseRef.current = null;
     setHostedTool(null);
   }, []);
 
   /** U2-3: the strip's own selection — never reached while a pass runs, because
    * the strip is disabled then (`lockedReason`). */
   const selectModule = useCallback((tab: PanelId | null) => {
+    passReleaseRef.current?.();
+    passReleaseRef.current = null;
     setHostedTool(null);
     setSidebarTab(tab);
   }, []);
@@ -364,17 +407,48 @@ export default function App() {
   /**
    * U2-3: the hosted tool's module LOCK, arriving through the shell — normally
    * `!dismissable`, narrower for a tool that starts something on mount (see
-   * `DialogShell`'s `moduleLock`). It is mirrored into three places because
-   * three surfaces need the same fact and none of them may re-derive it: React
-   * state (the strip's greying), a ref (the bus callbacks are registered once
-   * and would otherwise close over a stale value), and `dialogBus` (so
-   * `hasOpenDialog()` keeps the global shortcuts off a running pass's document,
-   * the F10 guard hosting would otherwise have quietly removed).
+   * `DialogShell`'s `moduleLock`). It is mirrored into React state (the
+   * strip's greying) and a ref (the bus callbacks are registered once and
+   * would otherwise close over a stale value).
+   *
+   * Lot M (M1/M4/M5): it is ALSO the ONE seam that acquires/releases
+   * `passLock.ts`'s app-wide lock for every hosted dialog — the twelve
+   * dialogs never call `runExclusivePass` themselves (M-b); they keep
+   * publishing through this exact callback, unchanged, and it is turned into
+   * `acquire` on `true` / `release` on `false`. `??=` makes the acquire
+   * idempotent (a `locked` prop that is already `true` firing again must not
+   * double-acquire); `passReleaseRef.current?.()` makes the release
+   * idempotent the same way the closure `acquirePass` returns already is —
+   * so a release that already ran (from `showPanel`'s hand-off arm, from
+   * `closeTool`, or from the unmount effect below) is always safe to call
+   * again.
    */
-  const handleToolModuleLock = useCallback((running: boolean) => {
-    toolRunningRef.current = running;
-    setToolRunning(running);
-    setHostedToolRunning(running);
+  const handleToolModuleLock = useCallback(
+    (running: boolean) => {
+      toolRunningRef.current = running;
+      setToolRunning(running);
+      if (running) {
+        passReleaseRef.current ??= acquirePass(describeHostedPass());
+      } else {
+        passReleaseRef.current?.();
+        passReleaseRef.current = null;
+      }
+    },
+    [describeHostedPass]
+  );
+
+  // Lot M (M5) — the THIRD release guarantee, on top of the twelve dialogs'
+  // own `finally` blocks and `DialogShell`'s unmount cleanup: if App itself
+  // unmounts mid-pass (a full app teardown, not a background/foreground
+  // toggle — this effect is `[]`-scoped precisely so nothing else can fire
+  // it), the lock must not outlive the render tree that was going to release
+  // it. A stale hold here would wedge every OTHER window/session permanently,
+  // which is the failure mode M5 exists to rule out.
+  useEffect(() => {
+    return () => {
+      passReleaseRef.current?.();
+      passReleaseRef.current = null;
+    };
   }, []);
 
   // ---- lot B ----

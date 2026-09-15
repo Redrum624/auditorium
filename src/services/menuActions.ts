@@ -63,12 +63,32 @@ import { toggleSpectralScale } from './spectralScale';
 import { toggleBeatGrid } from './beatGridDisplay';
 import { toggleSnap } from './snapPreference';
 import { runTempoAnalysis } from './tempoAnalysis';
+// ---- lot M ----
+// Item 13 / M1/M3/M4: the app-wide single-pass lock. A leaf module — see
+// passLock.ts's own header for why it is safe to import from here.
+import {
+  PASS_REFUSED,
+  blockedByPassReason,
+  getRunningPass,
+  isPassRunning,
+  runExclusivePass,
+} from './passLock';
+// ---- /lot M ----
 
 export interface MenuCommand {
   id: string;
   label: string;
   shortcut?: string;
   enabled(s: AppState): boolean;
+  /**
+   * Lot M — an optional reason a DISABLED command is disabled, read against
+   * the live store exactly like `enabled`. `undefined` means "no reason to
+   * show" (an enabled command, or a disabled one with nothing worth saying
+   * beyond the greyed-out state). Shared with lots D2/D3, J and L3/L5: the
+   * field is added ONCE, here; a later-landed lot's own reasons compose onto
+   * the same field rather than inventing a second one.
+   */
+  reason?(s: AppState): string | undefined;
   run(): void | Promise<void>;
 }
 
@@ -117,6 +137,62 @@ export function isCommandEnabled(id: string): boolean {
   const cmd = registry.get(id);
   return cmd !== undefined && cmd.enabled(useAppStore.getState());
 }
+
+/**
+ * Lot M (M3) — the reason a DISABLED command is disabled, or `null` for an
+ * unregistered id or one that is currently enabled. Every gated surface reads
+ * this rather than composing its own sentence, so the tooltip and any future
+ * refusal always say the same thing the registry itself would.
+ */
+export function commandReason(id: string): string | null {
+  const cmd = registry.get(id);
+  if (!cmd) return null;
+  if (cmd.enabled(useAppStore.getState())) return null;
+  return cmd.reason?.(useAppStore.getState()) ?? null;
+}
+
+// ---- lot M ----
+/** True when no long-running pass holds the app-wide lock — the ONE gate
+ * every pass-start command's `enabled` predicate ANDs in (M1/M4). */
+function passFree(): boolean {
+  return !isPassRunning();
+}
+
+/** The ONE reason string every pass-gated command shows (M3) — `undefined`
+ * (not `null`) so it fits `MenuCommand.reason`'s return type directly. */
+function passReason(): string | undefined {
+  return blockedByPassReason() ?? undefined;
+}
+
+/**
+ * M-c / the lot-B close duty (ledger Ruling R14) — `file.close`'s own carve-
+ * out. M-c's blanket "disabled while the lock is held" is correct for
+ * file.open/file.new/session.open, which have no protection against the
+ * document a pass depends on changing identity underneath it. Closing a
+ * document while a HOSTED EFFECT's Apply is in flight is a DIFFERENT,
+ * already-proven-safe case: the effect card resolves its target document at
+ * commit time and discards a stale result instead of writing it (T6-3 / fix
+ * rounds 2 and "Final round", pinned by `App.effectHost.test.tsx`'s "the
+ * mouse stays live during Apply" suite — closing the document the effect is
+ * applying to there raises no failure and the card shows a stale-hint
+ * instead of corrupting anything). Blanket-gating `file.close` would silently
+ * refuse a close that suite proves is safe, which is a real regression (X1),
+ * not a theoretical one. No pipeline tool has the same proof on record (the
+ * "seven" pipeline dialogs discard their result on UNMOUNT only, which a
+ * document close does not trigger), so every OTHER pass kind still refuses
+ * the close — which is exactly the lot-B duty: a host job's utility process
+ * would otherwise be killed with no confirmation by `invalidateStemRun` /
+ * `invalidateTranscript` / `invalidateLyricsAlignment` inside
+ * `closeDocumentFlow`.
+ */
+function closeFree(): boolean {
+  return passFree() || getRunningPass()?.kind === 'effect';
+}
+
+function closeReason(): string | undefined {
+  return closeFree() ? undefined : passReason();
+}
+// ---- /lot M ----
 
 /** Fixed section/item layout. Ids are resolved against the registry live at
  * `getMenuSections()` call time, so registering a command after this module
@@ -846,14 +922,20 @@ function registerFileCommands(): void {
       id: 'file.new',
       label: 'New',
       shortcut: 'Ctrl+N',
-      enabled: () => true,
+      // M-c: one of the four document-lifecycle doors gated while the pass
+      // lock is held — the keyboard-reachable replacement for the F10 guard
+      // M6 removes (a new document could become the one a running pass is
+      // pinned to, and the pass's own commit resolves it live).
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => openNewFileDialog(),
     },
     {
       id: 'file.open',
       label: 'Open…',
       shortcut: 'Ctrl+O',
-      enabled: () => true,
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => {
         await openFilesViaDialog();
       },
@@ -868,8 +950,11 @@ function registerFileCommands(): void {
       // dirty, or a never-written project with content), so "the app would
       // warn me about losing this" and "Save does something" stay one
       // condition rather than two that can disagree (O1-2's rule, lifted from
-      // the document to the project).
-      enabled: () => projectHasUnsavedWork(),
+      // the document to the project). M-e: Save also holds the pass lock
+      // itself (`runProjectSave` below) — this is the START gate, refusing a
+      // save while some OTHER pass already holds it.
+      enabled: () => projectHasUnsavedWork() && passFree(),
+      reason: passReason,
       run: async () => {
         await runProjectSave(false);
       },
@@ -881,7 +966,8 @@ function registerFileCommands(): void {
       // An explicit "write this project to a file I am about to name"
       // gesture — meaningful with nothing open and nothing dirty, the same
       // reasoning the document Save As had.
-      enabled: () => true,
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => {
         await runProjectSave(true);
       },
@@ -895,14 +981,25 @@ function registerFileCommands(): void {
       // document. Known, accepted staleness: MenuBar does not subscribe to the
       // session store, so an OPEN File menu re-greys this on the next
       // appStore/history change — the same as `multitrack.mixdown` today.
-      enabled: (s) => (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : hasDoc(s)),
+      // Lot M: this only OPENS the dialog — the pass itself is
+      // `ExportDialog.doExport`'s own `runExclusivePass` call, the second seam
+      // a modal needs because it publishes no `moduleLock`.
+      enabled: (s) =>
+        (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : hasDoc(s)) &&
+        passFree(),
+      reason: passReason,
       run: async () => openExportDialog(),
     },
     {
       id: 'file.close',
       label: 'Close',
       shortcut: 'Ctrl+W',
-      enabled: hasDoc,
+      // M-c / the lot-B close duty (ledger R14): gated on `closeFree()`, NOT
+      // the blanket `passFree()` every other door here uses — see that
+      // function's own docblock for why a running hosted EFFECT is a carved-
+      // out exception and every other pass kind is not.
+      enabled: (s) => hasDoc(s) && closeFree(),
+      reason: closeReason,
       run: async () => {
         const id = activeId();
         if (id) await closeDocumentFlow(id);
@@ -919,12 +1016,19 @@ function registerFileCommands(): void {
  * MenuBar's onClick. A hoisted declaration, so `registerFileCommands` above
  * reaches it the way it reaches `sessionHasClips` below. */
 async function runProjectSave(as: boolean): Promise<void> {
-  try {
-    await saveProject({ as });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await window.electronAPI?.showMessageBox({ type: 'error', title: 'Save Project failed', message });
-  }
+  // Lot M (M-e): Save holds the pass lock for the encode's duration — the
+  // command's own `enabled` already checked `passFree()`, so a PASS_REFUSED
+  // return here means a different pass won a race after that check and
+  // before this ran; there is nothing further to do; the command re-greys on
+  // the next render either way.
+  await runExclusivePass({ id: 'file.save', label: 'Save Project', kind: 'save' }, async () => {
+    try {
+      await saveProject({ as });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await window.electronAPI?.showMessageBox({ type: 'error', title: 'Save Project failed', message });
+    }
+  });
 }
 // ---- end lot A ----
 
@@ -944,7 +1048,10 @@ function registerSessionCommands(): void {
     {
       id: 'session.open',
       label: 'Open Project…',
-      enabled: () => true,
+      // M-c: has no combo of its own, added for the menu's sake — the same
+      // document-lifecycle gate the other three carry.
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => {
         try {
           await openSessionViaDialog();
@@ -976,7 +1083,8 @@ export function registerEffectCommands(): void {
     cmds.push({
       id: `effect.${effect.id}`,
       label: effect.name,
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => openEffectDialog(effect.id),
     });
   }
@@ -1148,7 +1256,19 @@ function insertActiveDocAsClip(): void {
 async function mixdownToNewFile(): Promise<void> {
   const session = useSessionStore.getState().session;
   const docs = new Map(useAppStore.getState().documents.map((d) => [d.id, d]));
-  const { channels, sampleRate } = mixdownSession(session, docs);
+  // Lot M: `mixdownSession` is SYNCHRONOUS — nothing here ever actually
+  // awaits — so this hold releases in the same tick it is taken. It is
+  // still taken (rather than skipped) so `multitrack.mixdown` enumerates
+  // correctly among the app's other pass-start doors and reports its own
+  // label while `getRunningPass()` is read anywhere during that tick; it
+  // buys no mutual exclusion a synchronous body couldn't already give for
+  // free (`multitrack.mixdown`'s own `enabled` already checked `passFree()`).
+  const result = await runExclusivePass(
+    { id: 'multitrack.mixdown', label: 'Mix Down', kind: 'mixdown' },
+    async () => mixdownSession(session, docs)
+  );
+  if (result === PASS_REFUSED) return;
+  const { channels, sampleRate } = result;
 
   if (channels[0].length === 0) {
     await window.electronAPI?.showMessageBox({
@@ -1283,7 +1403,9 @@ function registerMultitrackCommands(): void {
     {
       id: 'multitrack.mixdown',
       label: 'Mix Down to New File',
-      enabled: (s) => s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session),
+      enabled: (s) =>
+        s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session) && passFree(),
+      reason: passReason,
       run: async () => mixdownToNewFile(),
     },
     {
@@ -1418,16 +1540,26 @@ function registerTempoCommands(): void {
     {
       id: 'tempo.detect',
       label: 'Detect Tempo',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => {
         const d = activeDoc(useAppStore.getState());
-        if (d) await runTempoAnalysis(d);
+        if (!d) return;
+        // Lot M: `tempo.detect` runs with no hosted card behind it (no
+        // dialog, no `moduleLock`), so it is one of the three bodies that
+        // must take the lock itself rather than relying on a card's own
+        // `handleToolModuleLock` publish.
+        await runExclusivePass(
+          { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' },
+          async () => runTempoAnalysis(d)
+        );
       },
     },
     {
       id: 'tempo.match',
       label: 'Match Tempo',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => openTempoDialog(),
     },
     {
@@ -1439,7 +1571,8 @@ function registerTempoCommands(): void {
       // `EffectDefinition.hidden`).
       id: 'timing.align',
       label: 'Align Vocal Timing',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => openAlignTimingDialog(),
     },
   ]);
@@ -1462,8 +1595,9 @@ function registerRemixCommands(): void {
       label: 'Auto-Remix',
       enabled: (s) => {
         const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => openRemixDialog(),
     },
   ]);
@@ -1486,8 +1620,9 @@ function registerStemCommands(): void {
       label: 'Separate into Stems',
       enabled: (s) => {
         const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => openSeparateDialog('stems'),
     },
     // D4 — Separate Voice. The SAME separation run as the row above, landed as
@@ -1502,8 +1637,9 @@ function registerStemCommands(): void {
       label: 'Separate Voice',
       enabled: (s) => {
         const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => openSeparateDialog('voice'),
     },
   ]);
@@ -1545,8 +1681,9 @@ function registerTranscribeCommands(): void {
       label: 'Transcribe',
       enabled: (s) => {
         const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => {
         const id = useAppStore.getState().activeDocumentId;
         if (id !== null && getTranscript(id) !== null) {
@@ -1577,8 +1714,9 @@ function registerVoiceCommands(): void {
       label: 'Voice Changer',
       enabled: (s) => {
         const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => openVoiceChangerDialog(),
     },
   ]);
@@ -1601,7 +1739,8 @@ function registerVocalChainCommands(): void {
     {
       id: 'effects.vocalChain',
       label: 'Vocal Chain',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => openVocalChainDialog(),
     },
   ]);
@@ -1622,7 +1761,8 @@ function registerCoverChainCommands(): void {
     {
       id: 'effects.coverChain',
       label: 'Cover Chain',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => openCoverChainDialog(),
     },
   ]);
@@ -1643,7 +1783,8 @@ function registerPodcastChainCommands(): void {
     {
       id: 'effects.podcastChain',
       label: 'Podcast Chain',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => activeDoc(s) !== null && passFree(),
+      reason: passReason,
       run: async () => openPodcastChainDialog(),
     },
   ]);
@@ -1672,8 +1813,9 @@ function registerAlignLyricsCommands(): void {
       label: 'Align Lyrics',
       enabled: (s) => {
         const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => openAlignLyricsDialog(),
     },
   ]);

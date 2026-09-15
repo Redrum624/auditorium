@@ -25,6 +25,12 @@ jest.mock('../../services/tempoAnalysis', () => ({
 
 jest.mock('../../services/menuActions', () => ({
   runCommand: jest.fn(async () => {}),
+  // Lot M: TempoCard's Re-detect button now also reads these two. Defaulted
+  // to "nothing to say" so every existing assertion here — which is about
+  // `running`, not the pass lock — keeps reading the button exactly as
+  // before; the lock-specific case gets its own test below.
+  isCommandEnabled: jest.fn(() => true),
+  commandReason: jest.fn(() => null),
 }));
 
 const mockGetTempo = getTempo as jest.MockedFunction<typeof getTempo>;

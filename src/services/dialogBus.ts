@@ -233,50 +233,37 @@ export function popDialog(token: number): void {
   if (index !== -1) openDialogStack.splice(index, 1);
 }
 
-// U2: a hosted pipeline tool (see components/Dialogs/DialogHost.tsx) does NOT
-// join the stack above — the whole point of hosting is that the user keeps the
-// stage while the tool is open, and joining would hand every global shortcut
-// back to the bail-out below.
+// U2 / lot M (M6, M-c): a hosted pipeline tool or effect (see
+// components/Dialogs/DialogHost.tsx) does NOT join the stack above — the
+// whole point of hosting is that the user keeps the stage while the tool is
+// open, and joining would hand every global shortcut back to the bail-out
+// below.
 //
-// While such a tool is RUNNING, though, the guard that stack exists for applies
-// again word for word: these tools resolve their target document from the LIVE
-// `activeDocumentId`, so a Ctrl+O behind a running Cover Chain would land the
-// pass on a document the user replaced mid-flight. That is exactly the silent
-// wrong-document write `hasOpenDialog` was introduced to stop (F10), and losing
-// it was never part of what the user asked for.
+// Before lot M, a RUNNING hosted tool also suspended every global shortcut —
+// the F10 guard (`hostedToolRunning`, deleted here) — because these tools
+// resolve their target document from the live `activeDocumentId`, so a
+// Ctrl+O behind a running Cover Chain would have landed the pass on a
+// document the user replaced mid-flight. M6 overturns that blanket
+// suspension: it left the app MUTELY DEAD behind a backgrounded pass (Space,
+// Ctrl+Z, the arrows all did nothing, with no dialog visible to explain why).
+// `passLock.ts` re-expresses the SAME protection at the exact seam it is
+// about — the four document-lifecycle commands (`file.open`, `file.new`,
+// `file.close`, `session.open`) are disabled with a reason while the lock is
+// held, so the keyboard stays live for everything that cannot change which
+// document a pass is pinned to. See decisions.md's M-c for the full argument
+// and the evidence that the replacement is complete.
 //
-// So the flag is separate from the stack, not on it: `isTopDialog` decides
-// Escape ORDERING between stacked modals, and a card that installs no Escape
-// handler must not be able to win that ordering from a modal opened over it.
-// One boolean rather than a counter because App hosts at most one tool at a
-// time — `PipelineToolHost.test` pins that the flag is cleared on unmount, which
-// is the only way a stale `true` could strand the shortcuts.
-let hostedToolRunning = false;
+// `hasOpenDialog()` therefore narrows to exactly what its name says: the
+// modal stack. `isTopDialog` still decides Escape ORDERING between stacked
+// modals, and a card that installs no Escape handler still cannot win that
+// ordering from a modal opened over it.
 
-/** U2: records whether the hosted pipeline tool is mid-pass. Called by
- * `PipelineToolHost` from the module lock the dialog already publishes. */
-export function setHostedToolRunning(running: boolean): void {
-  hostedToolRunning = running;
-}
-
-/**
- * U2: drops the flag, for tests.
- *
- * Module state outlives a `render`/`unmount` pair, so a test that leaves a
- * hosted tool mid-pass (deliberately, or by failing an assertion before its
- * cleanup) hands the next test in the file a `hasOpenDialog()` that is true
- * with no dialog on the stack — which reads as an unrelated failure several
- * tests later. `_resetHostedToolRunning` is the seam that stops that being
- * detective work, matching the `_reset*` helpers elsewhere in the repo.
- */
-export function _resetHostedToolRunning(): void {
-  hostedToolRunning = false;
-}
-
-/** True while at least one dialog is open, or a hosted pipeline tool is
- * mid-pass (U2 — see above). */
+/** True while at least one MODAL dialog is open. A hosted pipeline tool or
+ * effect card never joins this stack (see above) — its own running state is
+ * `passLock.ts`'s `isPassRunning()`, a different question with a different
+ * answer (M6). */
 export function hasOpenDialog(): boolean {
-  return openDialogStack.length > 0 || hostedToolRunning;
+  return openDialogStack.length > 0;
 }
 
 /** True when `token` is the most-recently-opened (topmost) dialog. */

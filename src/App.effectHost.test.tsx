@@ -7,9 +7,10 @@ import { playbackEngine } from './audio/PlaybackEngine';
 import { installTranscribeBackend, seedTranscript, voiceVector } from './__mocks__/transcribeBackend';
 import { _resetTranscriptsForTest } from './services/transcribeService';
 import { defaultParamsFor, getEffect, getVisibleEffects } from './effects/EffectRegistry';
-import { _resetHostedToolRunning, focusTranscriptPanel, hasOpenDialog } from './services/dialogBus';
+import { focusTranscriptPanel, hasOpenDialog } from './services/dialogBus';
 import { runEffectOnSelection } from './services/effectRunner';
-import { runCommand } from './services/menuActions';
+import { isCommandEnabled, runCommand } from './services/menuActions';
+import { _resetPassLock, isPassRunning } from './services/passLock';
 import { getHistory } from './services/undoHistory';
 import { makeInitialState, useAppStore } from './stores/appStore';
 
@@ -71,7 +72,7 @@ const showMessageBox = jest.fn(async (_opts: MessageBoxOptions) => ({ response: 
 
 beforeEach(() => {
   useAppStore.setState(makeInitialState());
-  _resetHostedToolRunning();
+  _resetPassLock();
   showMessageBox.mockClear();
   mockRun.mockReset();
   mockRun.mockImplementation(async () => 'committed');
@@ -137,6 +138,7 @@ describe('an effect opens in the module column, not over the stage', () => {
     expect(within(host()).getByTestId('effect-dialog')).toBeInTheDocument();
     // Idle, the card suspends nothing: Space, Ctrl+Z and the arrows stay live.
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 
   it('sits between the strip and the module card, and forces Effects (M6/N16)', async () => {
@@ -275,6 +277,7 @@ describe('close paths', () => {
     expect(mockRun.mock.calls[0][0]).toBe('amplify');
     expect(screen.queryByTestId('effect-host')).toBeNull();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 });
 
@@ -302,15 +305,22 @@ describe('interplay with the pipeline tools', () => {
     expect(screen.getByTestId('tool-host')).toHaveAttribute('data-tool-id', 'lyrics.align');
   });
 
-  it('refuses to open an effect while a pipeline pass runs, naming the pass', async () => {
+  // Lot M: `effect.<id>`'s own `enabled` now ANDs in `passFree()`
+  // (menuActions.ts), so `runCommand('effect.amplify')` bails before it ever
+  // calls `openEffectDialog` — the App-level message box this test used to
+  // assert is unreachable through the registry now (M3: the refusal is a
+  // disabled command with a reason, not a dialog). `showMessageBox` stays as
+  // defence in depth for `TranscriptPanel.tsx`'s bypass, tested separately.
+  it('refuses to open an effect while a pipeline pass runs — the registry gate, no message box', async () => {
     addDoc();
     render(<App />);
     await openTool('tempo.match');
     fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
 
+    expect(isCommandEnabled('effect.amplify')).toBe(false);
     await openTool('effect.amplify');
-    expect(showMessageBox).toHaveBeenCalledTimes(1);
-    expect(showMessageBox.mock.calls[0][0].message).toContain('Match Tempo');
+
+    expect(showMessageBox).not.toHaveBeenCalled();
     expect(screen.getByTestId('tool-host')).toHaveAttribute('data-tool-id', 'tempo.match');
     expect(screen.queryByTestId('effect-host')).toBeNull();
   });
@@ -323,6 +333,7 @@ describe('the module lock, during Apply only (N16)', () => {
     await openTool('effect.amplify');
     // Idle: nothing is held.
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     for (const button of within(strip()).getAllByRole('button')) expect(button).not.toBeDisabled();
 
     let finish!: (v: 'committed') => void;
@@ -331,7 +342,11 @@ describe('the module lock, during Apply only (N16)', () => {
       fireEvent.click(within(host()).getByRole('button', { name: 'Apply' }));
     });
 
-    expect(hasOpenDialog()).toBe(true);
+    // M6: the modal stack stays empty — a hosted card never joins it, running
+    // or idle. `isPassRunning()` is the question that answers "is a pass
+    // running now".
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
     for (const button of within(strip()).getAllByRole('button')) {
       expect(button).toBeDisabled();
       expect(button.title).toBe(MODULE_SWITCH_LOCKED_EFFECT);
@@ -339,9 +354,12 @@ describe('the module lock, during Apply only (N16)', () => {
     expect(within(host()).getByTestId('hosted-tool-close')).toBeDisabled();
     expect(within(host()).getByRole('button', { name: 'Cancel' })).toBeDisabled();
 
+    // Lot M: `effect.reverb`'s own `enabled` ANDs in `passFree()`, so this is
+    // refused at the registry — no message box, the row was already
+    // disabled — exactly like the sibling test above.
+    expect(isCommandEnabled('effect.reverb')).toBe(false);
     await openTool('effect.reverb');
-    expect(showMessageBox).toHaveBeenCalledTimes(1);
-    expect(showMessageBox.mock.calls[0][0].message).toContain(getEffect('amplify')!.name);
+    expect(showMessageBox).not.toHaveBeenCalled();
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
 
     await act(async () => {
@@ -349,6 +367,7 @@ describe('the module lock, during Apply only (N16)', () => {
     });
     expect(screen.queryByTestId('effect-host')).toBeNull();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     for (const button of within(strip()).getAllByRole('button')) expect(button).not.toBeDisabled();
   });
 });
@@ -459,7 +478,9 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     });
     mockRun.mockImplementation(realRun);
     fireEvent.click(within(host()).getByRole('button', { name: 'Apply' }));
-    expect(hasOpenDialog()).toBe(true);
+    // M6: the modal stack stays empty; the pass lock is what is up.
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
   }
 
   /** Lets the worker answer and the runner settle. */
@@ -492,6 +513,7 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
     expect(within(host()).getByTestId('effect-stale-hint')).toHaveTextContent(STALE_HINT);
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     for (const button of within(strip()).getAllByRole('button')) expect(button).not.toBeDisabled();
     expect(showMessageBox).not.toHaveBeenCalled();
   });
@@ -525,9 +547,16 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     expect(host()).toBeInTheDocument();
     expect(within(host()).getByTestId('effect-stale-hint')).toHaveTextContent(STALE_HINT);
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     expect(showMessageBox).not.toHaveBeenCalled();
   });
 
+  // Lot M / M-c: `file.close` is gated on `closeFree()`, not the blanket
+  // `passFree()` the other three document-lifecycle commands use — a running
+  // hosted EFFECT is the one pass kind proven safe to close against (this
+  // very suite), so `menuActions.ts`'s carve-out keeps `runCommand`
+  // succeeding here exactly as it did before lot M. See `closeFree`'s own
+  // docblock for the full argument.
   it('File > Close on the document raises no "document not found" failure; the card stays for the document now active', async () => {
     const a = addSavedDoc('take.wav');
     const b = addSavedDoc('other.wav');
@@ -538,6 +567,7 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     await openTool('effect.amplify');
     applyOnFirstHalf();
     const bChannels = docById(b.id)!.channels;
+    expect(isCommandEnabled('file.close')).toBe(true);
 
     // The menu's own command; a clean document closes without a prompt.
     let closing!: Promise<void>;
@@ -557,6 +587,7 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     expect(host()).toBeInTheDocument();
     expect(within(host()).getByTestId('effect-stale-hint')).toHaveTextContent(STALE_HINT);
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 
   it('closing the LAST document mid-Apply: the orphan rule drops the card and the returning worker raises no failure dialog', async () => {
@@ -564,6 +595,7 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     render(<App />);
     await openTool('effect.amplify');
     applyOnFirstHalf();
+    expect(isCommandEnabled('file.close')).toBe(true);
 
     let closing!: Promise<void>;
     act(() => {
@@ -578,6 +610,7 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     });
     expect(showMessageBox).not.toHaveBeenCalled();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 });
 
@@ -612,7 +645,16 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     _resetTranscriptsForTest();
   });
 
-  it('Pipeline > Transcribe, revealing an existing transcript, is refused while an effect applies', async () => {
+  // Lot M: `edit.transcribe`'s own `enabled` now ANDs in `passFree()`
+  // (menuActions.ts), so `runCommand` bails before it can even inspect which
+  // arm — reveal or run — to take; the reveal is refused by the same
+  // registry gate a fresh run would be, and the App-level message box this
+  // test used to pin is unreachable for a door the registry gates (M3: the
+  // refusal is a disabled command with a reason). `showMessageBox` still
+  // fires for `TranscriptPanel.tsx`'s own "Transcribe again…" button, which
+  // calls `openTranscribeDialog` directly and is the one surviving bypass —
+  // not exercised by this suite.
+  it('Pipeline > Transcribe, revealing an existing transcript, is refused while an effect applies — via the registry gate', async () => {
     const doc = addDoc();
     await seedTranscriptFor(doc.id);
     render(<App />);
@@ -623,36 +665,40 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     await act(async () => {
       fireEvent.click(within(host()).getByRole('button', { name: 'Apply' }));
     });
-    expect(hasOpenDialog()).toBe(true);
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
 
-    // The command's own predicate is satisfied (a document with audio), so
-    // `runCommand` runs it and it takes the reveal arm.
+    expect(isCommandEnabled('edit.transcribe')).toBe(false);
     await openTool('edit.transcribe');
 
-    expect(showMessageBox).toHaveBeenCalledTimes(1);
-    expect(showMessageBox.mock.calls[0][0].message).toContain(getEffect('amplify')!.name);
-    // Nothing was released: the keys, the strip, the ✕ and the card itself.
-    expect(hasOpenDialog()).toBe(true);
+    expect(showMessageBox).not.toHaveBeenCalled();
+    // Nothing was released: the strip, the ✕ and the card itself.
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
     for (const button of within(strip()).getAllByRole('button')) {
       expect(button).toBeDisabled();
       expect(button.title).toBe(MODULE_SWITCH_LOCKED_EFFECT);
     }
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
     expect(within(host()).getByTestId('hosted-tool-close')).toBeDisabled();
-    // And the doors that were re-opened by the release stay shut.
+    // And the doors that were re-opened by a release stay shut — also via
+    // the registry gate now.
+    expect(isCommandEnabled('effect.reverb')).toBe(false);
     await openTool('effect.reverb');
-    expect(showMessageBox).toHaveBeenCalledTimes(2);
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
+    expect(isCommandEnabled('tempo.match')).toBe(false);
     await openTool('tempo.match');
-    expect(showMessageBox).toHaveBeenCalledTimes(3);
     expect(screen.queryByTestId('tool-host')).toBeNull();
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
+    expect(showMessageBox).not.toHaveBeenCalled();
+    void doc;
 
     await act(async () => {
       finish('committed');
     });
     expect(screen.queryByTestId('effect-host')).toBeNull();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 
   it('the hand-off itself is untouched: a hosted TOOL still hands over while it holds the lock', async () => {
@@ -660,9 +706,12 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     render(<App />);
     await openTool('tempo.match');
     fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
-    expect(hasOpenDialog()).toBe(true);
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
 
-    // What TranscribeDialog does from inside its own completion handler.
+    // What TranscribeDialog does from inside its own completion handler —
+    // called directly, never through the registry, so it is unaffected by
+    // the gating above.
     await act(async () => {
       focusTranscriptPanel();
     });
@@ -670,6 +719,7 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     expect(showMessageBox).not.toHaveBeenCalled();
     expect(screen.queryByTestId('tool-host')).toBeNull();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     for (const button of within(strip()).getAllByRole('button')) expect(button).not.toBeDisabled();
   });
 });
@@ -798,6 +848,7 @@ describe('Escape with an effect card open (N18)', () => {
     // is still the user's.
     expect(useAppStore.getState().selection).toEqual({ start: 0, end: 22050 });
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     // The ✕'s own aftermath: the module card beneath stays on Effects.
     expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'effects');
   });
@@ -840,7 +891,19 @@ describe('Escape with an effect card open (N18)', () => {
     }
   });
 
-  it('does nothing while Apply runs: the card, its lock and the selection all stay', async () => {
+  // M6 overturns this test's old premise. Before lot M, `hasOpenDialog()`
+  // suspended EVERY global shortcut while a hosted pass ran, so Escape did
+  // nothing at all and the selection was untouchable proof of that. Now the
+  // modal stack (what `hasOpenDialog()` means) stays empty behind a
+  // BACKGROUNDED pass, so a global Escape reaches `edit.deselect` exactly as
+  // it would idle. That is safe: `edit.deselect` only clears the live
+  // `selection` field, and the running Apply already snapshotted its own
+  // region before the worker started (T6-3) — clearing the GLOBAL selection
+  // cannot corrupt an in-flight commit, it only changes what a LATER edit
+  // would act on. What must still hold is that the CARD and its lock are
+  // untouched by a global key (`DialogShell`'s hosted branch installs no
+  // Escape handler of its own, N18).
+  it('does not touch the card or its lock while Apply runs; the global deselect now reaches the store (M6)', async () => {
     addDoc();
     render(<App />);
     act(() => {
@@ -853,16 +916,21 @@ describe('Escape with an effect card open (N18)', () => {
     await act(async () => {
       fireEvent.click(within(host()).getByRole('button', { name: 'Apply' }));
     });
-    expect(hasOpenDialog()).toBe(true);
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
 
     await pressEscapeOn(within(host()).getByRole('button', { name: 'Preview' }));
     await pressEscapeOn(document.body);
 
+    // The card and its lock: untouched by the global key.
     expect(host()).toHaveAttribute('data-effect-id', 'amplify');
-    expect(hasOpenDialog()).toBe(true);
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
     expect(within(host()).getByTestId('hosted-tool-close')).toBeDisabled();
     for (const button of within(strip()).getAllByRole('button')) expect(button).toBeDisabled();
-    expect(useAppStore.getState().selection).toEqual({ start: 0, end: 22050 });
+    // M6: the keyboard stays live, so the global Escape -> edit.deselect DOES
+    // reach the store now.
+    expect(useAppStore.getState().selection).toBeNull();
 
     // The pass finishes as before: the card unmounts with nothing left locked.
     await act(async () => {
@@ -870,6 +938,7 @@ describe('Escape with an effect card open (N18)', () => {
     });
     expect(screen.queryByTestId('effect-host')).toBeNull();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 
   it('with no card open, Escape keeps its meaning: Deselect', async () => {

@@ -3,6 +3,7 @@ import PipelinePanel from './PipelinePanel';
 import { createDocument } from '../../audio/AudioDocument';
 import { isCommandEnabled, registerCommands, runCommand } from '../../services/menuActions';
 import { getPipelineGroups, PIPELINE_GROUP_TITLES } from '../../services/pipelineTools';
+import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { makeInitialState, useAppStore } from '../../stores/appStore';
 
 jest.mock('../../services/menuActions', () => ({
@@ -173,5 +174,40 @@ describe('PipelinePanel — a row is one click on the menu command', () => {
     render(<PipelinePanel />);
     fireEvent.click(button('edit.remix'));
     expect(mockRunCommand).not.toHaveBeenCalled();
+  });
+});
+
+// Lot M — the pass lock is a second, app-wide reason a row can grey out,
+// distinct from "no document"/"no audio".
+describe('PipelinePanel — a running pass greys every row and names itself (lot M)', () => {
+  afterEach(() => {
+    _resetPassLock();
+  });
+
+  // `edit.separateStems`, not `tempo.detect` — deliberately: this file's own
+  // "follows the registry when a label changes" test (above) overwrites
+  // `getPipelineGroups()[0].commands[0]`'s `enabled`/`run` with stubs in its
+  // `finally`, permanently, for the rest of this file's run. `separateStems`
+  // is untouched by that.
+  it('disables edit.separateStems with a reason naming the running pass, and swallows a click', () => {
+    addDoc();
+    render(<PipelinePanel />);
+    expect(button('edit.separateStems')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'edit.transcribe', label: 'Transcribe', kind: 'pipeline' });
+    });
+
+    const stemsRow = button('edit.separateStems');
+    expect(stemsRow).toBeDisabled();
+    expect(stemsRow.title).toContain('Transcribe');
+
+    fireEvent.click(stemsRow);
+    expect(mockRunCommand).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
   });
 });

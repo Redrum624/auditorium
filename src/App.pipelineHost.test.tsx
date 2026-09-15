@@ -4,8 +4,9 @@ import DialogShell from './components/Dialogs/DialogShell';
 import { TOOL_HOST_WIDTH, hostedToolIds } from './components/Dialogs/PipelineToolHost';
 import { MODULE_COLUMN_WIDTH } from './components/Layout/ModuleStrip';
 import { createDocument } from './audio/AudioDocument';
-import { _resetHostedToolRunning, hasOpenDialog } from './services/dialogBus';
-import { runCommand } from './services/menuActions';
+import { hasOpenDialog } from './services/dialogBus';
+import { isCommandEnabled, runCommand } from './services/menuActions';
+import { _resetPassLock, isPassRunning } from './services/passLock';
 import { makeInitialState, useAppStore } from './stores/appStore';
 
 /**
@@ -73,8 +74,8 @@ const showMessageBox = jest.fn(async (_opts: MessageBoxOptions) => ({ response: 
 beforeEach(() => {
   useAppStore.setState(makeInitialState());
   // Module state outlives a render: a test that ends mid-pass would otherwise
-  // hand the next one a `hasOpenDialog()` that is true with nothing open.
-  _resetHostedToolRunning();
+  // hand the next one an `isPassRunning()` that is true with nothing running.
+  _resetPassLock();
   showMessageBox.mockClear();
   // `showMessageBox` is the channel the mid-run refusal speaks through (the
   // same one every other refusal in the app uses). The two subscriptions are
@@ -200,6 +201,8 @@ describe('a pipeline tool opens in the module column, not over the stage', () =>
     // The stage is the point: a hosted tool must not take Space, Ctrl+O or the
     // arrows away from the editor the way an open modal does.
     expect(hasOpenDialog()).toBe(false);
+    // Idle: nothing has acquired the pass lock either.
+    expect(isPassRunning()).toBe(false);
   });
 });
 
@@ -279,25 +282,40 @@ describe('while a hosted pass is running', () => {
     expect(screen.getByTestId('tool-host')).toBeInTheDocument();
   });
 
-  it('refuses to swap in another tool, and says which pass is running', async () => {
+  // Lot M: `effects.coverChain`'s own `enabled` now ANDs in `passFree()`
+  // (menuActions.ts), so `runCommand` bails before it ever calls
+  // `openCoverChainDialog` — the App-level `refuseWhileRunning` message box
+  // this test used to assert is therefore never reached FOR A DOOR THE
+  // REGISTRY GATES. The refusal moved from an ad-hoc dialog to the uniform
+  // disabled-command-with-reason surface M3 asks for; `showMessageBox` stays
+  // as defence in depth for the one caller that still bypasses the registry
+  // (`TranscriptPanel.tsx`'s "Transcribe again…" button — see the
+  // App.effectHost.test.tsx suite for that door specifically) and for
+  // `spatial.position`, which `showPanel`'s own `guard-while-running` arm
+  // still refuses directly (see the test below this one).
+  it('refuses to swap in another tool via the registry gate — the row was already disabled, no message box', async () => {
     await startPass();
+    expect(isCommandEnabled('effects.coverChain')).toBe(false);
+
     await openTool('effects.coverChain');
+
     expect(screen.getByTestId('tool-host')).toHaveAttribute('data-tool-id', 'tempo.match');
-    expect(showMessageBox).toHaveBeenCalledTimes(1);
-    const [opts] = showMessageBox.mock.calls[0];
-    expect(opts.message).toContain('Match Tempo');
-    expect(opts.message).toContain('discard the pass');
+    expect(showMessageBox).not.toHaveBeenCalled();
   });
 
-  // The F10 guard, kept exactly where it is still justified: these tools
-  // resolve their target document from the LIVE activeDocumentId at confirm
-  // time, so a Ctrl+O behind a running pass would land it on the wrong file.
-  it('puts the global shortcuts back behind the guard, and only while it runs', async () => {
+  // M6 overturns the old F10 guard (App.tsx:215-233 before this lot; see that
+  // file's own updated docblock) — the keyboard is no longer suspended behind
+  // a BACKGROUNDED pass. `hasOpenDialog()` narrows to the modal stack, which a
+  // hosted tool never joins whether idle or running; `isPassRunning()` is the
+  // question that actually answers "is a pass running".
+  it('does not suspend the modal-dialog stack while a pass runs — only isPassRunning() answers that (M6)', async () => {
     await startPass();
-    expect(hasOpenDialog()).toBe(true);
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'finish pass' }));
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
     expect(stripButton('Markers')).not.toBeDisabled();
   });
 
@@ -332,6 +350,11 @@ describe('while a hosted pass is running', () => {
     expect(screen.queryByTestId('tool-host')).toBeNull();
     expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'transcript');
     expect(hasOpenDialog()).toBe(false);
+    // The hand-off is a CLEARING site (App.tsx's `showPanel`), not the
+    // dialog's own `locked` → `false` transition — it releases the pass lock
+    // directly, in the same synchronous handler, before React has even
+    // re-rendered the (now-unmounted) dialog.
+    expect(isPassRunning()).toBe(false);
     for (const button of within(strip()).getAllByRole('button')) {
       expect(button).not.toBeDisabled();
     }
@@ -350,17 +373,20 @@ describe('while a hosted pass is running', () => {
     expect(showMessageBox).toHaveBeenCalledTimes(1);
   });
 
-  // A stale `true` here would leave every global shortcut suppressed for the
-  // rest of the session, with no open dialog anywhere to explain it. The shell
-  // hands `dismissable` back as `true` on unmount precisely for this.
-  it('never strands the shortcut guard when the app unmounts mid-pass', async () => {
+  // M5 — the THIRD release guarantee (App.tsx's `[]`-scoped unmount effect),
+  // on top of the twelve dialogs' own `finally` blocks and `DialogShell`'s own
+  // unmount cleanup: if the whole App unmounts mid-pass, the lock must not
+  // outlive it, or every OTHER window/session would be wedged permanently.
+  it('never strands the pass lock when the app unmounts mid-pass', async () => {
     addDoc();
     const view = render(<App />);
     await openTool('tempo.match');
     fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
-    expect(hasOpenDialog()).toBe(true);
+    expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(true);
 
     view.unmount();
     expect(hasOpenDialog()).toBe(false);
+    expect(isPassRunning()).toBe(false);
   });
 });

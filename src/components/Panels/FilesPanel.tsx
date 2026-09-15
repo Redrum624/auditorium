@@ -3,6 +3,7 @@ import { docDuration } from '../../audio/AudioDocument';
 import { DOC_DRAG_MIME, beginDocumentDrag, endDocumentDrag } from '../../multitrack/laneDrop';
 import { closeDocumentFlow } from '../../services/fileService';
 import { usePendingOpens } from '../../services/openProgress';
+import { blockedByPassReason, getRunningPass, isPassRunning, usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
 
 /** Format a duration in seconds as `m:ss`. */
@@ -20,6 +21,20 @@ function formatDuration(seconds: number): string {
  * prompts to save when dirty). A clean never-saved document — the amber
  * `files-neversaved` dot below — closes with no prompt at all (lot B): the dot
  * is not a close guard, only the quit guard still reads that flag.
+ *
+ * Lot M — the lot-B close duty (ledger Ruling R14). `invalidateStemRun` /
+ * `invalidateTranscript` / `invalidateLyricsAlignment` (inside
+ * `closeDocumentFlow`) TERMINATE an in-flight utility process for the
+ * document being closed, with no confirmation of their own — before this lot
+ * the ✕ was gated only on `hasDoc`, so one click mid-transcription silently
+ * killed the job. `passLock.ts` is the only thing that knows a pass is
+ * running, so the ✕ reads it directly (not through `menuActions`'
+ * `file.close`, which only ever closes the ACTIVE document — a row here can
+ * close any OTHER open one too). The gate is the same conservative one
+ * `menuActions.ts`'s `closeFree()` uses for `file.close`: every pass kind
+ * refuses a close EXCEPT a running hosted EFFECT, which is proven safe
+ * against it (`App.effectHost.test.tsx`'s "the mouse stays live during
+ * Apply" suite) — see that function's own docblock for the full argument.
  */
 export default function FilesPanel() {
   const documents = useAppStore((s) => s.documents);
@@ -30,6 +45,11 @@ export default function FilesPanel() {
   // so, "live but nothing happening" is indistinguishable from a hang. That
   // ambiguity is exactly what the incident's frozen window offered.
   const pendingOpens = usePendingOpens();
+  // Lot M: module state, not zustand — subscribe so every row's ✕ recomputes
+  // the instant the lock moves.
+  usePassLock();
+  const closeFree = isPassRunning() ? getRunningPass()?.kind === 'effect' : true;
+  const closeReason = closeFree ? undefined : (blockedByPassReason() ?? undefined);
 
   if (documents.length === 0 && pendingOpens.length === 0) {
     return <div className="p-2 text-sm text-[#8b8b92]">No files open.</div>;
@@ -100,9 +120,10 @@ export default function FilesPanel() {
               <button
                 type="button"
                 aria-label={`Close ${doc.name}`}
-                title="Close"
-                onClick={() => void closeDocumentFlow(doc.id)}
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#8b8b92] opacity-0 transition-opacity hover:bg-white/10 hover:text-[#d4d4d8] group-hover:opacity-100"
+                title={closeFree ? 'Close' : closeReason}
+                disabled={!closeFree}
+                onClick={() => closeFree && void closeDocumentFlow(doc.id)}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#8b8b92] opacity-0 transition-opacity hover:bg-white/10 hover:text-[#d4d4d8] group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <X size={14} />
               </button>

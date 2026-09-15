@@ -7,7 +7,8 @@ import { multitrackRecorder } from '../../multitrack/multitrackRecord';
 import { applySessionZoom, useSessionStore } from '../../multitrack/sessionStore';
 import type { Session } from '../../multitrack/session';
 import { defaultSessionZoom } from '../../multitrack/sessionZoom';
-import { isCommandEnabled, runCommand, showEditorView } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, runCommand, showEditorView } from '../../services/menuActions';
+import { usePassLock } from '../../services/passLock';
 import { useHistoryVersion } from '../../services/undoHistory';
 import { toggleSnap, useSnapEnabled } from '../../services/snapPreference';
 import { canRecord } from '../../services/transportService';
@@ -250,6 +251,9 @@ export default function Toolbar() {
   // history's version counter (MenuBar does the same), or the Save pill would
   // never light after a session edit and never dim after a save.
   useHistoryVersion();
+  // Lot M: the pass lock is module state, not zustand — subscribe for the
+  // same freshness reason.
+  usePassLock();
 
   const hasDoc = doc !== null;
   // The Save pill's own enablement has to state the SAME condition as the
@@ -466,7 +470,7 @@ export default function Toolbar() {
 
         <PillButton
           label="Save"
-          title="Save Project (Ctrl+S)"
+          title={commandReason('file.save') ?? 'Save Project (Ctrl+S)'}
           disabled={!canSave}
           onClick={() => void runCommand('file.save')}
         >
@@ -474,7 +478,7 @@ export default function Toolbar() {
         </PillButton>
         <PillButton
           label="Export"
-          title="Export (Ctrl+E)"
+          title={commandReason('file.export') ?? 'Export (Ctrl+E)'}
           // Lot A (M5): in the multitrack view Export renders the session, so
           // the pill follows `file.export`'s own predicate (the session
           // subscription above keeps it fresh as clips come and go).

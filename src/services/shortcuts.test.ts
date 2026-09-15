@@ -3,6 +3,7 @@ import { render } from '@testing-library/react';
 import { nextDialogToken, popDialog, pushDialog } from './dialogBus';
 import * as menuActionsModule from './menuActions';
 import { comboFromEvent, installShortcuts, SHORTCUT_TABLE } from './shortcuts';
+import { _resetPassLock, acquirePass } from './passLock';
 import DialogShell from '../components/Dialogs/DialogShell';
 
 // This file is .ts (not .tsx), so StrictMode-wrapped element trees below are
@@ -589,6 +590,47 @@ describe('installShortcuts', () => {
 
       window.dispatchEvent(keydown({ key: 'o', ctrlKey: true }));
       expect(runCommandSpy).toHaveBeenCalledWith('file.open');
+    });
+  });
+
+  // Acceptance 7, M6 — FAILS TODAY. `hasOpenDialog()` used to blanket-suspend
+  // every global shortcut while a hosted pass ran (`hostedToolRunning`,
+  // deleted from dialogBus.ts by this lot); that left the app mutely dead
+  // behind a BACKGROUNDED pass, with no dialog visible to explain why. The
+  // pass lock replaces it: the modal stack (what `hasOpenDialog()` means now)
+  // stays empty behind a hosted pass, so a plain keydown still runs.
+  describe('the pass lock does not suspend the keyboard (M6)', () => {
+    afterEach(() => {
+      _resetPassLock();
+    });
+
+    it('a space keydown still runs transport.playPause while a pass is running, with no dialog on the stack', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+      const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+
+      window.dispatchEvent(keydown({ key: ' ' }));
+
+      expect(runCommandSpy).toHaveBeenCalledWith('transport.playPause');
+      release!();
+    });
+
+    it('a modal dialog on the stack still suspends the keyboard, pass or no pass', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+      const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+      const token = nextDialogToken();
+      pushDialog(token);
+
+      window.dispatchEvent(keydown({ key: ' ' }));
+
+      expect(runCommandSpy).not.toHaveBeenCalled();
+      popDialog(token);
+      release!();
     });
   });
 });

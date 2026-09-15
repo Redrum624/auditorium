@@ -1,9 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ExportDialog from './ExportDialog';
 import { exportDocument, exportSessionMixdown } from '../../services/fileService';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { useSessionStore } from '../../multitrack/sessionStore';
 import { createDocument } from '../../audio/AudioDocument';
+import { _resetPassLock, acquirePass, isPassRunning } from '../../services/passLock';
 
 jest.mock('../../services/fileService', () => ({
   exportDocument: jest.fn(async () => 'D:\\out\\track.wav'),
@@ -29,6 +30,11 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockExport.mockResolvedValue('D:\\out\\track.wav');
   mockExportSession.mockResolvedValue('D:\\out\\mix.wav');
+  _resetPassLock();
+});
+
+afterEach(() => {
+  _resetPassLock();
 });
 
 describe('ExportDialog', () => {
@@ -231,5 +237,43 @@ describe('ExportDialog in the multitrack view (lot A — acceptance 21)', () => 
     await waitFor(() => expect(mockExport).toHaveBeenCalled());
     expect(mockExport.mock.calls[0][0]).toBe(doc.id);
     expect(mockExportSession).not.toHaveBeenCalled();
+  });
+
+  // Lot M — this modal publishes no `moduleLock`, so `doExport` is the second
+  // seam that has to take the lock itself: without it, Export would be the
+  // one pass with no lock at all. Acceptance-shaped: the dialog stays open
+  // and no encode runs when another pass already holds it.
+  describe('the pass lock (lot M)', () => {
+    it('refuses the encode and leaves the dialog open when another pass already holds the lock', async () => {
+      seedActiveDoc();
+      const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+      const onClose = jest.fn();
+      render(<ExportDialog onClose={onClose} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+      // `runExclusivePass` is still an async function even on the refused
+      // path, so its rejection reaches `doExport`'s `finally` a microtask
+      // later — flush it inside `act` so the `setBusy(false)` update is seen.
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(mockExport).not.toHaveBeenCalled();
+      expect(mockExportSession).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      release!();
+    });
+
+    it('holds the lock only for the encode’s duration, releasing it once the export settles', async () => {
+      seedActiveDoc();
+      const onClose = jest.fn();
+      render(<ExportDialog onClose={onClose} />);
+      expect(isPassRunning()).toBe(false);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(isPassRunning()).toBe(false);
+    });
   });
 });
