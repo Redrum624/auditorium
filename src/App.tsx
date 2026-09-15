@@ -118,18 +118,20 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [newFileOpen, setNewFileOpen] = useState(false);
   // ---- lot B ----
-  // Item 6 / M6: the effect the module column hosts, or null. One at a time,
-  // and mutually exclusive with `hostedTool` — the 640 tool host and the 348
-  // effect card never share the column (W1). Used to be `effectDialogId`, a
-  // modal flag.
+  // Item 6 / M6: the effect the module column hosts, or null. Its own
+  // retained slot (lot C fix round 1, C5) — RETAINED independently of
+  // `hostedTool` now; `columnHost` below is what decides which of the two,
+  // if either, is the VISIBLE one. Used to be `effectDialogId`, a modal flag.
   const [hostedEffect, setHostedEffect] = useState<string | null>(null);
   // ---- /lot B ----
   const [convertMode, setConvertMode] = useState<ConvertMode | null>(null);
   const [recordOpen, setRecordOpen] = useState(false);
   // U2-3: the nine `useState` flags that used to mount nine modals became ONE
   // command id — the pipeline tool the module column is hosting, or null.
-  // One at a time by construction, which is what makes the pass lock
-  // (`passLock.ts`, lot M) a single acquire/release rather than a counter.
+  // Lot C fix round 1 (C5): its OWN retained slot, independent of
+  // `hostedEffect` — the pass lock (`passLock.ts`, lot M) is now two
+  // acquire/release pairs, `hostPassRef.tool` and `hostPassRef.effect` below,
+  // one per slot, never a shared single ref or a counter.
   const [hostedTool, setHostedTool] = useState<string | null>(null);
   // ---- lot C ----
   // Item 3 (C1/C2/C5, fix round 1) — TWO retained slots, `hostedTool` and

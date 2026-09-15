@@ -458,7 +458,7 @@ describe('interplay with the pipeline tools', () => {
 });
 
 describe('the module lock, during Apply only (N16)', () => {
-  it('locks the strip, the ✕ and Cancel while Apply runs, and refuses another effect', async () => {
+  it('locks the ✕ and Cancel while Apply runs (never the strip, C3), and refuses another effect', async () => {
     addDoc();
     render(<App />);
     await openTool('effect.amplify');
@@ -532,6 +532,139 @@ describe('the orphan rule (N16)', () => {
       useAppStore.getState().closeDocument(doc.id);
     });
     expect(screen.queryByTestId('effect-host')).toBeNull();
+  });
+});
+
+/**
+ * Fix round 2, finding 4 — Acceptance 10 (C-i, C5): the orphan rule now has
+ * TWO slots to drop, and this is the first test that ever retains both at
+ * once and then orphans them together.
+ */
+describe('the orphan rule drops BOTH retained slots at once (C-i, Acceptance 10)', () => {
+  it('closes the retained tool and the retained effect, and clears both badges, when the last document closes', async () => {
+    const doc = addDoc();
+    render(<App />);
+    await openTool('effect.amplify');
+    await openTool('lyrics.align');
+    // C5: both retained — the tool foregrounded, the effect backgrounded.
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
+    expect(host()).toHaveAttribute('data-backgrounded', 'true');
+    expect(screen.getByTestId('module-badge-effects')).toBeInTheDocument();
+
+    act(() => {
+      useAppStore.getState().closeDocument(doc.id);
+    });
+
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(screen.queryByTestId('module-badge-pipeline')).toBeNull();
+    expect(screen.queryByTestId('module-badge-effects')).toBeNull();
+  });
+});
+
+/**
+ * Fix round 2, finding 4 — C-h, previously untested: "no auto-foreground, no
+ * new toast. The card closes itself ... the badge disappears and the result
+ * is where it always goes." Apply's own `onClose()` on a committed run
+ * (`EffectDialog.tsx`) is the concrete mechanism decisions.md cites; this
+ * drives that mechanism for real, with the card BACKGROUNDED at the moment
+ * it fires.
+ */
+describe('a pass that finishes while backgrounded lands silently (C-h)', () => {
+  it('no auto-foreground: the module card underneath stays put, and the badge goes with the card', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('effect.amplify');
+
+    let finish!: (v: 'committed') => void;
+    mockRun.mockReturnValueOnce(new Promise<'committed'>((resolve) => (finish = resolve)));
+    await act(async () => {
+      fireEvent.click(within(host()).getByRole('button', { name: 'Apply' }));
+    });
+    expect(isPassRunning()).toBe(true);
+
+    fireEvent.click(stripButton('Markers'));
+    expect(host()).toHaveAttribute('data-backgrounded', 'true');
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'markers');
+    const badge = screen.getByTestId('module-badge-effects');
+    expect(badge).toHaveAttribute('data-running', 'true');
+
+    await act(async () => {
+      finish('committed');
+    });
+
+    // No auto-foreground — still on Markers, untouched.
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'markers');
+    // The card closed itself (Apply's own onClose on a committed run) and the
+    // badge went with it — silently, no message box, no toast.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(screen.queryByTestId('module-badge-effects')).toBeNull();
+    expect(isPassRunning()).toBe(false);
+    expect(showMessageBox).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Fix round 2, findings 5 and 6, combined — investigated and merged on the
+ * coordinator's own steer (finding 6): there is no UI door that changes the
+ * active document without leaving the Effects module (`FilesPanel.tsx` is
+ * the only `setActiveDocument` caller in any component, and `openEffect`
+ * always forces `sidebarTab: 'effects'`, so showing Files necessarily
+ * backgrounds the effect first). The one real, MOUSE-DRIVEN action left that
+ * "takes a preview away" is the strip click itself — and it exercises C-f
+ * (the backgrounding release), not the old document-moved effect. This one
+ * test now pins BOTH: (5) nothing at App level proved backgrounding stops
+ * the shared engine — deleting `backgrounded={columnHost !== 'effect'}` from
+ * `App.tsx` passed every other App-level test while leaving an invisible
+ * sound source still playing; and (6) the mouse-driven half of "a preview
+ * the app takes away leaves no stale Stop Preview" — re-pinned end to end
+ * through a real strip click, foregrounding again, and a fresh Preview press
+ * that starts a NEW preview rather than stopping playback the user did not
+ * start.
+ */
+describe('a preview the mouse takes away by backgrounding leaves no stale button (C-f, findings 5/6)', () => {
+  it('a real strip click stops a running Preview and hands the engine back; the button never lies when the card returns', async () => {
+    const doc = addDoc();
+    render(<App />);
+    await openTool('effect.amplify');
+    const stop = jest.spyOn(playbackEngine, 'stop');
+    const load = jest.spyOn(playbackEngine, 'load');
+    try {
+      fireEvent.click(within(host()).getByRole('button', { name: 'Preview' }));
+      expect(within(host()).getByRole('button', { name: 'Stop Preview' })).toBeInTheDocument();
+      stop.mockClear();
+      load.mockClear();
+
+      // Mouse-driven: a real click on the Files strip button (not a direct
+      // store call) backgrounds the effect — and per C-f, releases the
+      // preview the instant it does.
+      fireEvent.click(stripButton('Files'));
+
+      expect(host()).toHaveAttribute('data-backgrounded', 'true');
+      expect(stop).toHaveBeenCalled();
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ id: doc.id }));
+      expect(playbackEngine.loadedDocumentId).toBe(doc.id);
+
+      // Foreground it again: the button must not still claim a preview is
+      // running (the exact stale-button hazard the old Files-panel test
+      // pinned), and pressing it starts a FRESH preview — never a stop of
+      // playback the user just started on the document they moved to.
+      fireEvent.click(stripButton('Effects'));
+      expect(host()).not.toHaveAttribute('data-backgrounded');
+      expect(within(host()).getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+      expect(within(host()).queryByRole('button', { name: 'Stop Preview' })).toBeNull();
+
+      load.mockClear();
+      fireEvent.click(within(host()).getByRole('button', { name: 'Preview' }));
+      expect(within(host()).getByRole('button', { name: 'Stop Preview' })).toBeInTheDocument();
+      expect(load).toHaveBeenCalledTimes(1);
+      // The throwaway preview document, not the take — a fresh preview, not
+      // a resumed stale one.
+      expect(load.mock.calls[0][0].id).not.toBe(doc.id);
+    } finally {
+      stop.mockRestore();
+      load.mockRestore();
+    }
   });
 });
 

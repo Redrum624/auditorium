@@ -130,14 +130,26 @@ async function shoot(page, name, selector, { minBytes = 8 * 1024, rowSelectors =
 }
 
 /** Closes whichever module card is open, so a full-window shot shows the
- * stage rather than the last panel the rig happened to visit. */
+ * stage rather than the last panel the rig happened to visit.
+ *
+ * Lot C fix round 2 — was a click on the strip's own active entry
+ * (`sidebar-tabs button[aria-label=...]`), which `selectModule(null)` no
+ * longer treats as an unconditional close: with a host FOREGROUNDED on that
+ * module (this function's one real caller, the effect-card scene, opens
+ * Parametric EQ/Reverb before calling this), the first such click only
+ * backgrounds the host (`columnHost -> null`) and leaves `sidebar-panel`
+ * mounted — the wait below timed out and the script threw. The module
+ * card's OWN ✕ (`sidebar-panel-close`) is `onClick={() => setSidebarTab(null)}`
+ * only — unconditional, single-click, and never touches `columnHost` (C-b's
+ * "unchanged" clause) — so it reproduces this function's original intent
+ * exactly: the module card closes, and a foregrounded host (if any) stays
+ * visible, exactly as it did before lot C ever existed. */
 async function closeModuleCard(page) {
   const active = await page.evaluate(() =>
     document.querySelector('[data-testid="sidebar-panel"]')?.getAttribute('data-active-tab')
   );
   if (!active) return;
-  const label = active.charAt(0).toUpperCase() + active.slice(1);
-  await page.click(`[data-testid="sidebar-tabs"] button[aria-label="${label}"]`);
+  await page.click('[data-testid="sidebar-panel-close"]');
   await page.waitForFunction(
     () => document.querySelector('[data-testid="sidebar-panel"]') === null,
     null,

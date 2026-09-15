@@ -29,9 +29,11 @@ import EffectDialog from './EffectDialog';
  *
  * The card is independent of the module card below it: App forces that card to
  * Effects when an effect opens (N16), and afterwards the strip may swap or
- * close it while the effect stays. Only another host (`openTool`), the ✕ /
- * Cancel / Apply / `Escape`, and the orphan rule (no document left) close this
- * one.
+ * close it while the effect stays. Lot C fix round 1 (C5): opening a pipeline
+ * tool (`openTool`) no longer closes this card either — the two are
+ * independent retained slots now, and a tool foregrounding over it only
+ * backgrounds it (`backgrounded`, below). Only the ✕ / Cancel / Apply /
+ * `Escape`, and the orphan rule (no document left), actually close this one.
  *
  * `Escape` (N18, 2026-08-23). While the card is mounted and idle, `Escape`
  * closes it — exactly what the key did when the effect was a modal — through
