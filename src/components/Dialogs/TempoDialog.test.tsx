@@ -234,7 +234,13 @@ describe('TempoDialog', () => {
 
     await waitFor(() => expect(mockApplyTempoChange).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByTestId('tempo-apply-error')).toBeInTheDocument();
+    // `waitFor` above resolves as soon as the mock has been CALLED, which
+    // happens synchronously inside the click handler. The error element only
+    // appears once that promise SETTLES and React re-renders, so a synchronous
+    // `getByTestId` here is a race: it wins on an idle machine and loses under
+    // a loaded `--maxWorkers=14` run (observed failing once, then passing 45/45
+    // in isolation). `findByTestId` retries instead of asserting once.
+    expect(await screen.findByTestId('tempo-apply-error')).toBeInTheDocument();
   });
 
   it('9. Escape does not close while busy, but does once idle', async () => {
