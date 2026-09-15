@@ -5,6 +5,7 @@ import { multitrackPlayer } from './MultitrackPlayer';
 import { useSessionStore } from './sessionStore';
 import { withSessionGesture } from './sessionUndo';
 import { useAppStore } from '../stores/appStore';
+import { acquirePass } from '../services/passLock';
 import type { Clip, Session } from './session';
 
 /**
@@ -81,6 +82,34 @@ type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping';
  * session rate before the document is created, so the clip length lines up with
  * the session timeline. An empty take (zero recorded samples) creates no
  * document and no clips — it just clears the recording state.
+ *
+ * Fix round 2 (item 13, M1) — a punch-in take HOLDS `passLock.ts`'s app-wide
+ * lock for its whole duration, not merely at the moment it starts. The user's
+ * own words name a "process", and a take is exactly that: it is actively
+ * writing samples while it runs, so a mixdown or an export starting
+ * concurrently would serialize a session that is changing underneath it —
+ * the same hazard M1 exists to rule out, in the direction fix round 1's own
+ * residual disclosure predicted. Unlike every OTHER pass in this app, a take
+ * is not one `runExclusivePass(d, fn)` call — it spans two separate PUBLIC
+ * methods (`start()`/`stop()`), so the acquire/release pair is replicated by
+ * hand here, at exactly the same three exits M5 demands of `runExclusivePass`
+ * itself:
+ *   1. SUCCESS — `stop()`'s `finally` (a committed take, and the "captured
+ *      nothing" early return inside the same `try`, both land there).
+ *   2. FAILURE — `start()`'s `catch`, when the engine or the monitor player
+ *      fails to come up; the take never began, so the lock must not outlive
+ *      the attempt.
+ *   3. CANCEL — the same `stop()` `finally`, since every one of the module's
+ *      five `multitrackRecorder.stop()` callers (`transportRecord`'s own
+ *      toggle, `transportPlayPause`'s Space-while-recording branch,
+ *      `transportStop`, `stopAll` on a view switch, and this module's own
+ *      App-unmount safety net in `App.tsx`) is a user or app-driven ABORT
+ *      exactly as much as it is a "finish" — there is no separate cancel
+ *      path to reproduce.
+ * `RecordDialog.tsx`'s own (waveform/spectral) recording is NOT changed: it
+ * is a MODAL, so `hasOpenDialog()`'s stack already excludes every other
+ * pass-start while it is open — the non-modal punch-in case above is the one
+ * that had no equivalent protection.
  */
 export function createMultitrackRecorder(deps: MultitrackRecorderDeps): MultitrackRecorder {
   let state: RecorderState = 'idle';
@@ -90,6 +119,11 @@ export function createMultitrackRecorder(deps: MultitrackRecorderDeps): Multitra
   /** In-flight start (rejections swallowed), awaited by a stop() that lands in
    * the 'starting' window. */
   let startPromise: Promise<void> | null = null;
+  /** The pass-lock release closure held for the duration of the current take,
+   * or `null` when idle. Optional-chained everywhere it is called, matching
+   * `acquirePass`'s own idempotent-closure shape — a stale call here is
+   * always safe. */
+  let releaseLock: (() => void) | null = null;
   const cbs = new Set<(recording: boolean) => void>();
 
   /** Transition helper: notifies subscribers only when the PUBLIC boolean
@@ -109,6 +143,19 @@ export function createMultitrackRecorder(deps: MultitrackRecorderDeps): Multitra
       const session = deps.getSession();
       const armed = session.tracks.filter((t) => t.armed);
       if (armed.length === 0) throw new Error('No armed tracks');
+
+      // Fix round 2 — acquired SYNCHRONOUSLY, before `setState('starting')`,
+      // so a FOREIGN pass that won a race against `transport.record`'s own
+      // `enabled` gate (the same race fix round 1 closed for the eleven
+      // hosted dialogs) is refused HERE too, not just recorded — and so
+      // nothing below this line ever runs without the lock already held.
+      const release = acquirePass({
+        id: 'transport.record',
+        label: 'Punch-in Recording',
+        kind: 'host-job',
+      });
+      if (release === null) throw new Error('A pass is already running');
+      releaseLock = release;
 
       punchInSample = deps.getMtCursorSample();
       armedTrackIds = armed.map((t) => t.id);
@@ -133,6 +180,10 @@ export function createMultitrackRecorder(deps: MultitrackRecorderDeps): Multitra
             /* ignore */
           }
           setState('idle');
+          // M5 — the FAILURE exit: the engine/monitor never came up, so the
+          // take never really began; the lock must not outlive the attempt.
+          releaseLock?.();
+          releaseLock = null;
           throw err;
         }
       })();
@@ -206,6 +257,15 @@ export function createMultitrackRecorder(deps: MultitrackRecorderDeps): Multitra
         });
       } finally {
         setState('idle');
+        // M5 — the SUCCESS/CANCEL exit: every way out of the `try` above
+        // (a committed take, the zero-length early `return`, or
+        // `engine.stop()` rejecting) reaches this `finally` exactly once, so
+        // the lock is released here unconditionally. Idempotent — a `stop()`
+        // that lands after `start()`'s own FAILURE-exit release already ran
+        // (the `state !== 'recording'` guard above returns before this
+        // block) never gets here at all, so there is nothing to double-free.
+        releaseLock?.();
+        releaseLock = null;
       }
     },
 

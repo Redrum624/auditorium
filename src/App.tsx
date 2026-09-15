@@ -443,10 +443,22 @@ export default function App() {
   // it), the lock must not outlive the render tree that was going to release
   // it. A stale hold here would wedge every OTHER window/session permanently,
   // which is the failure mode M5 exists to rule out.
+  //
+  // Fix round 2 — `stopAll()` alongside it, for the SAME reason applied to a
+  // punch-in recording: `multitrackRecorder`'s own lock hold (see
+  // `multitrackRecord.ts`) is released from inside its `stop()`, which
+  // nothing here calls automatically on unmount otherwise — the view-switch
+  // effect above only fires on a CHANGE, never on teardown. `stopAll()` is
+  // exactly what that effect already calls (same idempotent, fire-and-forget
+  // shape: a no-op when nothing is playing or recording), reused rather than
+  // adding a second stop path. The zustand stores it writes into outlive the
+  // React tree, so the take's async commit still lands correctly even after
+  // this component is gone.
   useEffect(() => {
     return () => {
       passReleaseRef.current?.();
       passReleaseRef.current = null;
+      stopAll();
     };
   }, []);
 

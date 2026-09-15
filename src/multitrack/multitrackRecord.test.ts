@@ -7,6 +7,7 @@ import {
 import { useSessionStore } from './sessionStore';
 import { makeInitialState, useAppStore } from '../stores/appStore';
 import * as resampleModule from '../dsp/resample';
+import { _resetPassLock, acquirePass, getRunningPass, isPassRunning } from '../services/passLock';
 
 type EngineResult = { channels: Float32Array[]; sampleRate: number };
 
@@ -56,9 +57,13 @@ describe('multitrackRecorder', () => {
   beforeEach(() => {
     useAppStore.setState(makeInitialState());
     useSessionStore.getState().newSession(44100);
+    _resetPassLock();
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.restoreAllMocks();
+    _resetPassLock();
+  });
 
   it('throws and leaves the engine/player untouched when no track is armed', async () => {
     const engine = fakeEngine({ channels: [new Float32Array(10)], sampleRate: 44100 });
@@ -301,5 +306,87 @@ describe('multitrackRecorder', () => {
     unsub();
     await rec.start();
     expect(states).toEqual([true, false]); // no further notifications after unsub
+  });
+
+  // Fix round 2 (item 13, M1) — a punch-in take holds `passLock.ts`'s
+  // app-wide lock for its whole duration, not merely at the moment it
+  // starts. Each test below is deletion-proof: removing the matching
+  // acquire/release line in `multitrackRecord.ts` fails exactly the test
+  // named after it (verified by reverting and watching red — see the lot-M
+  // report's "Fix round 2" section).
+  describe('holds the app-wide pass lock for the whole take (fix round 2)', () => {
+    it('acquires the lock on start, naming the take, and refuses any other pass while it holds it', async () => {
+      armTrack(0);
+      const engine = fakeEngine({ channels: [new Float32Array(64), new Float32Array(64)], sampleRate: 44100 });
+      const rec = makeRecorder(engine, spyPlayer());
+      expect(isPassRunning()).toBe(false);
+
+      await rec.start();
+
+      expect(isPassRunning()).toBe(true);
+      expect(getRunningPass()).toEqual({
+        id: 'transport.record',
+        label: 'Punch-in Recording',
+        kind: 'host-job',
+      });
+      // A pass cannot start while a take is recording — the exact scenario
+      // named in the ruling (a mixdown/export starting concurrently would
+      // serialize a session that is still changing underneath it).
+      expect(acquirePass({ id: 'multitrack.mixdown', label: 'Mix Down', kind: 'mixdown' })).toBeNull();
+
+      await rec.stop();
+    });
+
+    it('refuses to start a take while a different pass already holds the lock, touching neither engine nor player', async () => {
+      armTrack(0);
+      const engine = fakeEngine({ channels: [new Float32Array(64), new Float32Array(64)], sampleRate: 44100 });
+      const player = spyPlayer();
+      const rec = makeRecorder(engine, player);
+      const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+      expect(release).not.toBeNull();
+
+      await expect(rec.start()).rejects.toThrow('A pass is already running');
+
+      expect(engine.start).not.toHaveBeenCalled();
+      expect(player.play).not.toHaveBeenCalled();
+      expect(rec.isRecording()).toBe(false);
+      expect(getRunningPass()?.label).toBe('Cover Chain'); // untouched by the refusal
+
+      release!();
+    });
+
+    it('stopping the take frees the lock — a new pass can acquire right after', async () => {
+      armTrack(0);
+      const engine = fakeEngine({ channels: [new Float32Array(64), new Float32Array(64)], sampleRate: 44100 });
+      const rec = makeRecorder(engine, spyPlayer());
+
+      await rec.start();
+      expect(isPassRunning()).toBe(true);
+
+      await rec.stop();
+
+      expect(isPassRunning()).toBe(false);
+      const release = acquirePass({ id: 'file.export', label: 'Export', kind: 'export' });
+      expect(release).not.toBeNull();
+      release!();
+    });
+
+    it('an aborted take (the engine fails to start) frees the lock', async () => {
+      armTrack(0);
+      const engine: RecordingEngineLike = {
+        start: jest.fn(async () => {
+          throw new Error('mic denied');
+        }),
+        stop: jest.fn(async () => ({ channels: [], sampleRate: 44100 })),
+      };
+      const rec = makeRecorder(engine, spyPlayer());
+
+      await expect(rec.start()).rejects.toThrow('mic denied');
+
+      expect(isPassRunning()).toBe(false);
+      const release = acquirePass({ id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' });
+      expect(release).not.toBeNull();
+      release!();
+    });
   });
 });
