@@ -212,7 +212,12 @@ export default function MultitrackView() {
   const marqueeRef = useRef<{
     pointerId: number;
     targetEl: Element;
-    mode: 'add' | 'replace';
+    // 'range' (fix round 2, X6) — a Shift press. Carries the SAME shape as
+    // 'add'/'replace' for one reason only: catching the sub-threshold
+    // click-away clear. `onOverlayPointerUp` returns before computing a hit
+    // set for it, and `onOverlayPointerMove` draws no rectangle for it —
+    // lot J owns the actual sweep and whatever it draws.
+    mode: 'add' | 'replace' | 'range';
     anchorSample: number;
     anchorContentY: number;
     anchorClientX: number;
@@ -274,9 +279,7 @@ export default function MultitrackView() {
 
   /** K1/X6 — the capture-phase gate. CAPTURE, not bubble: it must decide
    * before `TrackLane`'s own bubble `onPointerDown` runs, so `baseIds` below
-   * is the selection as it stood BEFORE that handler's deferred clear, and so
-   * a Shift press can refuse to start a marquee at all (J7) before anything
-   * downstream sees the event.
+   * is the selection as it stood BEFORE that handler's deferred clear.
    *
    * The positive target test is mandatory, not defensive (risk 4): several
    * surfaces under this wrapper bubble a button-0 pointerdown without
@@ -285,20 +288,37 @@ export default function MultitrackView() {
    * starve the real gesture of `pointerup` the moment its own capture takes
    * over. Checking `e.target` here (not `e.currentTarget`, which is always
    * this wrapper) is what tells a lane/scroller background press apart from
-   * every one of them. */
+   * every one of them. This handler runs BEFORE rows 1-5 of the pointer
+   * contract ever see the event (capture is top-down; those rows' own
+   * `stopPropagation` calls happen later, at target/bubble phase, so they
+   * are irrelevant to this gate) — only the target test above excludes them.
+   *
+   * Fix round 2 (X6, BLOCKER) — a Shift press (`marqueeModeFor` → `'range'`)
+   * USED to return here with no record written at all, on the theory that
+   * lot J owns the whole gesture. That was wrong: `TrackLane.tsx`'s own
+   * pointerdown skips ITS clear whenever Ctrl **or** Shift is held, so with
+   * no record from here either, a Shift press-and-release on empty lane
+   * space cleared nothing — `USER_GUIDE.md:1720` silently false, the exact
+   * regression the amendment named. A `'range'` press now writes the SAME
+   * record shape as `'add'`/`'replace'` (`mode: 'range'`) — it exists solely
+   * so `onOverlayPointerUp` can commit the click-away clear on a
+   * SUB-THRESHOLD release; `onOverlayPointerMove` draws no rectangle for it
+   * and `onOverlayPointerUp` commits no clip/gap selection for it once the
+   * gesture exceeds the threshold (see both, below) — J's actual sweep is
+   * untouched by any of this. */
   const onOverlayPointerDownCapture = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
-    const isLaneBg = target.dataset.testid === 'track-lane';
+    // K1, fix round 2 — `data-lane-bg`, not `data-testid`: a testid rename is
+    // cosmetic anywhere else in the app and would silently kill the marquee
+    // if this read it. `TrackLane.tsx`'s own comment beside the attribute
+    // names the same reasoning.
+    const isLaneBg = target.dataset.laneBg === 'true';
     const isScrollerBg = target === scrollRef.current;
     if (!isLaneBg && !isScrollerBg) return;
 
     const mode = marqueeModeFor(e);
-    if (mode === 'range') return; // J7 — Shift is lot J's time-range sweep
-    // (see the pointer contract table); it starts no marquee here, and no
-    // record is written, so TrackLane's own click-away clear (X6) is the
-    // only thing that runs for a sub-threshold Shift press.
 
     // Pointer capture on `e.target` — the lane or the scroller — and NEVER on
     // `overlayRef` (the brief's own hazard 1): Chromium retargets the
@@ -322,8 +342,20 @@ export default function MultitrackView() {
       lastClientX: e.clientX,
       lastClientY: e.clientY,
       baseIds: [...useSessionStore.getState().selectedClipIds],
-      deferredClear: e.ctrlKey || e.shiftKey, // X6 — TrackLane skips its own
-      // clear under the same condition; this half commits it at pointerup.
+      // X6 — fix round 2 (item 6, the gutter asymmetry). On a LANE,
+      // `TrackLane.onPointerDown` already clears immediately for the PLAIN
+      // case (no modifiers); this flag only needs to cover what it defers
+      // (Ctrl or Shift), so `deferredClear` mirrors that condition exactly.
+      // On the SCROLLER gutter there is no `TrackLane` underneath at all —
+      // nothing else will EVER clear a plain press there — so this flag has
+      // to cover the plain case itself, and Ctrl/Shift (an ADD modifier)
+      // must not destroy a selection the press never touched. The two
+      // surfaces therefore use INVERTED conditions on purpose, not by
+      // accident: matching outcomes (a click-away clears; Ctrl/Shift-click
+      // does not except where a lane's own deferred-clear rule already says
+      // otherwise), reached by different logic because a different handler
+      // owns the plain case on each surface.
+      deferredClear: isLaneBg ? e.ctrlKey || e.shiftKey : !(e.ctrlKey || e.shiftKey),
       exceeded: false,
     };
   };
@@ -340,7 +372,12 @@ export default function MultitrackView() {
     // double-click's two sub-threshold presses from flashing a rectangle
     // (risk 3): the first press's pointerup below commits nothing at all
     // while `!rec.exceeded`, not even an empty selection.
-    if (rec.exceeded) setMarqueeRect(marqueeRectFor(rec, e.clientX, e.clientY));
+    //
+    // `'range'` draws no rectangle even once exceeded (fix round 2, X6):
+    // this record exists only to catch the click-away clear on a
+    // sub-threshold release; a real Shift-drag is lot J's own sweep, drawing
+    // whatever lot J draws, not K1's rubber-band.
+    if (rec.exceeded && rec.mode !== 'range') setMarqueeRect(marqueeRectFor(rec, e.clientX, e.clientY));
   };
 
   /** K6 — no edge auto-scroll, but a plain (uncaptured) vertical scroll mid-drag
@@ -391,12 +428,22 @@ export default function MultitrackView() {
       // X6 — the deferred clear's other half: a press that never became a
       // drag is a CLICK, and `TrackLane` already spoke for the current-track
       // write; all that is left is the clear it skipped when Ctrl/Shift was
-      // held. Nothing else, ever — a sub-threshold release must commit no
-      // selection at all (risk 3), so the gap double-click's first press
-      // stays inert.
+      // held (or, on the gutter, the clear nothing else was ever going to
+      // do — see `deferredClear`'s own comment above). Nothing else, ever —
+      // a sub-threshold release must commit no selection at all (risk 3), so
+      // the gap double-click's first press stays inert. This is also where a
+      // sub-threshold `'range'` (Shift) press resolves: `deferredClear` is
+      // always true for it, so a Shift press-and-release still deselects
+      // (X6, fix round 2).
       if (rec.deferredClear) setSelectedClip(null);
       return;
     }
+    // K1's commit — the swept clip selection — is `'add'`/`'replace'` only.
+    // A `'range'` record that exceeded the threshold is a REAL Shift-drag,
+    // i.e. lot J's time-range sweep; K's role for it ends here, having
+    // already ruled out drawing a rectangle for it above. Lot J's own
+    // handler will read the same record shape and take over this branch.
+    if (rec.mode === 'range') return;
     const rowIds = trackIdsInBand(marqueeRows(), rec.anchorContentY, contentYAt(e.clientY));
     const span = orderedSpan(rec.anchorSample, marqueeSampleAt(e.clientX));
     const hits = clipIdsInSpan(session.tracks, rowIds, span.startSample, span.endSample);
@@ -431,6 +478,26 @@ export default function MultitrackView() {
       // Capture may already have been released; ignore.
     }
   };
+
+  /** Fix round 2 (item 8) — a captured element that UNMOUNTS mid-drag (a
+   * track removed by shortcut while its lane holds the marquee's pointer
+   * capture) never delivers `pointercancel` to `onOverlayPointerCancel`
+   * above: a DETACHED element has no ancestor chain left for the event to
+   * bubble through by the time the browser would dispatch it, and this
+   * handler is registered on `overlayRef`, an ancestor. Rather than depend
+   * on an event that may never arrive, this watches the session directly —
+   * every mutation, a track removal included, replaces its reference — and
+   * tears the gesture down the moment its captured element is no longer
+   * connected to the document, exactly the recovery a delivered
+   * `pointercancel` would have performed. Cheap even though it runs on every
+   * session change: one `isConnected` read, no-op the rest of the time. */
+  useEffect(() => {
+    const rec = marqueeRef.current;
+    if (rec && !rec.targetEl.isConnected) {
+      marqueeRef.current = null;
+      setMarqueeRect(null);
+    }
+  }, [session]);
 
   /** The editor's `snapped()` shape with the session's pieces: snap the RAW
    * position FIRST, then clamp, then round — `useEditorGestures`' order, so a

@@ -118,13 +118,19 @@ function placeLanes(lanes: HTMLElement[]): void {
   }
 }
 
-function renderView(): { container: HTMLElement; lanes: HTMLElement[]; overlay: HTMLElement } {
+function renderView(): {
+  container: HTMLElement;
+  lanes: HTMLElement[];
+  overlay: HTMLElement;
+  scroller: HTMLElement;
+} {
   const { container } = render(<MultitrackView />);
   placeRows(container);
   const lanes = Array.from(container.querySelectorAll('[data-testid="track-lane"]')) as HTMLElement[];
   placeLanes(lanes);
-  const overlay = (container.querySelector('.overflow-y-auto') as HTMLElement).parentElement as HTMLElement;
-  return { container, lanes, overlay };
+  const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+  const overlay = scroller.parentElement as HTMLElement;
+  return { container, lanes, overlay, scroller };
 }
 
 beforeEach(() => {
@@ -254,6 +260,107 @@ describe('X6 — the deferred clear, committed on release (TrackLane defers it a
     expect(store().selectedClipIds).toEqual([]);
     expect(store().selectedClipId).toBeNull();
   });
+
+  // Fix round 2 (BLOCKER 1/2) — this is the exact regression the coordinator
+  // found: `onOverlayPointerDownCapture` used to bail on `mode === 'range'`
+  // BEFORE writing any record at all, so `onOverlayPointerUp`'s deferred
+  // clear never ran for Shift, even though `TrackLane.tsx` skips ITS OWN
+  // clear under Shift too — nothing was left to do the clearing.
+  // `USER_GUIDE.md:1720` was false for exactly this gesture.
+  it('a Shift press-and-release with NO movement still clears the whole selection', () => {
+    const { overlay, lanes } = renderView();
+    act(() => {
+      store().setSelectedClip(b1);
+      store().toggleSelectedClip(b2);
+    });
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+
+    firePointer(lanes[1], 'pointerdown', { clientX: atLaneX(300), clientY: 150, shiftKey: true });
+    firePointer(overlay, 'pointerup', { clientX: atLaneX(300), clientY: 150, shiftKey: true });
+
+    expect(store().selectedClipIds).toEqual([]);
+    expect(store().selectedClipId).toBeNull();
+  });
+
+  it('a Ctrl+Shift press-and-release with NO movement still clears the whole selection', () => {
+    const { overlay, lanes } = renderView();
+    act(() => {
+      store().setSelectedClip(b1);
+      store().toggleSelectedClip(b2);
+    });
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+
+    firePointer(lanes[1], 'pointerdown', {
+      clientX: atLaneX(300),
+      clientY: 150,
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    firePointer(overlay, 'pointerup', {
+      clientX: atLaneX(300),
+      clientY: 150,
+      ctrlKey: true,
+      shiftKey: true,
+    });
+
+    expect(store().selectedClipIds).toEqual([]);
+    expect(store().selectedClipId).toBeNull();
+  });
+});
+
+// Fix round 2 (item 6, MINOR — the gutter asymmetry). On a LANE, plain and
+// Ctrl/Shift click-away both end up clearing (TrackLane clears immediately
+// for plain; the marquee's own deferred clear covers Ctrl/Shift), so the
+// outcome looks modifier-independent from the outside. On the SCROLLER
+// gutter there is no `TrackLane` at all, so the marquee's own `deferredClear`
+// is the ONLY thing that can ever clear a gutter press — and it must
+// therefore take the OPPOSITE condition from the lane's: plain clears
+// (matching "click empty space to deselect"), Ctrl/Shift does not (Ctrl is
+// the ADD modifier and must not destroy a selection it was never asked to
+// touch).
+describe('the gutter (scroller background) is consistent with the lane, by an inverted rule', () => {
+  it('a PLAIN gutter click clears the whole selection', () => {
+    const { overlay, scroller } = renderView();
+    act(() => {
+      store().setSelectedClip(b1);
+      store().toggleSelectedClip(b2);
+    });
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+
+    firePointer(scroller, 'pointerdown', { clientX: atLaneX(300), clientY: 150 });
+    firePointer(overlay, 'pointerup', { clientX: atLaneX(300), clientY: 150 });
+
+    expect(store().selectedClipIds).toEqual([]);
+    expect(store().selectedClipId).toBeNull();
+  });
+
+  it('a Ctrl gutter click does NOT clear', () => {
+    const { overlay, scroller } = renderView();
+    act(() => {
+      store().setSelectedClip(b1);
+      store().toggleSelectedClip(b2);
+    });
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+
+    firePointer(scroller, 'pointerdown', { clientX: atLaneX(300), clientY: 150, ctrlKey: true });
+    firePointer(overlay, 'pointerup', { clientX: atLaneX(300), clientY: 150, ctrlKey: true });
+
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+  });
+
+  it('a Shift gutter click does NOT clear either', () => {
+    const { overlay, scroller } = renderView();
+    act(() => {
+      store().setSelectedClip(b1);
+      store().toggleSelectedClip(b2);
+    });
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+
+    firePointer(scroller, 'pointerdown', { clientX: atLaneX(300), clientY: 150, shiftKey: true });
+    firePointer(overlay, 'pointerup', { clientX: atLaneX(300), clientY: 150, shiftKey: true });
+
+    expect(store().selectedClipIds).toEqual([b1, b2]);
+  });
 });
 
 describe('J7 — Shift is reserved for lot J; lot K starts no gesture under it', () => {
@@ -293,6 +400,36 @@ describe('pointercancel (T1’s written precedent — a cancelled gesture commit
 
     expect(screen.queryByTestId('mt-marquee')).toBeNull();
     expect(store().selectedClipIds).toEqual([b2]);
+  });
+});
+
+// Fix round 2 (item 8, LOW) — a captured element that UNMOUNTS mid-drag (a
+// track removed by shortcut) can never deliver `pointercancel` to
+// `onOverlayPointerCancel`: a detached element has no ancestor chain left to
+// bubble through. `MultitrackView`'s own `useEffect` watching `session`
+// (keyed off `rec.targetEl.isConnected`) is the only thing that can catch
+// this.
+describe('the captured lane unmounting mid-drag (fix round 2, item 8)', () => {
+  it('a track removed while its lane holds pointer capture tears the gesture down', () => {
+    const { overlay, lanes } = renderView();
+
+    firePointer(lanes[1], 'pointerdown', { clientX: atLaneX(470), clientY: 150 }); // row B
+    firePointer(overlay, 'pointermove', { clientX: atLaneX(2050), clientY: 250 }); // row C — exceeds
+    expect(screen.queryByTestId('mt-marquee')).not.toBeNull();
+
+    // Simulates the track being deleted mid-drag: the lane that holds
+    // capture is unmounted. No `pointercancel` can reach the overlay for it.
+    act(() => {
+      store().removeTrack(bId);
+    });
+
+    expect(screen.queryByTestId('mt-marquee')).toBeNull();
+
+    // The torn-down gesture leaves no stale record: a fresh press elsewhere
+    // behaves exactly like the very first press of the test would have.
+    firePointer(lanes[0], 'pointerdown', { clientX: atLaneX(410), clientY: 50 });
+    firePointer(overlay, 'pointerup', { clientX: atLaneX(410), clientY: 50 });
+    expect(store().currentTrackId).toBe(aId);
   });
 });
 
@@ -340,10 +477,26 @@ describe('risk 4 — a header control press starts no marquee (the positive targ
 });
 
 describe('risk 1 — the gap double-click still works with the capture-phase gate installed', () => {
-  it('a double-click on empty lane space (not through the marquee) still selects the gap', () => {
+  // Fix round 2 (item 4) — the ORIGINAL version of this test fired a bare
+  // `dblclick` with no preceding `pointerdown` at all, so
+  // `onOverlayPointerDownCapture` never ran and the test passed identically
+  // whether capture was taken on `e.target` or on `overlayRef`. It proved
+  // nothing about the hazard it names. This version dispatches the REAL
+  // sequence a double-click is — two full sub-threshold press/release
+  // cycles, THEN the native `dblclick` — so the capture-phase gate genuinely
+  // takes and releases pointer capture on the lane twice before the
+  // double-click resolves, exercising the actual code path.
+  it('a double-click on empty lane space (the real press/release x2 sequence) still selects the gap', () => {
     const { lanes } = renderView();
     // Track B's leading gap: [0, 100_000) — before b1.
-    fireDblClick(lanes[1], atLaneX(500), 150); // sample 50_000, inside the leading gap
+    const x = atLaneX(500); // sample 50_000, inside the leading gap
+    const y = 150;
+
+    firePointer(lanes[1], 'pointerdown', { clientX: x, clientY: y });
+    firePointer(lanes[1], 'pointerup', { clientX: x, clientY: y });
+    firePointer(lanes[1], 'pointerdown', { clientX: x, clientY: y });
+    firePointer(lanes[1], 'pointerup', { clientX: x, clientY: y });
+    fireDblClick(lanes[1], x, y);
 
     expect(store().selectedGap).toEqual({ trackId: bId, startSample: 0, endSample: 100_000 });
   });

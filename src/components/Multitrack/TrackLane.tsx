@@ -291,6 +291,13 @@ export default function TrackLane({
     <div
       data-track-id={track.id}
       data-testid="track-lane"
+      // K1, fix round 2 — a PURPOSE-MADE attribute for `MultitrackView`'s
+      // marquee hit-test, deliberately separate from `data-testid`: a testid
+      // is understood app-wide as test-only plumbing, free to rename, and a
+      // rename would silently kill the marquee's positive target test with
+      // no type error and no obviously-related test failure. This one is
+      // production behaviour and is named for what it means.
+      data-lane-bg="true"
       onPointerDown={onPointerDown}
       onDoubleClick={onDoubleClick}
       onDragEnter={onDragEnter}
