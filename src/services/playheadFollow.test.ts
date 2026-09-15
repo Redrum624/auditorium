@@ -61,20 +61,27 @@ describe('playheadVisible / createPlayheadFollow', () => {
     const follow = createPlayheadFollow();
     expect(next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 441000 }, positionSample: 500000 })).toBeNull();
 
-    // User scrolled +100000 while playing.
+    // User scrolled to 300000 while playing. The playhead (700000) sits at
+    // px = (700000 - 300000) / 256 ≈ 1562.5, OUTSIDE the moved window too —
+    // deliberately so, per fix round 1: this case must be decided by the
+    // scrollSample-suspend arm alone, not by falling inside the new window
+    // (which would make the `null` prove visibility, not suspension, and
+    // leave the scrollSample half of the suspend rule untested — deleting
+    // `viewport.scrollSample !== baseline.scrollSample` from `next()` would
+    // still pass the old fixture).
     expect(
-      next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 541000 }, positionSample: 700000 })
+      next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 300000 }, positionSample: 700000 })
     ).toBeNull();
 
-    // Same (moved) viewport, playhead now inside [541000, 771400) — re-armed.
+    // Same (moved) viewport, playhead now inside [300000, 530400) — re-armed.
     expect(
-      next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 541000 }, positionSample: 600000 })
+      next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 300000 }, positionSample: 400000 })
     ).toBeNull();
 
     // Same viewport, playhead now past the edge — flips.
     expect(
-      next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 541000 }, positionSample: 800000 })
-    ).toBe(800000);
+      next(follow, { viewport: { samplesPerPixel: 256, scrollSample: 300000 }, positionSample: 600000 })
+    ).toBe(600000);
   });
 
   it('a zoom suspends even with an unchanged scroll — FAILS against the literal A5 text', () => {
@@ -142,5 +149,28 @@ describe('playheadVisible / createPlayheadFollow', () => {
     pointer.dispose();
     window.dispatchEvent(new Event('pointerdown'));
     expect(pointer.isDown()).toBe(false);
+  });
+
+  it('fix round 1: a blur on some OTHER element does not clear isDown — only window itself blurring does', () => {
+    const pointer = watchPointerActivity();
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+
+    window.dispatchEvent(new Event('pointerdown'));
+    expect(pointer.isDown()).toBe(true);
+
+    // A blur whose target is the button, not window. `blur` does not bubble,
+    // so a bubble/target-phase window listener must not see this one — a
+    // capture-phase listener would (that was the bug).
+    button.dispatchEvent(new Event('blur'));
+    expect(pointer.isDown()).toBe(true);
+
+    // The window itself losing focus IS the escape hatch and must still work.
+    window.dispatchEvent(new Event('blur'));
+    expect(pointer.isDown()).toBe(false);
+
+    document.body.removeChild(button);
+    pointer.dispose();
   });
 });

@@ -145,11 +145,27 @@ export function createPlayheadFollow(): PlayheadFollow {
  * distinguish — it defers on ANY pointer down, which is safe for them too
  * (they just never need the deferral).
  *
- * Capture-phase so no listener anywhere in the tree can stop this one from
- * seeing the event. `blur` is the release-outside-the-window escape: without
- * it, a `pointerup` that fires while focus has left the window (e.g. a native
- * file dialog, or the OS window losing focus mid-drag) would never arrive and
- * the follow would stay deferred for the rest of the playback run.
+ * The three pointer events are capture-phase so no listener anywhere in the
+ * tree can stop this one from seeing them. `blur` is the release-outside-the-
+ * window escape: without it, a `pointerup` that fires while focus has left
+ * the window (e.g. a native file dialog, or the OS window losing focus
+ * mid-drag) would never arrive and the follow would stay deferred for the
+ * rest of the playback run.
+ *
+ * **`blur` is deliberately NOT capture-phase — fix round 1.** `blur` does not
+ * bubble, but a capture-phase listener still fires for it (capture traverses
+ * every ancestor down to the target regardless of bubbling), so
+ * `addEventListener('blur', h, true)` on `window` fires on ANY element in the
+ * app losing focus, not just the window itself. Measured in jsdom: a
+ * `pointerdown` on a canvas is followed by the browser's default focus move
+ * (`useEditorGestures.onPointerDown` never calls `preventDefault` — only the
+ * wheel handler does), which blurs whatever control had focus (e.g. the Play
+ * button just clicked to start playback) and, at capture phase, that blur was
+ * reaching this handler and clearing `down` before the drag even started —
+ * exactly the corruption this watcher exists to prevent. Registered WITHOUT
+ * capture, `blur` only fires when `window` itself is the event's target
+ * (there is no bubble path to it otherwise), which is precisely "the window
+ * itself lost focus" and nothing else.
  */
 export function watchPointerActivity(): { isDown(): boolean; dispose(): void } {
   if (typeof window === 'undefined') {
@@ -165,14 +181,14 @@ export function watchPointerActivity(): { isDown(): boolean; dispose(): void } {
   window.addEventListener('pointerdown', onDown, true);
   window.addEventListener('pointerup', onUp, true);
   window.addEventListener('pointercancel', onUp, true);
-  window.addEventListener('blur', onUp, true);
+  window.addEventListener('blur', onUp, false);
   return {
     isDown: () => down,
     dispose: () => {
       window.removeEventListener('pointerdown', onDown, true);
       window.removeEventListener('pointerup', onUp, true);
       window.removeEventListener('pointercancel', onUp, true);
-      window.removeEventListener('blur', onUp, true);
+      window.removeEventListener('blur', onUp, false);
     },
   };
 }

@@ -169,17 +169,83 @@ describe('Toolbar — playhead follow wiring (both pumps)', () => {
     const pointerEvents = ['pointerdown', 'pointerup', 'pointercancel', 'blur'];
     const added = addSpy.mock.calls.filter(([type]) => pointerEvents.includes(type as string));
     expect(added).toHaveLength(4);
+    // Fix round 1, item 4: the capture flag matters, not just the type/handler
+    // pair — `blur` is deliberately registered WITHOUT capture (fix round 1,
+    // item 1: a capture-phase `blur` fires for ANY element losing focus, not
+    // just the window), while the other three ARE capture-phase. An
+    // add/remove pair with mismatched capture flags leaks the listener
+    // (`removeEventListener` only deregisters an EXACT capture match) and
+    // this assertion catches that.
+    const expectedCapture: Record<string, boolean> = {
+      pointerdown: true,
+      pointerup: true,
+      pointercancel: true,
+      blur: false,
+    };
+    for (const [type, , capture] of added) {
+      expect(capture).toBe(expectedCapture[type as string]);
+    }
 
     unmount();
 
     const removed = removeSpy.mock.calls.filter(([type]) => pointerEvents.includes(type as string));
     expect(removed).toHaveLength(4);
-    for (const [type, handler] of added) {
+    for (const [type, handler, capture] of added) {
       expect(
-        removed.some(([rType, rHandler]) => rType === type && rHandler === handler)
+        removed.some(
+          ([rType, rHandler, rCapture]) => rType === type && rHandler === handler && rCapture === capture
+        )
       ).toBe(true);
     }
 
     raf.restore();
+  });
+
+  it('fix round 1, items 1/3: pointerBusy defers the flip end-to-end, including a mid-gesture blur on an unrelated element', () => {
+    // Regression coverage for the exact scenario the review found: click
+    // Play (focus lands on the button) -> start a pointer-down drag on the
+    // canvas -> the browser's default focus change blurs the Play button.
+    // That blur must NOT clear the pointer-down state, or a flip lands
+    // mid-gesture. Also proves `pointerBusy` is actually wired to
+    // `pointer.isDown()` in the pump (substituting a literal `false` there
+    // must turn this test red).
+    setEditorLaneWidth(900);
+    const doc = make20sDoc();
+    useAppStore.getState().addDocument(doc);
+    applyEditorZoom({ samplesPerPixel: 256, scrollSample: 100000 });
+    useAppStore.getState().setPlayback({ state: 'playing' });
+
+    const posSpy = jest.spyOn(playbackEngine, 'getPositionSample').mockReturnValue(400000);
+    const raf = captureRaf();
+
+    const { unmount } = render(<Toolbar />);
+    const tick = raf.getTick();
+    expect(tick).not.toBeNull();
+
+    const playButton = document.createElement('button');
+    document.body.appendChild(playButton);
+    playButton.focus();
+
+    // pointerdown starts the drag; the resulting focus move blurs the button
+    // (its target, not window) — must not reach a capture-phase-only bug.
+    window.dispatchEvent(new Event('pointerdown'));
+    playButton.dispatchEvent(new Event('blur'));
+
+    act(() => tick!(0));
+
+    // Still deferred — the playhead (400000, outside [100000, 330400)) must
+    // NOT have paged the view while the pointer is down.
+    expect(useAppStore.getState().zoom.scrollSample).toBe(100000);
+
+    window.dispatchEvent(new Event('pointerup'));
+    act(() => tick!(0));
+
+    // Pointer released: the deferred flip goes through.
+    expect(useAppStore.getState().zoom.scrollSample).toBe(400000);
+
+    document.body.removeChild(playButton);
+    unmount();
+    raf.restore();
+    posSpy.mockRestore();
   });
 });
