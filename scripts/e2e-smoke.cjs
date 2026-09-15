@@ -7661,12 +7661,30 @@ async function main() {
     // because what it lands is one track PER SPEAKER plus Backing. An
     // `includes` pin would have survived the change with the sentence half
     // rewritten around it, so both paragraphs are compared whole.
+    //
+    // Lot E fix round 2: this is the APPENDED arm's copy, not the replaced
+    // arm's — deliberately, not by accident. The open session already has
+    // clips standing from earlier steps (no `newSession` between the
+    // split/merge/gap block and here — see the `landingMode !== 'replaced'`
+    // assertion on the landing hooks further down this same step, which
+    // depends on that exact same precondition), so `SeparateDialog`'s own
+    // live `planLanding` selector correctly renders the appended-arm text —
+    // confirmed against the real packaged app's own logged
+    // `separate-produces`/`separate-guarantees` text. Resetting the session
+    // here to force the replaced arm would only move the contradiction: the
+    // hook-based landings a few dozen lines down would still see a session
+    // with no clips added in between, so they would ALSO switch to
+    // `'replaced'` and break their own `landingMode !== 'replaced'` checks.
+    // This is the one place in the whole smoke that exercises the appended
+    // arm's live dialog copy, so it is kept rather than reset away.
     const VOICE_PRODUCES =
-      'One track per speaker plus Backing. The voice is separated from everything else first, ' +
-      'then each speaker’s turns land on their own track.';
+      'One track per speaker plus Backing, added to your open session. The voice is separated ' +
+      'from everything else first, then each speaker’s turns land on their own track. Nothing ' +
+      'already on the timeline is removed.';
     const VOICE_GUARANTEES =
       'Backing adds back to your original as before. Speaker tracks carry that speaker’s turns ' +
-      'with short fades at each edge, so they do not add back sample for sample.';
+      'with short fades at each edge, so they do not add back sample for sample. Mixing the ' +
+      'session down now gives you the whole session, not this file on its own.';
     assert(
       voiceDialog.produces === VOICE_PRODUCES,
       `it promises one track per speaker plus Backing, and says the voice is lifted out first ` +
@@ -8014,6 +8032,18 @@ async function main() {
       await closeHostedTool();
     }
     await openModuleCard(page, 'Files');
+
+    // Lot E fix round 2 (addendum A): `[data-testid="track-header"]` /
+    // `[data-testid="clip"]` render ONLY under `MultitrackView`, and the last
+    // view write before this point is `setView('waveform')` several steps
+    // back — nothing in between reaches any `setView('multitrack')` site. A
+    // DOM snapshot taken here would silently read {tracks: 0, clips: 0}
+    // every time, which made the round-1 "fix" a no-op: it degenerated back
+    // to the same unsatisfiable absolute-count shape the landingMode
+    // assertion below already contradicts. Force the view the snapshot
+    // depends on before reading it, rather than trusting whatever view an
+    // earlier, unrelated step happened to leave on screen.
+    await page.evaluate(() => window.__test.setView('multitrack'));
 
     // Lot E fix round 1: the DOM snapshot BEFORE this landing, because the
     // open session already has clips (the split/merge/gap block's, still

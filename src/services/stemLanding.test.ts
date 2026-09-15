@@ -1694,6 +1694,40 @@ describe('lot E acceptance 5 — the exactness guarantee stays measurable via la
   });
 });
 
+describe('lot E fix round 2 (item B) — landedTracksProbeSession also strips the carried-over fades', () => {
+  it('a faded anchor still reconstructs the source exactly through the probe', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH);
+    placeClip(1, source.id, 220_500, FIXTURE_LENGTH, 0, {
+      fadeInSample: 1500,
+      fadeOutSample: 2000,
+      fadeInCurve: 'equal-gain',
+      fadeOutCurve: 'exponential',
+    });
+    const sourceCopy = source.channels.map((c) => Float32Array.from(c));
+
+    const landing = landStems(makeOutput(source));
+    expect(landing.landingMode).toBe('in-place'); // precondition
+
+    // Precondition: the landed clips really did inherit the fades (fix round
+    // 1, item 3) — otherwise this test would pass for the wrong reason.
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) {
+      expect(c.fadeInSample).toBe(1500);
+      expect(c.fadeOutSample).toBe(2000);
+    }
+
+    // Without stripping the fades on the PROBE, the ramp near each clip's
+    // edges would make the mixdown differ from the raw (unfaded) source.
+    const probeReport = measureIdentity(mixdownLandedTracks(landing), sourceCopy);
+    expect(probeReport.worstAbs).toBe(0);
+  });
+});
+
 describe('lot E acceptance 6 — the mono level (E1 refinement 3)', () => {
   it('a MONO source subtracts MONO_PAN_COMPENSATION_DB from the inherited clip gain', () => {
     const monoSource = addSourceDocument(1, 44100, 'MonoSong', FIXTURE_LENGTH);

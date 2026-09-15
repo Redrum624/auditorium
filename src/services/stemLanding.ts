@@ -782,6 +782,13 @@ export function landSpeakers(
  * otherwise leave the probe's mixdown time-varying — the identity this probe
  * exists to keep checkable would silently stop being checkable again, the
  * exact failure mode E5 part 4 was added to close.
+ *
+ * Fix round 2: also strips each clip's `fadeInSample`/`fadeOutSample` for the
+ * same reason — the in-place arm now carries the displaced anchor CLIP's
+ * edge fades onto the landed clip verbatim too (fix round 1, item 3), so a
+ * faded anchor would otherwise fade the probe's own mixdown in/out against
+ * the unfaded source it is compared to. Curves are left as-is: a curve with
+ * no fade length is inert.
  */
 export function landedTracksProbeSession(trackIds: readonly string[]): Session {
   const session = useSessionStore.getState().session;
@@ -797,7 +804,22 @@ export function landedTracksProbeSession(trackIds: readonly string[]): Session {
       muted: false,
       solo: false,
       automation: undefined,
-      clips: track.clips.map((c) => ({ ...c, startSample: 0, gainDb: 0 })),
+      // Fix round 2 (item B): the in-place arm now carries the displaced
+      // anchor clip's edge fades onto every landed clip (fix round 1, item
+      // 3). A faded anchor would otherwise leave the probe's own mixdown
+      // fading in/out against the source it is being compared to — the same
+      // "the probe stops measuring the identity it exists to keep
+      // measurable" failure `automation: undefined` above was added to
+      // close, reintroduced by the fade carry-over. Curves are left alone:
+      // a curve with no fade length does nothing (`mixdown.ts`'s fade
+      // application gates on the sample counts).
+      clips: track.clips.map((c) => ({
+        ...c,
+        startSample: 0,
+        gainDb: 0,
+        fadeInSample: undefined,
+        fadeOutSample: undefined,
+      })),
     });
   }
   return { name: session.name, sampleRate: session.sampleRate, tracks };
