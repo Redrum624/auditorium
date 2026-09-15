@@ -13,7 +13,8 @@ import { runCommand } from './services/menuActions';
 import { getRemixSession } from './services/remixService';
 import { focusTranscriptPanel } from './services/dialogBus';
 import { _resetClipWork, clipWorkTargetId } from './services/clipPass';
-import { _resetPassLock } from './services/passLock';
+import { _resetPassLock, isPassRunning } from './services/passLock';
+import * as effectRunnerModule from './services/effectRunner';
 // U2: the strip registry's own answers, so these tests assert the RULE (Files
 // leads, History trails) rather than a second copy of today's roster.
 import { DEFAULT_PANEL, stripTabs } from './components/Layout/ModuleStrip';
@@ -966,5 +967,101 @@ describe('the clip-work drift watcher closes a stale host before Apply can reach
 
     const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
     expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+  });
+
+  // Fix round 3 (review finding 1) — the drift watcher used to close a host
+  // UNCONDITIONALLY, including mid-Apply: the unmount discards the in-flight
+  // pass safely (no wrong-document write — confirmed separately), but
+  // `DialogShell`'s own unmount cleanup then releases `passLock.ts`'s
+  // APP-WIDE lock WHILE THE WORKER IS STILL COMPUTING, a direct M1
+  // regression (a second pass could start concurrently with the first one's
+  // own cleanup). Real `runEffectOnSelection`, held open with a manually
+  // resolved promise so the moment of "still running" is directly
+  // observable — no mock of the outcome logic itself, only of when it
+  // settles.
+  it('never closes a host while its own pass is running, and defers the close until it settles', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    const workId = clipWorkTargetId('effect');
+    expect(workId).not.toBeNull();
+
+    let resolveApply!: (v: 'cancelled') => void;
+    const spy = jest
+      .spyOn(effectRunnerModule, 'runEffectOnSelection')
+      .mockReturnValueOnce(new Promise((resolve) => (resolveApply = resolve)));
+
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('effect-host')).getByRole('button', { name: 'Apply' }));
+    });
+    expect(isPassRunning()).toBe(true);
+
+    // The drift, WHILE the pass is still running.
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    // Deferred: still mounted, lock still held, slot untouched — none of
+    // finding 1's regression.
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+    expect(isPassRunning()).toBe(true);
+    expect(clipWorkTargetId('effect')).toBe(workId);
+
+    // The worker "finishes" — resolved as `'cancelled'`, matching what the
+    // REAL runner would actually decide here (`shouldCancel` sees the drift)
+    // — so `EffectDialog`'s own code does NOT call `onClose()` itself; only
+    // the watcher's deferred re-check can close it now.
+    await act(async () => {
+      resolveApply('cancelled');
+    });
+
+    expect(isPassRunning()).toBe(false); // released — but only once, and only now
+    expect(screen.queryByTestId('effect-host')).toBeNull(); // the deferred close fired
+    expect(clipWorkTargetId('effect')).toBeNull();
+
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+
+    spy.mockRestore();
+  });
+
+  // Fix round 3 (review finding 2) — the End-to-end plumbing: `AlignLyricsDialog`
+  // reports `hasUnsavedInput` through `DialogShell` -> `DialogHostApi` ->
+  // `PipelineToolHost` -> `App.tsx`'s `toolHasUnsavedInput`, and the tool
+  // watcher reads it. `AlignLyricsDialog.test.tsx` pins the OTHER half (its
+  // own `canAlign`/`canReplace` gate) at the component level; this is the
+  // one test that proves the whole chain actually connects through a real
+  // `<App/>` render — no mocked plumbing.
+  it('defers closing Align Lyrics while it holds typed text, unlike an ordinary tool', async () => {
+    setupMultitrackClip();
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('lyrics.align');
+    });
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
+
+    // The drift.
+    act(() => {
+      useAppStore.getState().setActiveDocument(useAppStore.getState().documents[0].id);
+    });
+
+    // NOT closed — the typed lyrics are still there, unlike the ordinary
+    // (no-unsaved-input) tool/effect drift cases pinned above.
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    expect(screen.getByTestId('align-lyrics-text')).toHaveValue('la la la');
+
+    // Clearing the text lifts the deferral: `toolHasUnsavedInput` flipping to
+    // `false` is itself one of the watcher's OWN dependencies, so the SAME
+    // (already-standing) drift condition it could not act on before now
+    // closes the host — no second writer needed.
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: '' } });
+    expect(screen.queryByTestId('tool-host')).toBeNull();
   });
 });

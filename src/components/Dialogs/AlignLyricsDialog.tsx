@@ -23,6 +23,9 @@ import {
   type PlacedWord,
 } from '../../services/alignLyricsService';
 import { isPassRunning, usePassLock } from '../../services/passLock';
+// Fix round 3 (review findings 2/3) — the same "is my target still the live
+// one" question `EffectDialog`'s `canApply` now asks (finding 3).
+import { clipWorkTargetId } from '../../services/clipPass';
 import { GlassButton, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -105,6 +108,12 @@ export default function AlignLyricsDialog({
 }) {
   const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
   const selection = useAppStore((s) => s.selection);
+  // Fix round 3 (review finding 3's pattern, applied here too) — re-asserted
+  // at Run, not only at open: `view` alone isn't quite it (this dialog
+  // opened OUTSIDE multitrack must keep working exactly as before — D1's
+  // non-multitrack arm), so this is scoped to the case that actually needs
+  // it, below.
+  const view = useAppStore((s) => s.view);
   const length = doc ? docLength(doc) : 0;
   const alignVersion = useAlignVersion();
 
@@ -378,10 +387,28 @@ export default function AlignLyricsDialog({
   const expectedBytes = model?.expectedBytes ?? 0;
   const modelMissing = model !== null && !model.downloaded;
   const hasText = text.trim().length > 0;
+  // Fix round 3 (review findings 2/3) — re-asserted at Run/Replace, not only
+  // at open, mirroring `EffectDialog`'s `canApply` (finding 3): outside
+  // multitrack this is always `true` (D1's non-multitrack arm, unchanged);
+  // inside multitrack it requires `doc` to still be THIS dialog's own
+  // clip-work target — false the instant a drift the watcher has not yet
+  // (or, holding `text`/`take`, will never) acted on has moved
+  // `activeDocumentId` elsewhere. This is what makes it SAFE for the drift
+  // watcher to defer closing this one dialog (finding 2) rather than
+  // silently destroying a typed lyric or a recorded take: the write door is
+  // shut even while the card itself stays open.
+  const targetStillLive = view !== 'multitrack' || clipWorkTargetId('tool') === (doc?.id ?? null);
   const canAlign =
-    !busy && doc !== null && length > 0 && hasText && model?.downloaded === true && runningPass === null;
+    !busy &&
+    doc !== null &&
+    length > 0 &&
+    hasText &&
+    model?.downloaded === true &&
+    runningPass === null &&
+    targetStillLive;
   const takeMatchesSelection = take !== null && selectedWord !== null && take.forWord === selectedWord;
-  const canReplace = !busy && takeMatchesSelection && alignment !== null && !stale && runningPass === null;
+  const canReplace =
+    !busy && takeMatchesSelection && alignment !== null && !stale && runningPass === null && targetStillLive;
   const message = error ?? (doc === null ? 'No document is open.' : null);
   const regionSamples = selection && selection.end > selection.start ? selection.end - selection.start : length;
   const estimateSeconds = doc ? regionSamples / doc.sampleRate / MEASURED_ALIGN_REALTIME_FACTOR : 0;
@@ -408,6 +435,12 @@ export default function AlignLyricsDialog({
       width={560}
       onClose={onClose}
       dismissable={!busy}
+      // Fix round 3 (review finding 2) — `text`/`take` are component state
+      // backed by no store: typed/pasted lyrics and a raw recorded take
+      // (`useState` above). Reported so `App.tsx`'s drift watcher defers
+      // closing this dialog rather than silently discarding a recording the
+      // user just made.
+      hasUnsavedInput={hasText || take !== null}
     >
       <div className="flex flex-col gap-3" data-testid="align-lyrics-dialog">
         <SectionLabel>What you get</SectionLabel>

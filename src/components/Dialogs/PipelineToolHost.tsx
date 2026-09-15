@@ -122,6 +122,7 @@ export default function PipelineToolHost({
   backgrounded = false,
   onClose,
   onModuleLockChange,
+  onUnsavedInputChange,
 }: {
   /** A Pipeline command id; nothing renders for an id this host does not know. */
   commandId: string;
@@ -139,12 +140,23 @@ export default function PipelineToolHost({
    * pass is running; App turns that into a greyed module strip and a live
    * `hasOpenDialog()`. */
   onModuleLockChange(locked: boolean): void;
+  /** Lot D fix round 3 (review finding 2) — raised with the hosted tool's
+   * `hasUnsavedInput` (see `DialogShell`'s prop of the same name). Optional:
+   * omitted entirely by callers that have no drift watcher to feed (there are
+   * none today, but `DialogHostProvider`'s own prop is optional for the same
+   * reason `onModuleLockChange`'s hosted-only nature is — this host always
+   * has one to give). */
+  onUnsavedInputChange?(hasUnsavedInput: boolean): void;
 }) {
   const Tool = PIPELINE_TOOL_COMPONENTS[commandId];
   // Stable identity, so the provider's memo does not re-publish per paint.
   const report = useCallback(
     (locked: boolean) => onModuleLockChange(locked),
     [onModuleLockChange]
+  );
+  const reportUnsavedInput = useCallback(
+    (has: boolean) => onUnsavedInputChange?.(has),
+    [onUnsavedInputChange]
   );
   if (!Tool) return null;
 
@@ -167,7 +179,7 @@ export default function PipelineToolHost({
         display: backgrounded ? 'none' : undefined,
       }}
     >
-      <DialogHostProvider onModuleLockChange={report}>
+      <DialogHostProvider onModuleLockChange={report} onUnsavedInputChange={reportUnsavedInput}>
         <Tool onClose={onClose} />
       </DialogHostProvider>
     </GlassCard>

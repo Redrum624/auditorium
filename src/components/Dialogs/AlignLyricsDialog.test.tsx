@@ -18,6 +18,10 @@ import { registerDialogSetters } from '../../services/dialogBus';
 import { createDocument } from '../../audio/AudioDocument';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { stageById } from '../../services/vocalChain';
+// Fix round 3 (review findings 2/3) — the target re-assertion at Run/Replace.
+import { useSessionStore } from '../../multitrack/sessionStore';
+import { createClip } from '../../multitrack/session';
+import { beginClipWork, clipWorkTargetId, _resetClipWork } from '../../services/clipPass';
 
 // ---------------------------------------------------------------------------
 // Fixture — the same construction the service test uses, kept small: three
@@ -832,6 +836,67 @@ describe('AlignLyricsDialog — model, run and refusals', () => {
     });
     await settle();
     expect(screen.getByTestId('align-lyrics-dropped-words')).toHaveTextContent('24');
+  });
+});
+
+// Lot D fix round 3 (review findings 2/3) — `canAlign`/`canReplace` re-assert
+// the clip-work target at Run/Replace, not only at open. This is what makes
+// it SAFE for `App.tsx`'s drift watcher to DEFER closing this dialog when it
+// holds unrecoverable input (typed lyrics, a recorded take) rather than
+// silently discarding it: even left open and stale, it cannot itself commit
+// a wrong-document write.
+describe('target re-assertion at Run (lot D fix round 3, findings 2/3)', () => {
+  afterEach(() => {
+    _resetClipWork();
+  });
+
+  it('disables Align once the clip-work target drifts away from the active document', async () => {
+    const docId = seedDoc();
+    useSessionStore.getState().newSession(SR);
+    useSessionStore.getState().addTrack();
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: docId,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    useSessionStore.getState().addClip(trackId, clip);
+    useSessionStore.getState().setSelectedClips([clip.id]);
+    useAppStore.getState().setView('multitrack');
+
+    // Mirrors `App.tsx`'s `openTool`: mints a working copy and activates it
+    // BEFORE the dialog ever mounts — the ordinary, correctly-scoped case.
+    beginClipWork('lyrics.align');
+    const workId = clipWorkTargetId('tool');
+    expect(workId).not.toBeNull();
+    expect(useAppStore.getState().activeDocumentId).toBe(workId);
+
+    open();
+    await settle();
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
+    expect(screen.getByTestId('align-lyrics-run')).not.toBeDisabled();
+
+    // The drift: some other writer (a Files-panel row, in the real app)
+    // moves the active document away from this dialog's own working copy —
+    // exactly the state `App.tsx`'s drift watcher would otherwise close this
+    // host over, deferred here because it holds typed lyrics.
+    act(() => {
+      useAppStore.getState().setActiveDocument(docId);
+    });
+
+    expect(screen.getByTestId('align-lyrics-run')).toBeDisabled();
+  });
+
+  it('stays enabled outside multitrack regardless of clipWorkTargetId (D1 unchanged)', async () => {
+    seedDoc();
+    // Never entered multitrack — `view` stays 'waveform' (makeInitialState's
+    // default) — so `clipWorkTargetId('tool')` is irrelevant by construction.
+    open();
+    await settle();
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
+
+    expect(screen.getByTestId('align-lyrics-run')).not.toBeDisabled();
   });
 });
 

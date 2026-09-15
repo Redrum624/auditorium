@@ -3,6 +3,8 @@ import { cloneRegion, createDocument, docLength } from '../../audio/AudioDocumen
 import { playbackEngine, type PlaybackEngine } from '../../audio/PlaybackEngine';
 import { getEffect } from '../../effects/EffectRegistry';
 import type { EffectParamDef, EffectParamValue } from '../../effects/types';
+// Fix round 3 (review finding 3) — see `canApply`'s own comment.
+import { clipWorkTargetId } from '../../services/clipPass';
 import { runEffectOnSelection } from '../../services/effectRunner';
 import { getNoiseProfile, useNoiseProfileVersion } from '../../services/noiseProfile';
 import { usePassLock } from '../../services/passLock';
@@ -62,6 +64,8 @@ export default function EffectDialog({
 }) {
   const def = getEffect(effectId);
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
+  // Fix round 3 (review finding 3) — see `canApply`'s own comment below.
+  const view = useAppStore((s) => s.view);
   const activeDocName = useAppStore(
     (s) => s.documents.find((d) => d.id === s.activeDocumentId)?.name
   );
@@ -201,14 +205,31 @@ export default function EffectDialog({
   // found: open an idle effect card, start Save, click Apply.
   const runningPass = usePassLock();
 
+  // Fix round 3 (review finding 3) — closes the uncovered route the drift
+  // watcher deliberately does not: open in Waveform/Spectral (no clip-work
+  // slot is ever minted — `beginClipWork` no-ops outside multitrack), switch
+  // the view to Multitrack, Apply. `canApply` was not view-gated at all, so
+  // it kept reading the live `activeDocumentId` — the SAME document the card
+  // opened against, never reset by a view switch — and wrote it whole/over
+  // the standing Waveform selection, on that document's OWN undo stack,
+  // which multitrack Ctrl+Z cannot reach: D1's "the view decides" violated
+  // one layer past where the drift watcher looks (it only ever sees a slot
+  // that EXISTS and has moved; this card never had one to begin with).
+  // `clipWorkTargetId('effect')` is `null` whenever no slot was minted — the
+  // OUTCOME this bug depends on — so `null !== activeDocumentId` correctly
+  // refuses here, while `view !== 'multitrack'` keeps this a no-op for every
+  // ordinary Waveform/Spectral Apply, D1's non-multitrack arm unchanged.
+  const targetStillLive = view !== 'multitrack' || clipWorkTargetId('effect') === activeDocumentId;
+
   const canApply = useMemo(
     () =>
       Boolean(def) &&
       activeDocumentId !== null &&
       !busy &&
       !missingNoiseProfile &&
-      runningPass === null,
-    [def, activeDocumentId, busy, missingNoiseProfile, runningPass]
+      runningPass === null &&
+      targetStillLive,
+    [def, activeDocumentId, busy, missingNoiseProfile, runningPass, targetStillLive]
   );
 
   if (!def) return null;

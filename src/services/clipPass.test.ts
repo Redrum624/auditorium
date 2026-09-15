@@ -168,7 +168,7 @@ it('acceptance 4 (D6): one undoSession restores the clip to its original source 
 });
 
 // Acceptance 5 (D5)
-it('acceptance 5 (D5): a second clip on the same source document is unaffected', () => {
+it('acceptance 5 (D5): a second clip on the same source document is unaffected', async () => {
   const { source, trackId } = setupClipFixture();
   const clipB = createClip({
     documentId: source.id,
@@ -185,11 +185,13 @@ it('acceptance 5 (D5): a second clip on the same source document is unaffected',
   const sourceChannelsBefore = source.channels[0];
 
   beginClipWork(EFFECT_CARD_WORK_ID); // still targets clip A — B was never selected
-  const work = findWorkDoc(source.id);
-  useAppStore.getState().updateDocument({
-    ...work,
-    channels: [new Float32Array(30_000), new Float32Array(30_000)],
-  });
+  // Fix round 3 (finding 4) — was `updateDocument({...work, channels: [...]})`,
+  // a direct store write bypassing every real code path: no lot-D mutation
+  // could ever have failed it, so its only teeth were `findWorkDoc`'s throw.
+  // A REAL `runEffectOnSelection` — the same call acceptance 1 makes — is
+  // what actually exercises the "does anything reach `source`" claim.
+  const outcome = await runEffectOnSelection('amplify', { gainDb: 6 }, {});
+  expect(outcome).toBe('committed');
 
   const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
   expect(sourceNow.channels[0]).toBe(sourceChannelsBefore); // same reference — B's audio is intact

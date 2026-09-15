@@ -841,3 +841,40 @@ describe('the card names the region Apply will write (final round 3)', () => {
     expect(scope()).not.toHaveTextContent('Selection');
   });
 });
+
+// Lot D fix round 3 (review finding 3) — the uncovered route to the same
+// user-visible outcome as the CRITICAL fix: open in Waveform (no clip-work
+// slot is ever minted — `beginClipWork` no-ops outside multitrack), switch
+// the view to Multitrack, Apply. `canApply` was not view-gated at all, so it
+// kept writing the document the card opened against, on THAT document's own
+// undo stack — unreachable from multitrack's Ctrl+Z. The drift watcher
+// (App.tsx) cannot see this case: it only reacts to a slot that EXISTS and
+// has moved, and this card never had one.
+describe('view re-assertion at Apply (lot D fix round 3, finding 3)', () => {
+  it('refuses Apply the moment the view becomes multitrack for a card with no clip-work slot', () => {
+    seedActiveDoc();
+    render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
+    expect(screen.getByRole('button', { name: 'Apply' })).not.toBeDisabled();
+
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+    });
+
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled();
+  });
+
+  it('re-enables Apply on switching back to Waveform/Spectral — D1’s non-multitrack arm is unaffected', () => {
+    seedActiveDoc();
+    render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+    });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled();
+
+    act(() => {
+      useAppStore.getState().setView('waveform');
+    });
+
+    expect(screen.getByRole('button', { name: 'Apply' })).not.toBeDisabled();
+  });
+});

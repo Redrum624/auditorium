@@ -140,6 +140,19 @@ export default function App() {
   // acquire/release pairs, `hostPassRef.tool` and `hostPassRef.effect` below,
   // one per slot, never a shared single ref or a counter.
   const [hostedTool, setHostedTool] = useState<string | null>(null);
+  // Lot D fix round 3 (review finding 2) — reported by the hosted tool via
+  // `PipelineToolHost`'s `onUnsavedInputChange` (`DialogShell`'s
+  // `hasUnsavedInput` prop, currently only `AlignLyricsDialog`): does the
+  // CURRENTLY MOUNTED tool hold local state a close would silently and
+  // permanently destroy (typed lyrics, a raw recorded take)? State, not a
+  // ref, specifically so the drift watcher below can depend on it and
+  // re-evaluate the moment it clears. Reset to `false` whenever `hostedTool`
+  // itself changes (a fresh tool, or none, never inherits a stale `true`
+  // left over from the one that was here before it).
+  const [toolHasUnsavedInput, setToolHasUnsavedInput] = useState(false);
+  useEffect(() => {
+    setToolHasUnsavedInput(false);
+  }, [hostedTool]);
   // ---- lot C ----
   // Item 3 (C1/C2/C5, fix round 1) — TWO retained slots, `hostedTool` and
   // `hostedEffect`, and which of them (if either) is the FOREGROUNDED
@@ -615,6 +628,12 @@ export default function App() {
     setColumnHost(null);
   }, [hostedEffect, hostedTool, activeDocumentId, closeEffect, closeTool]);
 
+  // Lot M / lot D fix round 3 — declared here (rather than only where the
+  // strip badges read it further below) so the drift watchers can depend on
+  // it too: a reactive proxy for `hostPassRef.current.effect`/`.tool`
+  // changing, since a plain ref mutation triggers no re-render on its own.
+  const runningPass = usePassLock();
+
   // Lot D fix round 1 (CRITICAL/HIGH) — the drift watcher. A clip-work slot
   // names the ONE document its host may safely Apply to; `activeDocumentId`
   // has many writers besides this module's own mint/restore (enumerated in
@@ -633,36 +652,64 @@ export default function App() {
   // true no-op for every ordinary single-document edit — it only fires once
   // a slot exists AND the live active document no longer matches it.
   //
-  // Fix round 2 (review item 4) — DECISION: this close is silent, and stays
-  // silent, by design rather than omission. What it discards is UI state
-  // only (unapplied param edits in a form) — never audio, never anything
-  // Undo could have reached — because a COMMITTED slot's `endClipWork`
-  // no-ops (the clip already points at the finished result) and an
-  // uncommitted one held nothing but a clone the user had not approved yet.
-  // This app already has no confirmation anywhere for that class of loss:
-  // picking a DIFFERENT effect while one is open (`openEffect` replacing
-  // `hostedEffect`) unmounts the first with its in-progress params gone, no
-  // prompt, and always has. A message box here would need to explain a
-  // DIFFERENT thing every time depending on which of the many writers
-  // enumerated above caused it, would fire from an effect with no natural
-  // place to attribute the interruption to, and — checked, not assumed —
-  // `App.effectHost.test.tsx` alone carries 19 `showMessageBox` call-count
-  // assertions; wiring a new one through the busiest release path in the
-  // file risks the exact kind of false-negative regression this fix round
-  // exists to stop compounding. If a future request wants the card to say
-  // WHY it closed, that is a deliberate, separately-scoped feature, not a
-  // silent gap in this one.
+  // Fix round 3 (review finding 1) — NEVER while a pass is running. This
+  // used to close `hostedEffect`/`hostedTool` unconditionally, including
+  // mid-Apply, which (a) unmounts the dialog, discarding its in-flight pass
+  // via the SAME `cancelledRef`/target-mismatch machinery a legitimate
+  // document-close already exercises safely — no wrong-document write, the
+  // reviewer confirmed — but (b) `DialogShell`'s own unmount cleanup then
+  // releases `passLock.ts`'s APP-WIDE lock (`onModuleLockChange(false)`)
+  // WHILE THE WORKER IS STILL COMPUTING in the background, which is a direct
+  // M1 regression: a second pass could start concurrently with the first
+  // one's own cleanup. `hostPassRef.current.effect`/`.tool` is the exact
+  // per-host busy flag `handleEffectLock`/`handleToolLock` already
+  // maintain — reading it here DEFERS the close rather than skipping it:
+  // once the pass ends (success, cancellation or failure), the SAME
+  // lock-change that flips the ref also bumps `usePassLock()`'s version,
+  // `runningPass` changes, this effect re-runs, and — if the target is
+  // STILL drifted at that point, which nothing above has fixed — the host
+  // closes then, safely, with nothing left running to interrupt.
+  //
+  // Fix round 3 (review finding 2) — NEVER while the tool holds unrecoverable
+  // local input either. Round 2's silent-close decision rested on "never
+  // audio, never anything Undo could have reached", which was FALSE:
+  // `AlignLyricsDialog` (`lyrics.align`, a `CLIP_WORK_COMMANDS` member) holds
+  // typed/pasted lyrics and a raw recorded take in component state backed by
+  // no store (`text`, `take` — see that file's own comments), and a
+  // Files-panel row click — one click, never disabled — could have silently
+  // erased a take the user had just recorded. `toolHasUnsavedInput` is that
+  // dialog's own report (`DialogShell`'s `hasUnsavedInput` prop, plumbed
+  // through `DialogHostApi.onUnsavedInputChange` — every OTHER hosted dialog
+  // never raises it, so this is a no-op for all of them). Deferring is safe
+  // here specifically because `AlignLyricsDialog`'s OWN `canAlign`/
+  // `canReplace` now re-assert the SAME target match this watcher checks
+  // (fix round 3, mirroring `EffectDialog`'s `canApply` below) — so a
+  // deferred, still-open, still-drifted card cannot itself commit a
+  // wrong-document write while the user's text/take sit safe inside it.
+  // There is no equivalent flag for the EFFECT kind: verified (grepped)
+  // that no registered effect's dialog holds comparable local state —
+  // `EffectDialog`'s own params are all numeric/toggle, trivially re-entered.
+  //
+  // The round-2 silent-close DECISION itself still stands for what remains
+  // true of it: a deferred-then-closed card only ever discards UI state
+  // *that this fix round has verified is either re-typeable or already
+  // protected by its own target-match gate* — never audio, never something
+  // Undo could reach, and (for `lyrics.align`) never a take the user cannot
+  // still place because the close never happens while it exists.
   useLayoutEffect(() => {
     if (hostedEffect === null) return;
+    if (hostPassRef.current.effect) return; // fix round 3, finding 1 — never mid-pass
     const targetId = clipWorkTargetId('effect');
     if (targetId !== null && targetId !== activeDocumentId) closeEffect();
-  }, [hostedEffect, activeDocumentId, closeEffect]);
+  }, [hostedEffect, activeDocumentId, closeEffect, runningPass]);
 
   useLayoutEffect(() => {
     if (hostedTool === null) return;
+    if (hostPassRef.current.tool) return; // fix round 3, finding 1 — never mid-pass
+    if (toolHasUnsavedInput) return; // fix round 3, finding 2 — never destroy unrecoverable input
     const targetId = clipWorkTargetId('tool');
     if (targetId !== null && targetId !== activeDocumentId) closeTool();
-  }, [hostedTool, activeDocumentId, closeTool]);
+  }, [hostedTool, activeDocumentId, closeTool, runningPass, toolHasUnsavedInput]);
   // ---- /lot C ----
   // ---- /lot B ----
 
@@ -817,7 +864,8 @@ export default function App() {
   // `refuseWhileRunning`/`describeHostedPass` above must never be able to
   // name different passes). The id shapes mirror `describeHostedPass`: a
   // pipeline command id for the tool, `effect.<id>` for the effect.
-  const runningPass = usePassLock();
+  // (`runningPass` itself is declared earlier now — fix round 3 — so the
+  // drift watcher can read it too; nothing here changed.)
   const hostBadges: { tab: PanelId; label: string; running: boolean }[] = [];
   if (hostedTool !== null && columnHost !== 'tool') {
     const toolLabel =
@@ -962,6 +1010,7 @@ export default function App() {
               backgrounded={columnHost !== 'tool'}
               onClose={closeTool}
               onModuleLockChange={handleToolLock}
+              onUnsavedInputChange={setToolHasUnsavedInput}
             />
           )}
           {columnHost !== 'tool' && (
