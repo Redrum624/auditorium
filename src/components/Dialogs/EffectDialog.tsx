@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cloneRegion, createDocument, docLength } from '../../audio/AudioDocument';
 import { playbackEngine, type PlaybackEngine } from '../../audio/PlaybackEngine';
 import { getEffect } from '../../effects/EffectRegistry';
@@ -42,10 +42,18 @@ const STALE_TARGET_HINT =
  */
 export default function EffectDialog({
   effectId,
+  backgrounded = false,
   onClose,
   engine = playbackEngine,
 }: {
   effectId: string;
+  /** C-f (lot C, item 3) — `true` while `EffectHost` has backgrounded this
+   * card (the user left the Effects module for another one, and the card is
+   * retained rather than unmounted, per C2). A Preview keeps auditioning
+   * through the shared `playbackEngine`, so a hidden card left previewing
+   * would be an invisible sound source with no reachable Stop button — see
+   * `releasePreview` below. */
+  backgrounded?: boolean;
   onClose: () => void;
   /** Injectable for tests (like RecordDialog's `engine` prop); defaults to the
    * app's shared singleton, which is exactly what makes F11 a real hazard —
@@ -104,25 +112,41 @@ export default function EffectDialog({
   // the engine still holds our preview only while it reports this id.
   const previewDocIdRef = useRef<string | null>(null);
 
+  // C-f (lot C, item 3): the one release the three near-copies below collapse
+  // into, plus the fourth caller (the backgrounding effect further down).
+  // Bails when nothing is previewing; otherwise stops the engine and hands
+  // the real active document back UNLESS `onlyIfOurs` is set and somebody
+  // else (the transport's own load effect) has already taken the engine —
+  // see the "document that moved" callers for why that guard exists. Declared
+  // above the `if (!def) return null;` below since hooks can't be called
+  // conditionally.
+  const releasePreview = useCallback(
+    (onlyIfOurs: boolean) => {
+      if (!previewingRef.current) return;
+      if (!onlyIfOurs || engine.loadedDocumentId === previewDocIdRef.current) {
+        engine.stop();
+        const doc = activeDoc();
+        if (doc) engine.load(doc);
+      }
+      previewDocIdRef.current = null;
+      previewingRef.current = false;
+      setPreviewing(false);
+    },
+    [engine]
+  );
+
   // F11: Escape/backdrop/Cancel all unmount this dialog without going through
   // the explicit "Stop Preview" button (hosted, Escape reaches `onClose`
   // through `EffectHost`'s own listener — N18 — and lands here the same way).
-  // If a preview was left running, restore
-  // the engine to the real active document on unmount — exactly stopPreview's
-  // logic — instead of leaving it holding the throwaway preview document
-  // (silently playing, in Escape's case). Declared before the `if (!def)
-  // return null;` below since hooks can't be called conditionally; `engine` is
-  // a stable prop (module singleton by default) so this runs once in practice,
-  // but depending on it directly (no ref indirection) keeps the effect honest
-  // if it ever weren't.
+  // If a preview was left running, restore the engine to the real active
+  // document on unmount — exactly `releasePreview(false)` — instead of
+  // leaving it holding the throwaway preview document (silently playing, in
+  // Escape's case). `engine` is a stable prop (module singleton by default)
+  // so this runs once in practice, but depending on it (via `releasePreview`)
+  // rather than a ref indirection keeps the effect honest if it ever weren't.
   useEffect(() => {
-    return () => {
-      if (!previewingRef.current) return;
-      engine.stop();
-      const doc = activeDoc();
-      if (doc) engine.load(doc);
-    };
-  }, [engine]);
+    return () => releasePreview(false);
+  }, [releasePreview]);
 
   // Final round (finding 2): hosted, the card is not modal, so while a preview
   // plays the user can still switch document with the Files panel, ripple the
@@ -138,24 +162,26 @@ export default function EffectDialog({
   // reachable; the card's lock holds the strip and the keys, never the mouse.
   //
   // Keyed exactly like the transport's load so the two see the same events.
-  // The engine is only touched when it still holds OUR preview document —
-  // unwrapped (modal, or a test with no transport above) nobody else answers,
-  // so the card restores the real document itself, exactly as `stopPreview`
-  // does; hosted, the transport got there first and a second stop would be
-  // the very playback kill this fixes.
+  // `releasePreview(true)` only touches the engine when it still holds OUR
+  // preview document — unwrapped (modal, or a test with no transport above)
+  // nobody else answers, so the card restores the real document itself;
+  // hosted, the transport got there first and a second stop would be the
+  // very playback kill this fixes.
   useEffect(() => {
-    if (!previewingRef.current) return;
-    if (engine.loadedDocumentId === previewDocIdRef.current) {
-      engine.stop();
-      const doc = activeDoc();
-      if (doc) engine.load(doc);
-    }
-    previewDocIdRef.current = null;
-    previewingRef.current = false;
-    setPreviewing(false);
+    releasePreview(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the key IS the
     // subject: the transport's own load key, not this effect's closure.
   }, [activeDocumentId, activeDocChannels, activeSampleRate]);
+
+  // C-f: backgrounding releases the preview and nothing else — every other
+  // piece of state (`params`, `busy`, `progress`, `staleTarget`, both refs)
+  // survives untouched (C2). A card the user cannot see is not a place to
+  // keep auditioning a preview with no reachable Stop button; `onlyIfOurs`
+  // (true) matches the doc-change effect above, so a preview the transport
+  // already took over is left alone.
+  useEffect(() => {
+    if (backgrounded) releasePreview(true);
+  }, [backgrounded, releasePreview]);
 
   // Noise Reduction needs a captured noise print, delivered to the worker via the
   // `extra` side channel; without one, Apply is disabled and a hint is shown.
@@ -287,14 +313,7 @@ export default function EffectDialog({
     setPreviewing(true);
   };
 
-  const stopPreview = () => {
-    engine.stop();
-    const doc = activeDoc();
-    if (doc) engine.load(doc);
-    previewingRef.current = false;
-    previewDocIdRef.current = null;
-    setPreviewing(false);
-  };
+  const stopPreview = () => releasePreview(false);
 
   return (
     // Item 6 / N16: hosted in the module column (see `EffectHost`), the

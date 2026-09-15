@@ -1,10 +1,12 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import ModuleStrip, {
   DEFAULT_PANEL,
+  MODULE_BADGE_DOT,
   MODULE_COLUMN_WIDTH,
   MODULE_PANELS,
   PERMANENT_TABS,
   TOOL_HOST_WIDTH,
+  hostBadgeTitle,
   stripTabs,
 } from './ModuleStrip';
 
@@ -239,5 +241,51 @@ describe('ModuleStrip', () => {
       'History — click to close the card'
     );
     expect(screen.getByRole('button', { name: 'Files' }).title).toBe('Files');
+  });
+
+  /**
+   * C4 (lot C, item 3) — one dot per module whose host is retained but not
+   * foregrounded. `MODULE_BADGE_DOT` pinned at a non-identity value (X3).
+   */
+  describe('host badges (C4)', () => {
+    it('pins the dot size off its identity', () => {
+      expect(MODULE_BADGE_DOT).toBe(7);
+    });
+
+    it('draws a running badge on its module, naming the pass, and none on an unrelated module', () => {
+      render(
+        <ModuleStrip
+          activeTab="markers"
+          hasRemix={false}
+          hostBadges={[{ tab: 'pipeline', label: 'Cover Chain', running: true }]}
+          onSelect={() => {}}
+        />
+      );
+      const badge = screen.getByTestId('module-badge-pipeline');
+      expect(badge).toHaveAttribute('data-running', 'true');
+      const pipelineButton = screen.getByRole('button', { name: 'Pipeline' });
+      expect(within(pipelineButton).getByTestId('module-badge-pipeline')).toBe(badge);
+      expect(pipelineButton.title).toBe(hostBadgeTitle('Cover Chain', true));
+      expect(pipelineButton.title).toContain('Cover Chain');
+
+      expect(screen.queryByTestId('module-badge-markers')).toBeNull();
+    });
+
+    it('draws the idle sentence when the backgrounded pass is not running', () => {
+      render(
+        <ModuleStrip
+          activeTab="markers"
+          hasRemix={false}
+          hostBadges={[{ tab: 'effects', label: 'Amplify', running: false }]}
+          onSelect={() => {}}
+        />
+      );
+      const badge = screen.getByTestId('module-badge-effects');
+      expect(badge).toHaveAttribute('data-running', 'false');
+      const effectsButton = screen.getByRole('button', { name: 'Effects' });
+      expect(effectsButton.title).toBe(hostBadgeTitle('Amplify', false));
+      expect(effectsButton.title).toContain('Amplify');
+      expect(effectsButton.title).not.toBe(hostBadgeTitle('Amplify', true));
+    });
   });
 });

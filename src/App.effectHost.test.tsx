@@ -191,18 +191,92 @@ describe('an effect opens in the module column, not over the stage', () => {
     expect(strip().style.width).toBe(`${MODULE_COLUMN_WIDTH}px`);
   });
 
-  // Open question 1's default, pinned: the effect card is independent of the
-  // module card beneath it. Only `openTool`, ✕ / Cancel / Apply and the orphan
-  // rule close it — a strip click swaps the card below and leaves the effect.
-  it('survives a strip click: the module card changes, the effect card stays', async () => {
+  // C1 (lot C, item 3, 2026-09-15) OVERTURNS the ruling this test pinned
+  // before lot C — "Open question 1's default": the effect card stayed
+  // VISIBLE over every module. The user's own ruling ("it should go back with
+  // the effect ... in the state you left it") means leaving the module
+  // BACKGROUNDS the card instead — hidden, not destroyed, per C2 — and
+  // returning to Effects foregrounds the SAME instance again. Only `openTool`,
+  // ✕ / Cancel / Apply and the orphan rule still UNMOUNT it.
+  it('backgrounds on a strip click and foregrounds again on return (C1)', async () => {
     addDoc();
     render(<App />);
     await openTool('effect.amplify');
     expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'effects');
+    expect(host()).not.toHaveAttribute('data-backgrounded');
+    expect(host()).not.toHaveAttribute('hidden');
 
     fireEvent.click(stripButton('Files'));
     expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'files');
-    expect(host()).toHaveAttribute('data-effect-id', 'amplify');
+    // Still mounted — C2: state is preserved by keeping the host mounted and
+    // hidden, never by unmounting it.
+    const backgroundedHost = host();
+    expect(backgroundedHost).toHaveAttribute('data-effect-id', 'amplify');
+    expect(backgroundedHost).toHaveAttribute('data-backgrounded', 'true');
+    expect(backgroundedHost).toHaveAttribute('hidden');
+    expect(backgroundedHost.style.display).toBe('none');
+
+    fireEvent.click(stripButton('Effects'));
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'effects');
+    // The SAME DOM node returns foregrounded — nothing was ever unmounted.
+    expect(host()).toBe(backgroundedHost);
+    expect(host()).not.toHaveAttribute('data-backgrounded');
+    expect(host()).not.toHaveAttribute('hidden');
+  });
+});
+
+/**
+ * C1/C2, end to end through App: a parameter edit is local `useState` inside
+ * `EffectDialog` — nothing here lifts it into a store (C2 forbids it) — so
+ * the only proof that it survives a background/foreground round trip is that
+ * the SAME mounted instance carries it across. X3: `-7.5`, off every
+ * identity (not `0`, not the param's own default).
+ */
+describe('a parameter edit survives backgrounding (C1/C2)', () => {
+  function gainInput(): HTMLInputElement {
+    const el = document.getElementById('effect-param-gainDb');
+    if (!(el instanceof HTMLInputElement)) throw new Error('no gain input');
+    return el;
+  }
+
+  it('a typed value is still there after leaving and returning to Effects', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('effect.amplify');
+    fireEvent.change(gainInput(), { target: { value: '-7.5' } });
+    expect(gainInput().value).toBe('-7.5');
+
+    fireEvent.click(stripButton('Markers'));
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'markers');
+    expect(host()).toHaveAttribute('data-backgrounded', 'true');
+
+    fireEvent.click(stripButton('Effects'));
+    expect(host()).not.toHaveAttribute('data-backgrounded');
+    expect(gainInput().value).toBe('-7.5');
+  });
+});
+
+/**
+ * C4, the idle case: a badge on the strip button for a module whose host is
+ * retained-but-backgrounded. `running` reads lot M's `usePassLock()` — proven
+ * here by its absence: idle, nothing holds the lock, so the badge must read
+ * `running=false` off the SAME source `getRunningPass()` reports, not a
+ * parallel flag that could disagree with it.
+ */
+describe('the strip badge reads the lock, not a parallel flag (C4)', () => {
+  it('shows an idle badge naming the backgrounded effect, and none on the foregrounded module', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('effect.amplify');
+    expect(screen.queryByTestId('module-badge-effects')).toBeNull();
+
+    fireEvent.click(stripButton('Markers'));
+
+    expect(isPassRunning()).toBe(false);
+    const badge = screen.getByTestId('module-badge-effects');
+    expect(badge).toHaveAttribute('data-running', 'false');
+    expect(stripButton('Effects').title).toContain(getEffect('amplify')!.name);
+    expect(screen.queryByTestId('module-badge-markers')).toBeNull();
   });
 });
 

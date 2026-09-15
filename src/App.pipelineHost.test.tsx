@@ -33,6 +33,17 @@ jest.mock('./components/Dialogs/TempoDialog', () => {
         dismissable: !busy,
         onClose,
         children: [
+          // Lot C (item 3): a field with its own local `useState`, so a
+          // module-switch round trip through the host has something to prove
+          // survives — exactly the shape of an arbitrary effect card's own
+          // params, which C2 says cannot be enumerated and so must not be
+          // destroyed by unmounting.
+          React.createElement('input', {
+            key: 'field',
+            type: 'text',
+            'data-testid': 'tempo-key-field',
+            defaultValue: '',
+          }),
           React.createElement(
             'button',
             { key: 'toggle', type: 'button', onClick: () => setBusy((b) => !b) },
@@ -203,6 +214,108 @@ describe('a pipeline tool opens in the module column, not over the stage', () =>
     expect(hasOpenDialog()).toBe(false);
     // Idle: nothing has acquired the pass lock either.
     expect(isPassRunning()).toBe(false);
+  });
+});
+
+/**
+ * C1/C2 (lot C, item 3) — the tool card is now kept MOUNTED across a module
+ * switch, hidden rather than destroyed: `App.tsx` no longer calls
+ * `setHostedTool(null)` from `selectModule`. Before this lot, switching to
+ * Markers here unmounted the host and the field's text was gone; this test
+ * fails against that code (revert-and-watch-it-fail evidence in the report).
+ */
+describe('the tool card backgrounds with its module and comes back in the state it was left (C1/C2)', () => {
+  it('keeps the same host mounted, hidden, across a module switch, and foregrounds it again', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('tempo.match');
+    const field = screen.getByTestId('tempo-key-field') as HTMLInputElement;
+    fireEvent.change(field, { target: { value: 'Bb minor' } });
+    expect(field.value).toBe('Bb minor');
+
+    fireEvent.click(stripButton('Markers'));
+
+    const node = screen.getByTestId('tool-host');
+    expect(node).toHaveAttribute('data-tool-id', 'tempo.match');
+    expect(node).toHaveAttribute('data-backgrounded', 'true');
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'markers');
+    expect(strip().style.width).toBe(`${MODULE_COLUMN_WIDTH}px`);
+
+    fireEvent.click(stripButton('Pipeline'));
+
+    // The SAME DOM node returns — nothing was ever unmounted (C2).
+    expect(screen.getByTestId('tool-host')).toBe(node);
+    expect(screen.getByTestId('tool-host')).not.toHaveAttribute('data-backgrounded');
+    expect((screen.getByTestId('tempo-key-field') as HTMLInputElement).value).toBe('Bb minor');
+    expect(strip().style.width).toBe(`${TOOL_HOST_WIDTH}px`);
+  });
+});
+
+/**
+ * C-d — a click on the module the host is already foregrounded on reveals
+ * that module's own chooser panel first (backgrounding the host); a second
+ * such click, with nothing left to background, closes the card as before.
+ */
+describe('a click on the active module reveals the chooser before closing the card (C-d)', () => {
+  it('backgrounds the host on the first click, then closes the card on the second', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('tempo.match');
+    expect(strip().style.width).toBe(`${TOOL_HOST_WIDTH}px`);
+
+    fireEvent.click(stripButton('Pipeline'));
+    expect(screen.getByTestId('tool-host')).toHaveAttribute('data-backgrounded', 'true');
+    expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'pipeline');
+    expect(screen.getByTestId('pipeline-panel')).toBeInTheDocument();
+    expect(strip().style.width).toBe(`${MODULE_COLUMN_WIDTH}px`);
+
+    fireEvent.click(stripButton('Pipeline'));
+    expect(screen.queryByTestId('sidebar-panel')).toBeNull();
+    // The host is still mounted, still backgrounded — this second click closed
+    // the CARD, not the retained tool.
+    expect(screen.getByTestId('tool-host')).toHaveAttribute('data-backgrounded', 'true');
+  });
+});
+
+/**
+ * C-i — the orphan rule (previously effect-only) extended to the tool slot:
+ * dropping the last document must not leave a retained, backgrounded tool
+ * card behind either.
+ */
+describe('the orphan rule drops a backgrounded tool too (C-i)', () => {
+  it('closes the retained tool card when the last document closes', async () => {
+    const doc = addDoc();
+    render(<App />);
+    await openTool('tempo.match');
+    fireEvent.click(stripButton('Markers'));
+    expect(screen.getByTestId('tool-host')).toHaveAttribute('data-backgrounded', 'true');
+
+    act(() => {
+      useAppStore.getState().closeDocument(doc.id);
+    });
+
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+  });
+});
+
+/**
+ * C4, the idle case: mirrors the equivalent effect-side test in
+ * `App.effectHost.test.tsx`. `running` reads lot M's lock, not a parallel
+ * flag — proven here by its absence: idle, nothing holds the lock.
+ */
+describe('the strip badge reads the lock, not a parallel flag (C4)', () => {
+  it('shows an idle badge naming the backgrounded tool', async () => {
+    addDoc();
+    render(<App />);
+    await openTool('tempo.match');
+    expect(screen.queryByTestId('module-badge-pipeline')).toBeNull();
+
+    fireEvent.click(stripButton('Markers'));
+
+    expect(isPassRunning()).toBe(false);
+    const badge = screen.getByTestId('module-badge-pipeline');
+    expect(badge).toHaveAttribute('data-running', 'false');
+    expect(stripButton('Pipeline').title).toContain('Match Tempo');
   });
 });
 

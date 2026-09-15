@@ -285,6 +285,40 @@ describe('hosted in the module column (item 6)', () => {
     expect(screen.queryByTestId('effect-dialog')).not.toBeInTheDocument();
   });
 
+  /**
+   * C-f (lot C, item 3) — backgrounding releases a running Preview (an
+   * invisible sound source with no reachable Stop button would otherwise
+   * keep playing) and nothing else: `params` survive untouched (C2), proven
+   * here by the gain field still reading the value set before backgrounding.
+   */
+  it('backgrounding stops an active Preview and hands the engine back, leaving params untouched (C-f)', () => {
+    const doc = seedActiveDoc();
+    const fake = new FakePlaybackEngine();
+    const { rerender } = render(
+      <DialogHostProvider onModuleLockChange={() => {}}>
+        <EffectDialog effectId="amplify" onClose={() => {}} engine={asEngine(fake)} />
+      </DialogHostProvider>
+    );
+    fireEvent.change(document.getElementById('effect-param-gainDb') as HTMLInputElement, {
+      target: { value: '-7.5' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.getByRole('button', { name: 'Stop Preview' })).toBeInTheDocument();
+    fake.stop.mockClear();
+    fake.load.mockClear();
+
+    rerender(
+      <DialogHostProvider onModuleLockChange={() => {}}>
+        <EffectDialog effectId="amplify" backgrounded onClose={() => {}} engine={asEngine(fake)} />
+      </DialogHostProvider>
+    );
+
+    expect(fake.stop).toHaveBeenCalledTimes(1);
+    expect(fake.load).toHaveBeenCalledWith(expect.objectContaining({ id: doc.id }));
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+    expect((document.getElementById('effect-param-gainDb') as HTMLInputElement).value).toBe('-7.5');
+  });
+
   it('hosted: Preview publishes no lock', () => {
     seedActiveDoc();
     const fake = new FakePlaybackEngine();

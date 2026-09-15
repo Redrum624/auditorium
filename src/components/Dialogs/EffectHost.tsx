@@ -62,11 +62,20 @@ import EffectDialog from './EffectDialog';
  */
 export default function EffectHost({
   effectId,
+  backgrounded = false,
   onClose,
   onModuleLockChange,
 }: {
   /** A registry effect id; nothing renders for an id the registry does not know. */
   effectId: string;
+  /** C1/C2/C-e (lot C, item 3) — `true` while this card is RETAINED but not
+   * the foregrounded surface (the user left the Effects module for another
+   * one). The card stays mounted — `App` never nulls `hostedEffect` on a
+   * module switch any more — and this prop is the only thing that changes: it
+   * drives `data-backgrounded`/`hidden`/`display:none` below (C-e) and makes
+   * the Escape listener inert (C-g), so a background card cannot be closed by
+   * a key the user cannot see the effect of. */
+  backgrounded?: boolean;
   onClose(): void;
   /** Raised with the effect's module LOCK — `true` while Apply is running
    * (N16: Apply only; Preview locks nothing). App turns that into a greyed
@@ -78,6 +87,10 @@ export default function EffectHost({
   // because the Escape listener below is installed once and must read the
   // CURRENT value, not the one it closed over.
   const lockedRef = useRef(false);
+  // C-g: mirrors `backgrounded` for the same reason — the Escape listener is
+  // installed once (`[known]`) and must read the CURRENT value.
+  const backgroundedRef = useRef(false);
+  backgroundedRef.current = backgrounded;
   // Stable identity, so the provider's memo does not re-publish per paint.
   const report = useCallback(
     (locked: boolean) => {
@@ -98,6 +111,11 @@ export default function EffectHost({
     if (!known) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // C-g: a backgrounded card is not on screen — closing it would discard
+      // a card the user cannot see, and stealing Escape from the stage's own
+      // `edit.deselect` for a key that has no visible effect is worse than
+      // doing nothing. Read through the ref: this listener is installed once.
+      if (backgroundedRef.current) return;
       if (lockedRef.current || hasOpenDialog()) return;
       if (isEditableTargetOutsideTheCard(e.target)) return;
       e.preventDefault();
@@ -114,11 +132,23 @@ export default function EffectHost({
     <GlassCard
       data-testid="effect-host"
       data-effect-id={effectId}
+      // C-e: hidden means `display:none` on the card's OWN GlassCard, plus the
+      // `hidden` attribute and `data-backgrounded` for satellites/tests to key
+      // on. `GlassCard`'s className carries Tailwind `flex` (below), which
+      // beats the UA `[hidden]{display:none}` rule — only the inline style
+      // wins, so it is set explicitly rather than relying on the attribute.
+      data-backgrounded={backgrounded ? 'true' : undefined}
+      hidden={backgrounded}
       className="pointer-events-auto flex min-h-0 flex-col"
-      style={{ flex: '0 1 auto', overflow: 'hidden', width: MODULE_COLUMN_WIDTH }}
+      style={{
+        flex: '0 1 auto',
+        overflow: 'hidden',
+        width: MODULE_COLUMN_WIDTH,
+        display: backgrounded ? 'none' : undefined,
+      }}
     >
       <DialogHostProvider onModuleLockChange={report}>
-        <EffectDialog key={effectId} effectId={effectId} onClose={onClose} />
+        <EffectDialog key={effectId} effectId={effectId} backgrounded={backgrounded} onClose={onClose} />
       </DialogHostProvider>
     </GlassCard>
   );

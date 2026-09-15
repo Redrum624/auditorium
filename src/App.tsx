@@ -51,6 +51,7 @@ import { registerDialogSetters, type ConvertMode } from './services/dialogBus';
 import {
   acquirePass,
   blockedByPassReason,
+  usePassLock,
   type PassDescriptor,
 } from './services/passLock';
 // ---- /lot M ----
@@ -144,6 +145,22 @@ export default function App() {
   // The hosted dialog's own `dismissable`, inverted: true while a pass is
   // running and the tool refuses to be discarded.
   const [toolRunning, setToolRunning] = useState(false);
+  // ---- lot C ----
+  // Item 3 (C1/C2) — which of the two retained hosts, if either, is the
+  // FOREGROUNDED (visible) surface. `hostedTool`/`hostedEffect` now name what
+  // is RETAINED (mounted); this names what is on screen. A module switch used
+  // to null the retained host out from under the user (destroying it); now it
+  // only moves this flag, so `openTool`/`openEffect`'s existing W1 exclusion
+  // (opening one still replaces the other) is the only thing that unmounts
+  // either — see the report for the scope this lot stopped short of (C-a's
+  // two-slot retention, which would let both be retained at once, was not
+  // implemented: it would have required overturning
+  // App.effectHost.test.tsx:285-296/:298-306, outside this lot's one
+  // authorized test edit).
+  const [columnHost, setColumnHost] = useState<'tool' | 'effect' | null>(null);
+  const columnHostRef = useRef<'tool' | 'effect' | null>(null);
+  columnHostRef.current = columnHost;
+  // ---- /lot C ----
   // U1: null = no panel card open. The strip's active entry closes it, which
   // is what lets the stage take the column's width (E2's "the waveform takes
   // every liberated pixel").
@@ -315,6 +332,9 @@ export default function App() {
       setHostedEffect(null);
       setSidebarTab('pipeline');
       setHostedTool(commandId);
+      // Lot C (C1): the tool opens FOREGROUNDED — a fresh open is never
+      // backgrounded on arrival.
+      setColumnHost('tool');
     },
     [refuseWhileRunning]
   );
@@ -394,15 +414,42 @@ export default function App() {
     passReleaseRef.current?.();
     passReleaseRef.current = null;
     setHostedTool(null);
+    // Lot C: only clear the column when THIS host owned it.
+    setColumnHost((c) => (c === 'tool' ? null : c));
   }, []);
 
-  /** U2-3: the strip's own selection — never reached while a pass runs, because
-   * the strip is disabled then (`lockedReason`). */
+  /**
+   * U2-3 / lot C (C1/C2/C-d) — the strip's own selection: never reached while
+   * a pass runs, because the strip is disabled then (`lockedReason`).
+   *
+   * Before this lot, ANY click here nulled `hostedTool` — a module switch
+   * destroyed whatever pipeline tool was open. Lot C stops that: the retained
+   * host (`hostedTool`/`hostedEffect`, unaffected by this function now) stays
+   * mounted, and only `columnHost` — which one is FOREGROUNDED — moves.
+   *
+   * C-d: `ModuleStrip` is unchanged — it still sends `onSelect(isActive ?
+   * null : id)`. A click on the ALREADY-active module (`tab === null`) either
+   * backgrounds that module's host (if one is foregrounded there) so its
+   * chooser panel appears, or — a SECOND such click, with nothing left to
+   * background — closes the module card itself, exactly as before this lot.
+   */
   const selectModule = useCallback((tab: PanelId | null) => {
-    passReleaseRef.current?.();
-    passReleaseRef.current = null;
-    setHostedTool(null);
+    if (tab === null) {
+      if (columnHostRef.current !== null) {
+        setColumnHost(null);
+        return;
+      }
+      setSidebarTab(null);
+      return;
+    }
     setSidebarTab(tab);
+    setColumnHost(
+      tab === 'pipeline' && hostedToolRef.current !== null
+        ? 'tool'
+        : tab === 'effects' && hostedEffectRef.current !== null
+          ? 'effect'
+          : null
+    );
   }, []);
 
   /**
@@ -520,10 +567,17 @@ export default function App() {
       setHostedTool(null); // the 640 host and the 348 effect card never coexist (W1)
       setSidebarTab('effects'); // N16 / M6: the module card is forced to Effects
       setHostedEffect(effectId);
+      // Lot C (C1): opens FOREGROUNDED, same as `openTool`.
+      setColumnHost('effect');
     },
     [refuseWhileRunning]
   );
-  const closeEffect = useCallback(() => setHostedEffect(null), []);
+  const closeEffect = useCallback(() => {
+    setHostedEffect(null);
+    // Lot C: only clear the column when THIS host owned it — `openTool` may
+    // already have taken over (W1) by the time this runs.
+    setColumnHost((c) => (c === 'effect' ? null : c));
+  }, []);
   // Orphan rule (N16), the twin of the Remix rule above: no document left
   // means nothing for the card to apply to, so it closes. One document closing
   // while another becomes active keeps it — the dialog resolves the live
@@ -531,6 +585,19 @@ export default function App() {
   useEffect(() => {
     if (hostedEffect !== null && activeDocumentId === null) setHostedEffect(null);
   }, [hostedEffect, activeDocumentId]);
+  // ---- lot C ----
+  // Item 3 (C-i) — the same orphan rule, extended to the TOOL slot: dropping
+  // the last document must not leave a retained tool card behind either.
+  // Kept as a separate effect from the one above (rather than folded in) so
+  // the already-tested effect-only orphan path above is untouched by this
+  // lot. `columnHost` resets unconditionally whenever no document remains,
+  // whichever host it was pointing at.
+  useEffect(() => {
+    if (activeDocumentId !== null) return;
+    if (hostedTool !== null) setHostedTool(null);
+    setColumnHost(null);
+  }, [hostedTool, activeDocumentId]);
+  // ---- /lot C ----
   // ---- /lot B ----
 
   // Global keyboard shortcuts (Task 8): mounted once for the app's lifetime.
@@ -675,6 +742,32 @@ export default function App() {
     });
   }, []);
 
+  // ---- lot C ----
+  // Item 3 (C4) — one strip badge per host that is RETAINED but not
+  // foregrounded. `running` reads lot M's lock directly, compared by
+  // descriptor id — never a parallel "is it running" flag (the badge and
+  // `refuseWhileRunning`/`describeHostedPass` above must never be able to
+  // name different passes). The id shapes mirror `describeHostedPass`: a
+  // pipeline command id for the tool, `effect.<id>` for the effect.
+  const runningPass = usePassLock();
+  const hostBadges: { tab: PanelId; label: string; running: boolean }[] = [];
+  if (hostedTool !== null && columnHost !== 'tool') {
+    const toolLabel =
+      getPipelineGroups()
+        .flatMap((g) => g.commands)
+        .find((c) => c.id === hostedTool)?.label ?? 'A pipeline pass';
+    hostBadges.push({ tab: 'pipeline', label: toolLabel, running: runningPass?.id === hostedTool });
+  }
+  if (hostedEffect !== null && columnHost !== 'effect') {
+    const effectLabel = getEffect(hostedEffect)?.name ?? 'An effect';
+    hostBadges.push({
+      tab: 'effects',
+      label: effectLabel,
+      running: runningPass?.id === `effect.${hostedEffect}`,
+    });
+  }
+  // ---- /lot C ----
+
   return (
     <div
       data-testid="app-root"
@@ -711,10 +804,13 @@ export default function App() {
             // card beneath it. The effect card is the column's own width, so
             // it asks for a module card's clearance; it can outlive the module
             // card, which is why it is its own clause.
+            // Lot C: follows `columnHost` (what is FOREGROUNDED) rather than
+            // mere existence (`hostedTool !== null`) — a backgrounded tool
+            // must hand the 640 clearance back, not keep reserving it.
             '--stage-inset-right': `${
-              hostedTool !== null
+              columnHost === 'tool'
                 ? STAGE_INSET_RIGHT_HOSTED
-                : sidebarTab === null && hostedEffect === null
+                : sidebarTab === null && columnHost !== 'effect'
                   ? COLUMN_MARGIN
                   : STAGE_INSET_RIGHT_OPEN
             }px`,
@@ -776,22 +872,31 @@ export default function App() {
           {hostedEffect !== null && (
             <EffectHost
               effectId={hostedEffect}
+              // Lot C (C1/C2/C-e): stays MOUNTED across a module switch now —
+              // only its visibility follows `columnHost`.
+              backgrounded={columnHost !== 'effect'}
               onClose={closeEffect}
               onModuleLockChange={handleToolModuleLock}
             />
           )}
           {/* ---- /lot B ---- */}
-          {/* U2-3: the tool host REPLACES the module card while a pipeline tool
-              is open — same anchor, same glass language, wider. No backdrop and
-              no focus trap: the stage behind it stays live, which is the whole
-              point (watch the stepper beside the waveform). */}
-          {hostedTool !== null ? (
+          {/* U2-3: the tool host REPLACES the module card while it is the
+              FOREGROUNDED surface — same anchor, same glass language, wider.
+              No backdrop and no focus trap: the stage behind it stays live,
+              which is the whole point (watch the stepper beside the
+              waveform). Lot C: it now stays MOUNTED (hidden) rather than
+              unmounting when another module is picked — `hostedTool !== null`
+              (retained) and `columnHost === 'tool'` (foregrounded) are no
+              longer the same question. */}
+          {hostedTool !== null && (
             <PipelineToolHost
               commandId={hostedTool}
+              backgrounded={columnHost !== 'tool'}
               onClose={closeTool}
               onModuleLockChange={handleToolModuleLock}
             />
-          ) : (
+          )}
+          {columnHost !== 'tool' && (
             activeTab &&
             ActiveIcon && (
             <GlassCard
@@ -885,7 +990,8 @@ export default function App() {
                 : MODULE_SWITCH_LOCKED
               : null
           }
-          toolHosted={hostedTool !== null}
+          toolHosted={columnHost === 'tool'}
+          hostBadges={hostBadges}
           onSelect={selectModule}
         />
 

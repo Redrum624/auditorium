@@ -175,6 +175,19 @@ export function stripTabs(hasRemix: boolean): PanelEntry[] {
  * sits on, which is what makes the two read as one stacked surface. */
 export const MODULE_COLUMN_WIDTH = 348;
 
+/** C4 (lot C, item 3) — the diameter, in px, of the corner dot a
+ * `hostBadges` entry draws on its strip button. X3: not the identity value —
+ * pinned by `ModuleStrip.test.tsx` at exactly 7. */
+export const MODULE_BADGE_DOT = 7;
+
+/** C4 — the sentence a badged button's `title` carries, stated once so the
+ * idle and running cases read as one family rather than two ad-hoc strings. */
+export function hostBadgeTitle(label: string, running: boolean): string {
+  return running
+    ? `${label} is running in the background — click to watch it`
+    : `${label} is open in the background — click to come back to it`;
+}
+
 /**
  * W1: the tool-host card's width — the OTHER card the strip can sit on.
  *
@@ -220,6 +233,9 @@ const stripBtn: CSSProperties = {
   color: 'var(--glass-text-chrome-idle)',
   cursor: 'pointer',
   flexShrink: 0,
+  // C4: the anchor for a badge dot, positioned absolutely inside its own
+  // button. Harmless on a button with no badge.
+  position: 'relative',
 };
 
 const stripBtnActive: CSSProperties = {
@@ -260,6 +276,15 @@ export interface ModuleStripProps {
    * caller states WHICH surface is open, and this file owns what that costs.
    */
   toolHosted?: boolean;
+  /**
+   * C4 (lot C, item 3) — one entry per module whose host is RETAINED but not
+   * foregrounded (backgrounded, per C1/C2): the corner dot lets the user find
+   * where a card or a running pass went without guessing. `running` names
+   * whether a pass is actually in flight for that host, read by the caller off
+   * `usePassLock()` compared by descriptor id — never a second "is it running"
+   * flag. Defaults to none, which is every module today.
+   */
+  hostBadges?: readonly { tab: PanelId; label: string; running: boolean }[];
   /** Receives the clicked tab, or null when the click closed the open card. */
   onSelect(tab: PanelId | null): void;
 }
@@ -269,6 +294,7 @@ export default function ModuleStrip({
   hasRemix,
   lockedReason = null,
   toolHosted = false,
+  hostBadges = [],
   onSelect,
 }: ModuleStripProps) {
   return (
@@ -291,13 +317,19 @@ export default function ModuleStrip({
       {/* F11: the roster is a function of the remix state, not a constant. */}
       {stripTabs(hasRemix).map(({ id, label, Icon }) => {
         const isActive = activeTab === id;
+        const badge = hostBadges.find((b) => b.tab === id) ?? null;
         return (
           <button
             key={id}
             type="button"
             aria-label={label}
             title={
-              lockedReason ?? (isActive ? `${label} — click to close the card` : label)
+              lockedReason ??
+              (badge
+                ? hostBadgeTitle(badge.label, badge.running)
+                : isActive
+                  ? `${label} — click to close the card`
+                  : label)
             }
             aria-pressed={isActive}
             disabled={lockedReason !== null}
@@ -310,6 +342,24 @@ export default function ModuleStrip({
             }}
           >
             <Icon size={17} />
+            {badge && (
+              <span
+                data-testid={`module-badge-${id}`}
+                data-running={badge.running ? 'true' : 'false'}
+                style={{
+                  position: 'absolute',
+                  top: 4,
+                  right: 4,
+                  width: MODULE_BADGE_DOT,
+                  height: MODULE_BADGE_DOT,
+                  borderRadius: '50%',
+                  background: badge.running
+                    ? 'var(--accent)'
+                    : 'var(--glass-text-chrome-idle)',
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
           </button>
         );
       })}

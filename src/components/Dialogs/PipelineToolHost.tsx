@@ -119,11 +119,20 @@ export { TOOL_HOST_WIDTH };
 
 export default function PipelineToolHost({
   commandId,
+  backgrounded = false,
   onClose,
   onModuleLockChange,
 }: {
   /** A Pipeline command id; nothing renders for an id this host does not know. */
   commandId: string;
+  /** C1/C2/C-e (lot C, item 3) — `true` while this card is RETAINED but not
+   * the foregrounded surface (the user left the Pipeline module for another
+   * one). The card stays mounted — `App` never nulls `hostedTool` on a module
+   * switch any more — and this prop is the only thing that changes: C-e's
+   * `data-backgrounded`/`hidden`/`display:none` below. Unlike `EffectHost`,
+   * this host installs no Escape listener of its own (`DialogShell`'s hosted
+   * branch never did either), so there is nothing here for C-g to guard. */
+  backgrounded?: boolean;
   onClose(): void;
   /** Raised with the hosted tool's module LOCK — `!dismissable` unless the tool
    * narrowed it (see `DialogShell`'s `moduleLock`). `true` means a user-started
@@ -143,6 +152,10 @@ export default function PipelineToolHost({
     <GlassCard
       data-testid="tool-host"
       data-tool-id={commandId}
+      // C-e: same rule as `EffectHost` — the inline `display:none` beats the
+      // className's Tailwind `flex`, so the attribute alone would not hide it.
+      data-backgrounded={backgrounded ? 'true' : undefined}
+      hidden={backgrounded}
       className="pointer-events-auto flex min-h-0 flex-col"
       style={{
         flex: '0 1 auto',
@@ -151,6 +164,7 @@ export default function PipelineToolHost({
         // Grow left out of the column instead of widening it: the strip above
         // and the TempoCard beside keep the column's own 348.
         marginLeft: MODULE_COLUMN_WIDTH - TOOL_HOST_WIDTH,
+        display: backgrounded ? 'none' : undefined,
       }}
     >
       <DialogHostProvider onModuleLockChange={report}>
