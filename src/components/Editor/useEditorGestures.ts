@@ -374,8 +374,14 @@ export function useEditorGestures(
 
   /** F-c (item 6) — see the interface doc: teardown only, no commit. Mirrors
    * `onPointerUp`'s capture release and hover-cursor restore but skips the
-   * playhead commit and the empty-selection collapse entirely — a cancelled
-   * gesture leaves the store exactly as it was before the press. */
+   * playhead commit AND the non-exceeded select arm's `setSelection(null)`
+   * collapse — both are commits F-c forbids on a cancel.
+   *
+   * Fix round 1 — corrected: this does NOT leave the store "exactly as it was
+   * before the press". `onPointerDown` already wrote `setCursor` (and
+   * `setSelection` on a shift-click) before this handler ever runs; a cancel
+   * only stops anything FURTHER from committing — it does not undo what the
+   * press itself already wrote. */
   const onPointerCancel = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (canvas && typeof canvas.releasePointerCapture === 'function') {

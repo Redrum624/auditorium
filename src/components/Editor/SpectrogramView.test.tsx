@@ -416,10 +416,15 @@ describe('SpectrogramView publishes its lane width (F11-3)', () => {
 // `useEditorGestures` defect shared verbatim by WaveformView AND this view
 // (F-d: "Cause B's fix lands on waveform and spectral — one edit, in the
 // shared hook"). `WaveformView.playhead.test.tsx` pins the hook directly;
-// THIS test exists so X2's sibling-copy rule is enforced for the THIRD
-// surface too — proving `SpectrogramView.tsx`'s own `onPointerCancel` wiring
-// and canvas handlers actually reach the same fixed hook, not a copy that
-// still has the dead zone.
+// THIS suite exists so X2's sibling-copy rule is enforced for the THIRD
+// surface too — proving `SpectrogramView.tsx`'s own canvas handlers actually
+// reach the same fixed hook, not a copy that still has the dead zone.
+//
+// Fix round 1, item 2 — corrected: the click-commit test below does NOT, by
+// itself, prove `SpectrogramView.tsx:427`'s `onPointerCancel` wiring; it never
+// dispatches `pointercancel`. Reverting that line to `gestures.onPointerUp`
+// broke nothing here. The second test below closes that gap by mirroring
+// `WaveformView.playhead.test.tsx`'s own cancel case onto this canvas.
 // ---------------------------------------------------------------------------
 describe('SpectrogramView playhead handle click-commit (F3, item 6)', () => {
   const SPP = 100;
@@ -434,7 +439,7 @@ describe('SpectrogramView playhead handle click-commit (F3, item 6)', () => {
 
   function firePointer(
     element: Element,
-    type: 'pointerdown' | 'pointerup',
+    type: 'pointerdown' | 'pointerup' | 'pointercancel',
     init: { clientX: number; clientY: number }
   ): void {
     const event = new MouseEvent(type, {
@@ -463,5 +468,26 @@ describe('SpectrogramView playhead handle click-commit (F3, item 6)', () => {
     firePointer(canvas, 'pointerup', { clientX: 308, clientY: 3 });
 
     expect(useAppStore.getState().cursorSample).toBe(30_800); // the press, not 30 000
+  });
+
+  // Fix round 1, item 2 — the missing net for `SpectrogramView.tsx:427`'s
+  // `onPointerCancel={gestures.onPointerCancel}` wiring. Mirrors
+  // `WaveformView.playhead.test.tsx`'s "a cancel commits nothing" case onto
+  // this canvas: reverting that line to `gestures.onPointerUp` must turn this
+  // red, since a travel-free release now commits and the old alias would
+  // write the bar to wherever the cancelled press landed.
+  it('a cancel commits nothing', () => {
+    const doc = makeLongDoc();
+    useAppStore.getState().addDocument(doc);
+    useAppStore.getState().setZoom({ samplesPerPixel: SPP, scrollSample: 0 });
+    useAppStore.getState().setCursor(300 * SPP); // 30 000
+
+    render(<SpectrogramView docId={doc.id} />);
+    const canvas = screen.getByTestId('spectrogram-canvas');
+
+    firePointer(canvas, 'pointerdown', { clientX: 308, clientY: 3 });
+    firePointer(canvas, 'pointercancel', { clientX: 308, clientY: 3 });
+
+    expect(useAppStore.getState().cursorSample).toBe(30_000);
   });
 });

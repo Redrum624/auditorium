@@ -287,6 +287,26 @@ describe('dragging the multitrack cursor handle (T7)', () => {
     expect(store().mtCursorSample).toBe(30_000);
   });
 
+  // Fix round 1, item 1 (multitrack twin) — the reviewer proved by mutation
+  // that hardcoding `{ altKey: false }` in place of `e` at this file's own
+  // release commit (`onHandlePointerUp`'s `snappedMt(drag.pressRaw, drag.targets, e)`)
+  // left all five focused suites green: nothing exercised "Alt read from the
+  // RELEASE event" on THIS surface either. Cursor parked at 22 000 puts the
+  // handle band at lane x ∈ [208, 232]; a press+release inside it, Alt held
+  // only on release, can only land on the raw position if Alt is read from
+  // that release event — a press-time-latched Alt would leave it on EDGE
+  // (22 050, 550 samples away, inside the 8px*SPP=800 tolerance).
+  it('Alt on the release is honoured, even though the press had no Alt', () => {
+    addEdgeClip(); // EDGE = 22_050, lane x = 220.5
+    store().setMtCursor(22_000); // handle band lane x [208, 232]
+    const handle = mountHandle();
+
+    firePointer(handle, 'pointerdown', { clientX: atLaneX(226) }); // altKey: false
+    firePointer(handle, 'pointerup', { clientX: atLaneX(226), altKey: true });
+
+    expect(store().mtCursorSample).toBe(22_600);
+  });
+
   it('shows grab, then grabbing, then grab again once released', () => {
     store().setMtCursor(0);
     const handle = mountHandle();
