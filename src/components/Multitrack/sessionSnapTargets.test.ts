@@ -250,6 +250,30 @@ describe('sessionSnapTiers / sessionSnapTargets (store-resolving)', () => {
     for (const tier of tiers) expect(tier).not.toContain(1_000_000); // the excluded clip
   });
 
+  // F2/F3 (item 6) — Acceptance 1/2. The multitrack ruler seek and the cursor
+  // handle drag both pass `{ includeCursor: false }` through `mtSnapTargets`,
+  // so the bar stops being its own snap target in exactly those two gestures;
+  // every OTHER consumer (ClipView, TrackLane, EnvelopeLane — the four
+  // protected call sites) keeps the default and must see no change at all.
+  it('includeCursor: false withholds the cursor and keeps every other target', () => {
+    const s = useSessionStore.getState();
+    s.addClip(s.session.tracks[0].id, clip('a', 5_000));
+    useSessionStore.getState().setMtCursor(30_000);
+
+    const targets = sessionSnapTargets(null, { includeCursor: false });
+    expect(targets).not.toContain(30_000);
+    expect(targets).toContain(5_000); // the clip's startSample
+  });
+
+  it('the default (no options) keeps the cursor a target — the four protected call sites', () => {
+    const s = useSessionStore.getState();
+    s.addClip(s.session.tracks[0].id, clip('a', 5_000));
+    useSessionStore.getState().setMtCursor(30_000);
+
+    expect(sessionSnapTargets(null)).toContain(30_000);
+    expect(sessionSnapTiers([])[SNAP_TIER_EDGE]).toContain(30_000);
+  });
+
   it('offers clip edges ACROSS tracks and on the SAME track alike', () => {
     const s = useSessionStore.getState();
     s.addClip(s.session.tracks[0].id, clip('same-track', 300_000));

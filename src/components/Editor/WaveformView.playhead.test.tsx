@@ -32,7 +32,7 @@ const BEAT = 22_050; // -> x = 220.5 at SPP=100
 // handlers read off the event. (Same technique as WaveformView.snap.test.tsx.)
 function firePointer(
   element: Element,
-  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
   init: { clientX: number; clientY: number; pointerId?: number; altKey?: boolean; detail?: number }
 ): void {
   const event = new MouseEvent(type, {
@@ -137,9 +137,55 @@ describe('dragging the playhead handle (F11-1)', () => {
     // 8 px right of the line — off-centre, but still on the handle.
     firePointer(canvas, 'pointerdown', { clientX: 308, clientY: 3 });
 
-    // A press on the lane body would have jumped the cursor to 30 800.
-    // Grabbing a handle must not move the thing being grabbed.
+    // F3 (item 6) — the PRESS still moves nothing; a lone pointerdown with no
+    // release fired (this test's whole gesture) must leave the cursor exactly
+    // where it was. What changed is what a RELEASE does — pinned separately
+    // below ("a click with no move commits the press position").
     expect(useAppStore.getState().cursorSample).toBe(300 * SPP);
+  });
+
+  // Acceptance 9 (F3, item 6) — FAILS TODAY. A press-then-release with no move
+  // in between used to commit nothing at all (the dead-zone half of "give more
+  // precision to the bar"); it now commits the PRESS position, through the
+  // same magnet a live move would use.
+  it('a click with no move commits the press position', () => {
+    useAppStore.getState().setCursor(300 * SPP); // 30 000
+    const canvas = mount();
+
+    firePointer(canvas, 'pointerdown', { clientX: 308, clientY: 3 });
+    firePointer(canvas, 'pointerup', { clientX: 308, clientY: 3 });
+
+    expect(useAppStore.getState().cursorSample).toBe(30_800);
+  });
+
+  // Acceptance 10 — "Alt on the release is honoured". This press lands OFF the
+  // handle (224 is 76px from the parked cursor at 300, well past the 12px
+  // band), so it is the ordinary click-then-release cycle, not a handle grab —
+  // this pins that Alt-suspended placement survives that full cycle unchanged
+  // by the playhead-arm refactor above: without Alt this click would snap onto
+  // BEAT (350 samples away, inside the 8px*SPP tolerance); with Alt held
+  // through both events it lands on the raw position instead.
+  it('Alt on the release is honoured', () => {
+    useAppStore.getState().setCursor(300 * SPP);
+    const canvas = mount();
+
+    firePointer(canvas, 'pointerdown', { clientX: 224, clientY: 3, altKey: true });
+    firePointer(canvas, 'pointerup', { clientX: 224, clientY: 3, altKey: true });
+
+    expect(useAppStore.getState().cursorSample).toBe(224 * SPP); // 22 400, not BEAT
+  });
+
+  // Acceptance 11 (F-c, item 6) — a cancelled gesture must not commit, even
+  // though a travel-free release now does. `WaveformView.tsx` must route
+  // `onPointerCancel` to the hook's own `onPointerCancel`, not `onPointerUp`.
+  it('a cancel commits nothing', () => {
+    useAppStore.getState().setCursor(300 * SPP);
+    const canvas = mount();
+
+    firePointer(canvas, 'pointerdown', { clientX: 308, clientY: 3 });
+    firePointer(canvas, 'pointercancel', { clientX: 308, clientY: 3 });
+
+    expect(useAppStore.getState().cursorSample).toBe(30_000);
   });
 
   it('never touches the selection — dragging the playhead across one leaves it whole', () => {

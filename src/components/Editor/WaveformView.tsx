@@ -151,7 +151,7 @@ export default function WaveformView({ docId }: { docId: string }) {
           onPointerDown={gestures.onPointerDown}
           onPointerMove={gestures.onPointerMove}
           onPointerUp={gestures.onPointerUp}
-          onPointerCancel={gestures.onPointerUp}
+          onPointerCancel={gestures.onPointerCancel}
         />
       </div>
     </div>

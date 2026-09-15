@@ -25,11 +25,21 @@ import { useMultitrackZoom } from './useMultitrackZoom';
 const HEADER_W = 224; // Tailwind w-56 (14rem)
 const LANE_H = 96; // Tailwind h-24
 
-/** F11-2: the ruler's magnet targets for THIS surface — every clip edge, bar
- * and beat in the session. Nothing is excluded: a ruler seek is not a clip
- * drag, so there is no clip whose own edges must be left out. */
+/** F11-2: the ruler's magnet targets for THIS surface — every clip edge and
+ * beat in the session. Nothing is excluded: a ruler seek is not a clip drag,
+ * so there is no clip whose own edges must be left out.
+ *
+ * F2/F3 (item 6) — `includeCursor: false`, because this function feeds BOTH
+ * bar-moving gestures (the ruler seek prop below, and the cursor handle drag
+ * at `onHandlePointerDown`): the multitrack cursor's OWN current position used
+ * to sit in the target set, so a small deliberate move near "where the bar
+ * already is" snapped straight back to it — the literal complaint, "near its
+ * last position". `sessionSnapTargets.ts`'s header explains the trap-27
+ * parallel. The bar stays a target for gestures that aim AT it (a clip drop,
+ * an envelope key) — those call `sessionSnapTiers`/`sessionSnapTargets` with
+ * no options and keep the default `includeCursor: true`. */
 function mtSnapTargets(): number[] {
-  return sessionSnapTargets(null);
+  return sessionSnapTargets(null, { includeCursor: false });
 }
 
 /** T7: the same Alt escape hatch every drag surface in this app keeps
@@ -149,7 +159,14 @@ export default function MultitrackView() {
   // own rule), and NO transport call on release: nothing in `transportService`
   // watches the cursor, it is where the NEXT play starts.
   const overlayRef = useRef<HTMLDivElement | null>(null);
-  const handleTargetsRef = useRef<number[] | null>(null);
+  /** F3 (item 6) — carries the whole press gesture, not just its frozen
+   * targets: `pressRaw` (unclamped, so the release reproduces `snappedMt`'s
+   * snap-then-clamp order) and `moved`, set true by the first handled
+   * pointermove. A release with `moved === false` commits `pressRaw` through
+   * `snappedMt` — see `onHandlePointerUp` below. */
+  const handleDragRef = useRef<{ targets: number[]; pressRaw: number; moved: boolean } | null>(
+    null
+  );
   const [handleGrabbed, setHandleGrabbed] = useState(false);
 
   /** Lane-relative x for a client x — the overlay wrapper's rect minus the
@@ -171,22 +188,61 @@ export default function MultitrackView() {
   };
 
   const onHandlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    handleTargetsRef.current = mtSnapTargets(); // captured once per gesture
+    handleDragRef.current = {
+      targets: mtSnapTargets(), // captured once per gesture
+      pressRaw: pixelToSample(laneXAtClientX(e.clientX), mtZoom.scrollSample, mtZoom.samplesPerPixel),
+      moved: false,
+    };
     const el = e.currentTarget;
     if (typeof el.setPointerCapture === 'function') el.setPointerCapture(e.pointerId);
     setHandleGrabbed(true);
-    // Deliberately no setMtCursor: grabbing a handle must not itself move it.
+    // F3 (item 6) overturns the ruling this comment used to state — "grabbing
+    // a handle must not itself move it": still true of the PRESS. What
+    // changed is the RELEASE: a press that never moves now commits the press
+    // position (see `onHandlePointerUp`), because a click on the handle that
+    // committed nothing at all was the second cause of "give more precision
+    // to the bar" (item 6) — a dead zone, not a snap-back. So: the press does
+    // not move the bar; the release does, if and only if the pointer never
+    // moved. Still no setMtCursor here.
   };
 
   const onHandlePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    const targets = handleTargetsRef.current;
-    if (!targets) return; // hovering — the grab affordance is plain CSS here
+    const drag = handleDragRef.current;
+    if (!drag) return; // hovering — the grab affordance is plain CSS here
+    drag.moved = true;
     const raw = pixelToSample(laneXAtClientX(e.clientX), mtZoom.scrollSample, mtZoom.samplesPerPixel);
-    setMtCursor(snappedMt(raw, targets, e));
+    setMtCursor(snappedMt(raw, drag.targets, e));
   };
 
   const onHandlePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    handleTargetsRef.current = null;
+    const drag = handleDragRef.current; // captured before clearing (F3)
+    handleDragRef.current = null;
+    setHandleGrabbed(false);
+    const el = e.currentTarget;
+    if (typeof el.releasePointerCapture === 'function') {
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already have been released (lost on blur); ignore.
+      }
+    }
+    // F3 (item 6) — a press that never moved commits the PRESS position, snapped
+    // and clamped exactly as a live move would (`snappedMt`'s own order), with
+    // Alt read from THIS release event. This overturns the ruling this file used
+    // to state at this line — "Deliberately no setMtCursor: grabbing a handle
+    // must not itself move it" — for the release only; the press above still
+    // moves nothing.
+    if (drag && !drag.moved) setMtCursor(snappedMt(drag.pressRaw, drag.targets, e));
+  };
+
+  /** F3/F-c (item 6) — a cancel (capture lost on blur, alt-tab, the OS
+   * stealing the pointer) tears the gesture down WITHOUT committing. Now that
+   * a travel-free release commits a position (above), routing cancel to the
+   * same handler as release would write the bar to wherever a cancelled press
+   * happened to land — harmless before this lot, when release was a no-op, and
+   * wrong now. Same teardown as release, no `setMtCursor` call. */
+  const onHandlePointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+    handleDragRef.current = null;
     setHandleGrabbed(false);
     const el = e.currentTarget;
     if (typeof el.releasePointerCapture === 'function') {
@@ -379,7 +435,7 @@ export default function MultitrackView() {
             onPointerDown={onHandlePointerDown}
             onPointerMove={onHandlePointerMove}
             onPointerUp={onHandlePointerUp}
-            onPointerCancel={onHandlePointerUp}
+            onPointerCancel={onHandlePointerCancel}
             className="absolute"
             style={{
               left: cursorX - CURSOR_HANDLE_HIT_PX,

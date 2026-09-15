@@ -47,7 +47,7 @@ const store = () => useSessionStore.getState();
  * `WaveformView.playhead.test.tsx` and the drop-target suite here. */
 function firePointer(
   element: Element,
-  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
   init: { clientX: number; clientY?: number; altKey?: boolean }
 ): void {
   const event = new MouseEvent(type, {
@@ -132,16 +132,14 @@ describe('the handle’s geometry (T7) — the editor’s constants, plus the he
 
 describe('dragging the multitrack cursor handle (T7)', () => {
   it('does NOT move the cursor merely by being grabbed', () => {
-    // Parked at lane x = 300. The cursor's OWN position is always a tier-0
-    // magnet target (`sessionSnapTiers` passes `[mtCursorSample]` as `extra`),
-    // so the press must sit BEYOND its 8 px snap radius or a buggy pointerdown
-    // that commits the snapped position would snap straight back to 30 000 and
-    // pass anyway (T7 review F1 — proven by mutation).
+    // Parked at lane x = 300. F2/F3 (item 6): the cursor's own position is NO
+    // LONGER a magnet target for this gesture (`mtSnapTargets` now passes
+    // `{ includeCursor: false }`), so this no longer depends on the press
+    // sitting outside any snap radius — the press commits nothing at all,
+    // full stop, regardless of distance from 30 000.
     store().setMtCursor(30_000);
     const handle = mountHandle();
 
-    // 12 px right — the hit band's far edge, beyond the 8 px snap radius, so
-    // neither a raw nor a snapped pointerdown commit can land back on 30 000.
     firePointer(handle, 'pointerdown', { clientX: atLaneX(312) });
 
     expect(store().mtCursorSample).toBe(30_000);
@@ -159,8 +157,13 @@ describe('dragging the multitrack cursor handle (T7)', () => {
   });
 
   it('obeys the session magnet — a clip edge at 220.5px pulls a drag at 224px onto it', () => {
+    // Acceptance 6 (F2/F3, item 6) — adapted from a cursor-0 fixture (X3: 0 is
+    // this repo's dominant identity-value dead-test pattern) to a non-identity
+    // starting cursor, 30 000: a clip EDGE is a target the two bar-moving
+    // gestures never excluded (only the bar's own position was withheld), so
+    // it still pulls the handle regardless of where the cursor started.
     addEdgeClip();
-    store().setMtCursor(0);
+    store().setMtCursor(30_000);
     const handle = mountHandle();
 
     firePointer(handle, 'pointerdown', { clientX: atLaneX(0) });
@@ -240,6 +243,48 @@ describe('dragging the multitrack cursor handle (T7)', () => {
     expect(store().mtPlayState).toBe('stopped');
     play.mockRestore();
     stop.mockRestore();
+  });
+
+  // Acceptance 3 (F2, item 6) — FAILS TODAY. Precision near the bar's own last
+  // position: today `mtCursorSample` is itself a tier-0 snap target, so a
+  // small deliberate 3 px move lands back on it (3 px < the 8 px radius). With
+  // `includeCursor: false`, nothing pulls the drag back and it lands exactly
+  // where the pointer went.
+  it('does not snap back to the bar’s own last position on a small deliberate move', () => {
+    store().setMtCursor(30_000); // lane x = 300
+    const handle = mountHandle();
+
+    firePointer(handle, 'pointerdown', { clientX: atLaneX(303) });
+    firePointer(handle, 'pointermove', { clientX: atLaneX(303) });
+
+    expect(store().mtCursorSample).toBe(30_300);
+  });
+
+  // Acceptance 4 (F3, item 6) — FAILS TODAY. A press that never moves used to
+  // commit nothing at all (the dead zone half of "give more precision to the
+  // bar"); it now commits the press position through the same magnet a live
+  // move would use.
+  it('a click with no move commits the press position', () => {
+    store().setMtCursor(30_000);
+    const handle = mountHandle();
+
+    firePointer(handle, 'pointerdown', { clientX: atLaneX(306) });
+    firePointer(handle, 'pointerup', { clientX: atLaneX(306) });
+
+    expect(store().mtCursorSample).toBe(30_600);
+  });
+
+  // Acceptance 5 (F-c, item 6) — a cancelled gesture must not commit, even
+  // though a travel-free release now does. `MultitrackView.tsx:382` must route
+  // `onPointerCancel` to its own teardown handler, not to `onHandlePointerUp`.
+  it('a cancel commits nothing', () => {
+    store().setMtCursor(30_000);
+    const handle = mountHandle();
+
+    firePointer(handle, 'pointerdown', { clientX: atLaneX(306) });
+    firePointer(handle, 'pointercancel', { clientX: atLaneX(306) });
+
+    expect(store().mtCursorSample).toBe(30_000);
   });
 
   it('shows grab, then grabbing, then grab again once released', () => {

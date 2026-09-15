@@ -88,7 +88,20 @@ type DragState =
       exceeded: boolean;
       targets: SnapTargets;
     }
-  | { kind: 'playhead'; targets: SnapTargets };
+  | {
+      kind: 'playhead';
+      targets: SnapTargets;
+      /** F3 (item 6) — the raw (already clamped, see `sampleAtClientX`) sample
+       * at pointerdown. A release with `moved === false` commits this, through
+       * `snapped()`, exactly as a live move would have. */
+      pressRaw: number;
+      /** F3 (item 6) — set true by the first handled pointermove. Flips on the
+       * first move, no pixel threshold: the user already committed to the
+       * gesture by grabbing the handle, and a threshold would open a window
+       * where a move wrote position P and the release then re-wrote the press
+       * position — two contradictory commits in one gesture. */
+      moved: boolean;
+    };
 
 /** True while the escape-hatch modifier is held on THIS event. Alt, verified
  * free against the built app — see the hook's header. */
@@ -100,6 +113,13 @@ export interface EditorGestureHandlers {
   onPointerDown(e: ReactPointerEvent<HTMLCanvasElement>): void;
   onPointerMove(e: ReactPointerEvent<HTMLCanvasElement>): void;
   onPointerUp(e: ReactPointerEvent<HTMLCanvasElement>): void;
+  /** F-c (item 6) — a cancel (capture lost on blur, a touch stolen by the OS,
+   * an alt-tab) tears the gesture down WITHOUT committing, on either drag arm.
+   * Now that a travel-free playhead release commits a position, routing
+   * cancel to `onPointerUp` — as every surface did before this lot, when
+   * release was a no-op — would write the bar to wherever the cancelled press
+   * happened to land. */
+  onPointerCancel(e: ReactPointerEvent<HTMLCanvasElement>): void;
 }
 
 /**
@@ -236,13 +256,21 @@ export function useEditorGestures(
     // F11-1: the handle wins the press. Checked BEFORE the cursor is moved and
     // before the double-click branch: the user aimed at a grab handle, so the
     // gesture is a drag of the thing they grabbed and nothing else — no
-    // selection change, no select-all on a double press, and no jump of the
-    // cursor to the press position (grabbing a handle must not itself move it).
+    // selection change, no select-all on a double press.
+    //
+    // F3 (item 6) overturns the second half of what this comment used to say
+    // ("no jump of the cursor to the press position — grabbing a handle must
+    // not itself move it"): that was true of the press and stays true here,
+    // but a press that never moves now commits the press position ON RELEASE
+    // (see `onPointerUp`) — a click on the handle used to commit nothing at
+    // all, which was the dead-zone half of "give more precision to the bar"
+    // (item 6). So: the press does not move the cursor; the release does, if
+    // and only if the pointer never moved.
     if (onHandle(x, yAtClientY(e.clientY))) {
       if (typeof canvas.setPointerCapture === 'function') {
         canvas.setPointerCapture(e.pointerId);
       }
-      dragRef.current = { kind: 'playhead', targets };
+      dragRef.current = { kind: 'playhead', targets, pressRaw: raw, moved: false };
       setLaneCursor('grabbing');
       return;
     }
@@ -295,6 +323,7 @@ export function useEditorGestures(
       // at pointerdown, Alt re-read on THIS event (see the hook header). The
       // selection is deliberately untouched: dragging the playhead through a
       // selected region must not redefine it.
+      drag.moved = true; // F3 — the release must not ALSO commit pressRaw
       useAppStore.getState().setCursor(snapped(raw, drag.targets, e));
       return;
     }
@@ -326,6 +355,14 @@ export function useEditorGestures(
     // F11-1: the grip is released; the pointer may still be over the handle, so
     // fall back to the hover state rather than clearing outright.
     if (drag?.kind === 'playhead') {
+      // F3 (item 6) — a press that never moved commits the PRESS position,
+      // through the same `snapped()` resolver a live move uses (targets frozen
+      // at pointerdown, Alt read from THIS release event). Selection is never
+      // touched on this path; a real drag already committed via `onPointerMove`
+      // and must not be re-committed here (`drag.moved` guards exactly that).
+      if (!drag.moved) {
+        useAppStore.getState().setCursor(snapped(drag.pressRaw, drag.targets, e));
+      }
       const { x } = sampleAtClientX(e.clientX);
       setLaneCursor(onHandle(x, yAtClientY(e.clientY)) ? 'grab' : '');
       return;
@@ -335,5 +372,23 @@ export function useEditorGestures(
     }
   };
 
-  return { onPointerDown, onPointerMove, onPointerUp };
+  /** F-c (item 6) — see the interface doc: teardown only, no commit. Mirrors
+   * `onPointerUp`'s capture release and hover-cursor restore but skips the
+   * playhead commit and the empty-selection collapse entirely — a cancelled
+   * gesture leaves the store exactly as it was before the press. */
+  const onPointerCancel = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (canvas && typeof canvas.releasePointerCapture === 'function') {
+      try {
+        canvas.releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already have been released (e.g. lost on blur); ignore.
+      }
+    }
+    dragRef.current = null;
+    const { x } = sampleAtClientX(e.clientX);
+    setLaneCursor(onHandle(x, yAtClientY(e.clientY)) ? 'grab' : '');
+  };
+
+  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel };
 }
