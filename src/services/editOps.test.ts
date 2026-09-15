@@ -472,6 +472,24 @@ describe('splitAtCursor', () => {
       expect(useAppStore.getState().selection).toBeNull();
       expect(markers(doc.id).map((m) => m.positionSample)).toEqual([120, 250]);
     });
+
+    it('5 (G6) undoing the split that made the anchor its own marker falls back to no anchor', () => {
+      // Not a document switch: `lastSplitMarker` itself is untouched by this
+      // undo (only the marker list rides the undo entry) — the anchor is
+      // still {doc, 120}, but 120 no longer carries a marker, so the LIVE
+      // check in the cursor arm (not an explicit reset here) must catch it.
+      const doc = addStereoDoc();
+      useAppStore.getState().setCursor(120);
+      splitAtCursor();
+
+      undo(doc.id); // removes the marker at 120
+
+      useAppStore.getState().setCursor(250);
+      splitAtCursor();
+
+      expect(useAppStore.getState().selection).toBeNull();
+      expect(markers(doc.id).map((m) => m.positionSample)).toEqual([250]);
+    });
   });
 });
 
