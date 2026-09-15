@@ -23,8 +23,10 @@ import {
 import { getHistory } from '../services/undoHistory';
 
 /**
- * Merge Clips, Task 1 — the pure core (`mergeTargets`, `bakeMergedClip`) and
- * the session write (`commitMergedClips`), against design rulings D1-D5.
+ * Join Clips (H1: renamed from "Merge Clips" — this module and its exports
+ * keep their names, see `mergeClips.ts`'s own docblock), Task 1 — the pure
+ * core (`mergeTargets`, `bakeMergedClip`) and the session write
+ * (`commitMergedClips`), against design rulings D1-D5.
  *
  * The load-bearing claims, each pinned below: only a track with TWO OR MORE
  * selected clips merges, and the span is `[min start, max end)` even under
@@ -33,7 +35,7 @@ import { getHistory } from '../services/undoHistory';
  * armed crossfade between two members bakes AS the crossfade (D2); a mono
  * member landing in a stereo merge is scaled by `Math.SQRT1_2`, the ratio the
  * two pan laws differ by at centre (D3); the write is one
- * `withSessionGesture('Merge clips')` around the store's own `removeClip` /
+ * `withSessionGesture('Join clips')` around the store's own `removeClip` /
  * `addClip`, so an outsider's facing fade is disarmed by the store's existing
  * maintenance rather than by anything here (D4); and the primary after the act
  * is the merge on the track that held the previous primary (D5).
@@ -535,7 +537,7 @@ describe('commitMergedClips — D4/D5', () => {
     // D1 — the outsider inside the span is neither merged nor moved.
     expect(clips[1]).toBe(x);
 
-    expect(doneLabels()).toEqual(['Merge clips']);
+    expect(doneLabels()).toEqual(['Join clips']);
 
     undoSession();
     expect(trackClips()).toEqual([a, x, b]);
@@ -571,7 +573,7 @@ describe('commitMergedClips — D4/D5', () => {
     expect(ids).toHaveLength(2);
     expect(trackClips(0).map((c) => c.id)).toEqual([ids[0]]);
     expect(trackClips(1).map((c) => c.id)).toEqual([ids[1]]);
-    expect(doneLabels()).toEqual(['Merge clips']);
+    expect(doneLabels()).toEqual(['Join clips']);
     // An untouched track keeps its clip object, and no track's automation is
     // re-allocated by the write.
     expect(trackClips(2)[0]).toBe(t3.clips[0]);

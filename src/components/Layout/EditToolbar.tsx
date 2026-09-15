@@ -6,6 +6,7 @@ import {
   Merge,
   Redo2,
   Scissors,
+  SquareDashed,
   Trash2,
   Undo2,
   VolumeX,
@@ -36,15 +37,19 @@ import { ChromePill } from '../UI/glass';
  * to the SESSION's history in the multitrack view and the document's
  * elsewhere, which is exactly the rule wanted here).
  *
- * F1 / M1 / M7 / D6 — what the Multitrack view does to these nine:
+ * F1 / M1 / M7 / D6 — what the Multitrack view does to these ten:
+ *  - Select All (H8, lot H) is one command routed by view — the whole file in
+ *    the editors, every clip on every track in Multitrack — so it is never
+ *    blocked there and carries no `multitrackReason`.
  *  - Split is ROUTED by view, not blocked: a marker at the cursor in the
  *    editors, a clip split at the edit cursor in the Multitrack (M1). Its
  *    tooltip follows the route, since the same button does two different
  *    things.
- *  - Merge (D6) is the M7 rule pointing the OTHER way: it is the one button
- *    that exists only in the Multitrack view, so the tooltip naming the view
- *    that CAN do it is its `title` — the EDITOR one — and `multitrackTitle`
- *    describes the verb. No new field: `title` already serves that side.
+ *  - Join (D6, renamed from Merge — H1) is the M7 rule pointing the OTHER
+ *    way: it is the one button that exists only in the Multitrack view, so
+ *    the tooltip naming the view that CAN do it is its `title` — the EDITOR
+ *    one — and `multitrackTitle` describes the verb. No new field: `title`
+ *    already serves that side.
  *  - Delete is routed too, and always was: it removes the selected clips there.
  *  - Copy, Paste, Trim and Silence stay greyed, because their COMMANDS are
  *    disabled there and not because this pill says so. Each edits a region of
@@ -75,28 +80,47 @@ export interface EditToolbarItem {
   title: string;
 }
 
-/** Split · Merge · Copy · Paste · Delete │ Trim · Silence │ Undo · Redo — the
- * mockup's three groups, in its order, on lucide line icons (the app's rule:
- * never emoji). Exported so the tests name the same nine the pill draws. */
+/** Select All │ Split · Join · Copy · Paste · Delete │ Trim · Silence │ Undo ·
+ * Redo — H8/H5's four groups, in order, on lucide line icons (the app's rule:
+ * never emoji). Exported so the tests name the same ten the pill draws. */
 export const EDIT_TOOLBAR_ITEMS: EditToolbarItem[] = [
   {
+    // H4/H8 (lot H) — Select All is a SELECTION verb, not an edit acting on
+    // one, so it leads its own group rather than joining the four that act on
+    // a standing selection (H8's reasoning). One view-routed command, same as
+    // Split: the whole file in the editors, every clip on every track in
+    // Multitrack (H8) — never blocked there, so no `multitrackReason`.
+    label: 'Select All',
+    commandId: 'edit.selectAll',
+    Icon: SquareDashed,
+    title: 'Select All (A or Ctrl+A) — the whole file',
+    multitrackTitle: 'Select All (A or Ctrl+A) — every clip on every track',
+  },
+  {
+    // H5 (lot H) — Select All above draws the FIRST divider, so Split now
+    // starts the group that used to open with no divider.
+    startsGroup: true,
     label: 'Split',
     commandId: 'edit.split',
     Icon: Scissors,
-    title: 'Split at Cursor (Ctrl+K) — a marker at the cursor, or at both edges of the selection',
+    title: 'Split at Cursor (C or Ctrl+K) — a marker at the cursor, or at both edges of the selection',
     multitrackTitle:
-      'Split at Cursor (Ctrl+K) — cuts every clip under the cursor on the selected clips’ tracks',
+      'Split at Cursor (C or Ctrl+K) — cuts every clip under the cursor on the selected clips’ tracks',
   },
   {
     // D6 — directly after Split, the verb it undoes. Blocked in the editors
     // rather than in Multitrack, so its `title` carries the M7 sentence.
-    label: 'Merge',
-    commandId: 'multitrack.mergeClips',
+    // H1 (lot H) — renamed "Join Clips" everywhere the user can see it, and
+    // now bound to the bare `J` (H2: `M` stays Add Marker, so Join could not
+    // take it). The lucide icon name (`Merge`) is not user-visible and is
+    // unchanged.
+    label: 'Join',
+    commandId: 'multitrack.joinClips',
     Icon: Merge,
     title:
-      'Merge Clips — not available in the Waveform and Spectral views: it joins the selected clips of a multitrack track into one. Switch to Multitrack to use it.',
+      'Join Clips (J) — not available in the Waveform and Spectral views: it joins the selected clips of a multitrack track into one. Switch to Multitrack to use it.',
     multitrackTitle:
-      'Merge Clips — joins the selected clips on each track into one clip, silence in the gaps',
+      'Join Clips (J) — joins the selected clips on each track into one clip, silence in the gaps',
   },
   {
     label: 'Copy',
@@ -116,13 +140,13 @@ export const EDIT_TOOLBAR_ITEMS: EditToolbarItem[] = [
     label: 'Delete',
     commandId: 'edit.delete',
     Icon: Trash2,
-    title: 'Delete (Del)',
+    title: 'Delete (D or Del)',
     // D3 — in the multitrack Delete has two jobs, and a button that does two
     // things has to name both: it removes the selected clips, or, when the
     // selection is a GAP (double-click empty lane space), closes it — every
     // clip after it on THAT track moves up by the gap's length.
     multitrackTitle:
-      'Delete (Del) — removes the selected clips, or closes the selected gap: the clips after it on that track move up',
+      'Delete (D or Del) — removes the selected clips, or closes the selected gap: the clips after it on that track move up',
   },
   {
     label: 'Trim',
@@ -130,17 +154,17 @@ export const EDIT_TOOLBAR_ITEMS: EditToolbarItem[] = [
     Icon: Crop,
     startsGroup: true,
     multitrackReason: 'needs a time selection',
-    title: 'Trim to Selection — keeps the selected region, drops the rest',
+    title: 'Trim to Selection (T) — keeps the selected region, drops the rest',
   },
   {
     label: 'Silence',
     commandId: 'edit.silence',
     Icon: VolumeX,
     multitrackReason: 'needs a time selection',
-    title: 'Silence Selection — zeroes the selected region in place',
+    title: 'Silence Selection (S) — zeroes the selected region in place',
   },
-  { label: 'Undo', commandId: 'edit.undo', Icon: Undo2, startsGroup: true, title: 'Undo (Ctrl+Z)' },
-  { label: 'Redo', commandId: 'edit.redo', Icon: Redo2, title: 'Redo (Ctrl+Y)' },
+  { label: 'Undo', commandId: 'edit.undo', Icon: Undo2, startsGroup: true, title: 'Undo (U or Ctrl+Z)' },
+  { label: 'Redo', commandId: 'edit.redo', Icon: Redo2, title: 'Redo (R or Ctrl+Y)' },
 ];
 
 /** M7 — one blocked tooltip, with this button's own reason inside it. The

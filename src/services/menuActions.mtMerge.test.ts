@@ -7,7 +7,7 @@ import { SESSION_UNDO_KEY, _resetSessionUndo } from '../multitrack/sessionUndo';
 import { getHistory } from './undoHistory';
 
 /**
- * D1/D2/D6/D7 — `multitrack.mergeClips`, the command layer only: what the
+ * D1/D2/D6/D7 — `multitrack.joinClips`, the command layer only: what the
  * predicate answers, and what the run WIRES (the baked document's rate, name,
  * provenance, channel count and length, which document ends up active, and the
  * clip that points at it). The merge's own arithmetic is `mergeClips.ts`'s and
@@ -15,7 +15,7 @@ import { getHistory } from './undoHistory';
  *
  * The session runs at 44100 while every fixture document runs at 48000 ON
  * PURPOSE: the bake is handed the SESSION rate (D2), and a wiring that passed
- * the document's rate instead would mint a 48000 Hz `Merge N` that every
+ * the document's rate instead would mint a 48000 Hz `Join N` that every
  * identity-rate fixture would have accepted.
  */
 
@@ -56,7 +56,7 @@ function seed(tracks: [number, number, number, string][][]): { ids: string[][] }
     );
     return t;
   });
-  const session: Session = { name: 'Merge Fixture', sampleRate: SESSION_RATE, tracks: built };
+  const session: Session = { name: 'Join Fixture', sampleRate: SESSION_RATE, tracks: built };
   useSessionStore.setState({
     session,
     selectedClipId: null,
@@ -75,7 +75,7 @@ beforeEach(() => {
   useAppStore.getState().setView('multitrack');
 });
 
-describe('multitrack.mergeClips — enablement (D1/D6)', () => {
+describe('multitrack.joinClips — enablement (D1/D6)', () => {
   it('5a is refused in the waveform view with a selection that WOULD merge', () => {
     const doc = addDoc('take.wav', 1);
     const { ids } = seed([
@@ -85,10 +85,10 @@ describe('multitrack.mergeClips — enablement (D1/D6)', () => {
       ],
     ]);
     store().setSelectedClips(ids[0]);
-    expect(isCommandEnabled('multitrack.mergeClips')).toBe(true);
+    expect(isCommandEnabled('multitrack.joinClips')).toBe(true);
 
     useAppStore.getState().setView('waveform');
-    expect(isCommandEnabled('multitrack.mergeClips')).toBe(false);
+    expect(isCommandEnabled('multitrack.joinClips')).toBe(false);
   });
 
   it('5b is refused with a SINGLE selected clip — there is nothing to merge it with', () => {
@@ -100,14 +100,14 @@ describe('multitrack.mergeClips — enablement (D1/D6)', () => {
       ],
     ]);
     store().setSelectedClip(ids[0][0]);
-    expect(isCommandEnabled('multitrack.mergeClips')).toBe(false);
+    expect(isCommandEnabled('multitrack.joinClips')).toBe(false);
   });
 
   it('5b is refused with two selected clips on DIFFERENT tracks', () => {
     const doc = addDoc('take.wav', 1);
     const { ids } = seed([[[1000, 2000, 0, doc.id]], [[5000, 3000, 4000, doc.id]]]);
     store().setSelectedClips([ids[0][0], ids[1][0]]);
-    expect(isCommandEnabled('multitrack.mergeClips')).toBe(false);
+    expect(isCommandEnabled('multitrack.joinClips')).toBe(false);
   });
 
   it('5b lights as soon as two of them share one track', () => {
@@ -121,12 +121,12 @@ describe('multitrack.mergeClips — enablement (D1/D6)', () => {
     ]);
     // The lone clip on track 2 is selected too: it must not disqualify the pair.
     store().setSelectedClips([ids[0][0], ids[0][1], ids[1][0]]);
-    expect(isCommandEnabled('multitrack.mergeClips')).toBe(true);
+    expect(isCommandEnabled('multitrack.joinClips')).toBe(true);
   });
 });
 
-describe('multitrack.mergeClips — the act (D2/D7)', () => {
-  it('5c mints one Merge document at the SESSION rate, spanning the members, and points the clip at it', async () => {
+describe('multitrack.joinClips — the act (D2/D7)', () => {
+  it('5c mints one Join document at the SESSION rate, spanning the members, and points the clip at it', async () => {
     const doc = addDoc('take.wav', 1);
     const { ids } = seed([
       [
@@ -137,11 +137,11 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
     store().setSelectedClips(ids[0]);
     const before = documents().length;
 
-    await runCommand('multitrack.mergeClips');
+    await runCommand('multitrack.joinClips');
 
     expect(documents()).toHaveLength(before + 1);
     const merged = documents()[documents().length - 1];
-    expect(merged.name).toMatch(/^Merge \d+$/);
+    expect(merged.name).toMatch(/^Join \d+$/);
     expect(merged.sampleRate).toBe(SESSION_RATE);
     expect(merged.sampleRate).not.toBe(DOC_RATE);
     expect(merged.neverSaved).toBe(true);
@@ -158,7 +158,7 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
     expect(clip.documentId).toBe(merged.id);
     expect(clip.startSample).toBe(1000);
     expect(clip.lengthSample).toBe(7000);
-    expect(doneLabels()).toEqual(['Merge clips']);
+    expect(doneLabels()).toEqual(['Join clips']);
 
     // The members' audio is in it and the gap between them is not: a wiring
     // that baked the wrong span or the wrong track would fail here.
@@ -184,12 +184,12 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
     store().setSelectedClips([...ids[0], ...ids[1], ...ids[2]]);
     const before = documents().length;
 
-    await runCommand('multitrack.mergeClips');
+    await runCommand('multitrack.joinClips');
 
     expect(documents()).toHaveLength(before + 2);
     const [first, second] = documents().slice(-2);
-    expect(first.name).toMatch(/^Merge \d+$/);
-    expect(second.name).toMatch(/^Merge \d+$/);
+    expect(first.name).toMatch(/^Join \d+$/);
+    expect(second.name).toMatch(/^Join \d+$/);
     expect(second.name).not.toBe(first.name);
     expect(first.channels[0]).toHaveLength(7000); // track 1: [1000, 8000)
     expect(second.channels[0]).toHaveLength(4300); // track 2: [200, 4500)
@@ -201,7 +201,7 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
     expect(clipsOn(1)[0].documentId).toBe(second.id);
     expect(clipsOn(2).map((c) => c.id)).toEqual(ids[2]); // untouched
     // Two tracks merged, still ONE undo entry (D4).
-    expect(doneLabels()).toEqual(['Merge clips']);
+    expect(doneLabels()).toEqual(['Join clips']);
   });
 
   it('5e bakes stereo as soon as ONE member is stereo (D3)', async () => {
@@ -215,7 +215,7 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
     ]);
     store().setSelectedClips(ids[0]);
 
-    await runCommand('multitrack.mergeClips');
+    await runCommand('multitrack.joinClips');
 
     const merged = documents()[documents().length - 1];
     expect(merged.channels).toHaveLength(2);
@@ -234,7 +234,7 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
     useAppStore.getState().setView('waveform');
     const before = documents().length;
 
-    await runCommand('multitrack.mergeClips');
+    await runCommand('multitrack.joinClips');
 
     expect(documents()).toHaveLength(before);
     expect(doneLabels()).toEqual([]);
@@ -242,18 +242,18 @@ describe('multitrack.mergeClips — the act (D2/D7)', () => {
   });
 });
 
-describe('multitrack.mergeClips — the menu row (D6)', () => {
-  it('5g is labelled "Merge Clips", carries no shortcut, and sits directly after Split', () => {
+describe('multitrack.joinClips — the menu row (D6)', () => {
+  it('5g is labelled "Join Clips", carries the bare `J` shortcut, and sits directly after Split', () => {
     const edit = getMenuSections().find((s) => s.title === 'Edit')!;
     // Separators are KEPT in this list, so "directly after" also refuses a
     // divider slipped between the inverse pair.
     const positions = edit.items.map((i) => (i === 'separator' ? 'separator' : i.id));
-    expect(positions.indexOf('multitrack.mergeClips')).toBe(positions.indexOf('edit.split') + 1);
+    expect(positions.indexOf('multitrack.joinClips')).toBe(positions.indexOf('edit.split') + 1);
 
     const row = edit.items
       .filter((i): i is MenuCommand => i !== 'separator')
-      .find((i) => i.id === 'multitrack.mergeClips');
-    expect(row?.label).toBe('Merge Clips');
-    expect(row?.shortcut).toBeUndefined();
+      .find((i) => i.id === 'multitrack.joinClips');
+    expect(row?.label).toBe('Join Clips');
+    expect(row?.shortcut).toBe('J');
   });
 });

@@ -293,12 +293,13 @@ export interface TestApi {
   /** D3: reads the selected gap back (`getStateSummary` carries no session
    * selection). */
   getSelectedGap(): TrackGap | null;
-  /** Merge Clips (`multitrack.mergeClips`) on the current clip selection,
-   * through the menu action itself — so the harness sees the SAME baked
-   * document and the same single undo entry the menu row writes. Reports the
-   * merged clip ids (one per merged track, `[]` when nothing qualifies) and
-   * `documents.length` afterwards, since the merge mints one document per
-   * merged track. */
+  /** Join Clips (`multitrack.joinClips`; H1 lot H — renamed from Merge Clips,
+   * this hook and `mergeSelectedClips`/`canMergeSelectedClips` keep their
+   * names) on the current clip selection, through the menu action itself —
+   * so the harness sees the SAME baked document and the same single undo
+   * entry the menu row writes. Reports the merged clip ids (one per merged
+   * track, `[]` when nothing qualifies) and `documents.length` afterwards,
+   * since the merge mints one document per merged track. */
   mergeSelectedClips(): { clipIds: string[]; docCount: number };
   mixdownSession(): { name: string; length: number; sampleRate: number; rms: number } | null;
   // --- v1.1 flows -------------------------------------------------------------
@@ -1983,7 +1984,7 @@ export function installTestHooks(): void {
       return gap === null ? null : { ...gap };
     },
 
-    // The menu action verbatim (not a re-implementation): one `Merge N`
+    // The menu action verbatim (not a re-implementation): one `Join N`
     // document per merged track plus one undo entry, so the smoke asserts the
     // shipped path. `docCount` is read AFTER, which is how the harness sees
     // the minting without being handed the documents themselves.

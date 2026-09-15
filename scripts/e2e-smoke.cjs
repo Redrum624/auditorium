@@ -2351,8 +2351,8 @@ async function main() {
     console.log(`  edit pill buttons: ${JSON.stringify(editButtons)}`);
     assert(
       editButtons.map((b) => b.label).join(',') ===
-        'Split,Merge,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
-      `the edit pill carries the nine commands in the mockup's order (actual ${editButtons.map((b) => b.label).join(',')})`
+        'Select All,Split,Join,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
+      `the edit pill carries the ten commands in the mockup's order (actual ${editButtons.map((b) => b.label).join(',')})`
     );
     assert(
       editButtons.filter((b) => ['Copy', 'Delete', 'Trim', 'Silence'].includes(b.label))
@@ -2362,6 +2362,13 @@ async function main() {
     assert(
       editButtons.some((b) => b.label === 'Split' && b.disabled === false),
       `Split needs only an open file, so it is lit with no selection (actual ${JSON.stringify(editButtons)})`
+    );
+    // H8 (lot H): Select All is a SELECTION verb, not an edit acting on one —
+    // it is lit with no selection, like Split, and must not join the
+    // disabled-verbs filter above.
+    assert(
+      editButtons.some((b) => b.label === 'Select All' && b.disabled === false),
+      `Select All needs only an open file, so it is lit with no selection (actual ${JSON.stringify(editButtons)})`
     );
     // Closing the card really hands its width to the waveform — the claim the
     // whole strip rearrangement exists for.
@@ -4982,22 +4989,26 @@ async function main() {
       '  split at cursor: the pill and Ctrl+K both cut the clip in place; one Ctrl+Z each'
     );
 
-    // (e) Merge Clips — Split's inverse, through the pill.
+    // (e) Join Clips — Split's inverse, through the pill. H1 (lot H): renamed
+    // from "Merge Clips" everywhere the user can see it; `mergeClips`,
+    // `mergeSelectedClips`, `canMergeSelectedClips` and the other internal
+    // names below keep their names — not user-visible, renaming would be pure
+    // churn.
     //
-    // A merge is the one clip verb that writes BOTH stores in one act: it
-    // mints a document (`Merge N`, the Mixdown pattern — no undo entry of its
-    // own) and, in a single session gesture, adds the merged clip and removes
+    // A join is the one clip verb that writes BOTH stores in one act: it
+    // mints a document (`Join N`, the Mixdown pattern — no undo entry of its
+    // own) and, in a single session gesture, adds the joined clip and removes
     // its members. Nothing but the packaged app can show the two moving
     // together: the core's unit tests hand `mergeClips` a plain session and
     // never see the Files panel gain a file, and a component test renders the
     // pill with no session under it, so the button it draws is enabled by a
     // mock rather than by `canMergeSelectedClips`.
     //
-    // The step splits the lone clip in two, merges the halves back, then puts
-    // everything back the way it found it — both undos, the `Merge N`
+    // The step splits the lone clip in two, joins the halves back, then puts
+    // everything back the way it found it — both undos, the `Join N`
     // document closed and the previous active file re-activated — because
     // every later step reads the one-clip session (d) left.
-    console.log('Merge clips: pill, one minted document, one undo step...');
+    console.log('Join clips: pill, one minted document, one undo step...');
     const mergeBefore = await page.evaluate(() => window.__test.getStateSummary());
     const mergeWhole = (await page.evaluate(() => window.__test.getClipFadeState())).clips[0];
     await page.evaluate((id) => window.__test.selectClips([id]), mergeWhole.clipId);
@@ -5017,14 +5028,14 @@ async function main() {
       (ids) => window.__test.selectClips(ids),
       mergeHalves.map((c) => c.clipId)
     );
-    const mergeBtn = '[data-testid="edit-pill"] button[aria-label="Merge"]';
+    const mergeBtn = '[data-testid="edit-pill"] button[aria-label="Join"]';
     const mergeState = await page.evaluate((sel) => {
       const b = document.querySelector(sel);
       return { present: b !== null, disabled: b !== null && b.disabled === true };
     }, mergeBtn);
     assert(
       mergeState.present && mergeState.disabled === false,
-      `the pill's Merge button is present and LIVE with two clips of one track selected (${JSON.stringify(mergeState)})`
+      `the pill's Join button is present and LIVE with two clips of one track selected (${JSON.stringify(mergeState)})`
     );
     await page.click(mergeBtn);
     await page.waitForFunction(
@@ -5041,15 +5052,15 @@ async function main() {
     );
     assert(
       mergeHalves.every((h) => h.clipId !== merged.clips[0].clipId),
-      `the merged clip is a NEW clip over the minted document, not either half re-used (${merged.clips[0].clipId} vs ${JSON.stringify(mergeHalves.map((h) => h.clipId))})`
+      `the joined clip is a NEW clip over the minted document, not either half re-used (${merged.clips[0].clipId} vs ${JSON.stringify(mergeHalves.map((h) => h.clipId))})`
     );
     const mergeAfter = await page.evaluate(() => window.__test.getStateSummary());
     assert(
       mergeAfter.docCount === mergeBefore.docCount + 1,
-      `the merge minted exactly one document (docCount ${mergeBefore.docCount} -> ${mergeAfter.docCount})`
+      `the join minted exactly one document (docCount ${mergeBefore.docCount} -> ${mergeAfter.docCount})`
     );
     assert(
-      mergeAfter.activeName !== null && /^Merge \d+$/.test(mergeAfter.activeName),
+      mergeAfter.activeName !== null && /^Join \d+$/.test(mergeAfter.activeName),
       `and it is the active one, named like every other computed document (activeName ${mergeAfter.activeName})`
     );
 
@@ -5057,7 +5068,7 @@ async function main() {
     const afterMergeZ = await page.evaluate(() => window.__test.getClipFadeState());
     assert(
       afterMergeZ.clips.length === 2,
-      `ONE Ctrl+Z undid the whole merge — the add and both removes (${afterMergeZ.clips.length} clips)`
+      `ONE Ctrl+Z undid the whole join — the add and both removes (${afterMergeZ.clips.length} clips)`
     );
     await page.keyboard.press('Control+y');
     const afterMergeY = await page.evaluate(() => window.__test.getClipFadeState());
@@ -5066,7 +5077,7 @@ async function main() {
       `Ctrl+Y re-applied it (${afterMergeY.clips.length} clip)`
     );
 
-    // Back to what this step found: undo the merge, then the split above it.
+    // Back to what this step found: undo the join, then the split above it.
     await page.keyboard.press('Control+z');
     await page.keyboard.press('Control+z');
     const afterMergeUndone = await page.evaluate(() => window.__test.getClipFadeState());
@@ -5074,10 +5085,10 @@ async function main() {
       afterMergeUndone.clips.length === 1 &&
         afterMergeUndone.clips[0].startSample === 0 &&
         afterMergeUndone.clips[0].lengthSample === 88200,
-      `merge and split both undone, the session exactly as (d) left it (${JSON.stringify(afterMergeUndone.clips)})`
+      `join and split both undone, the session exactly as (d) left it (${JSON.stringify(afterMergeUndone.clips)})`
     );
     // Undo restores the members but never un-mints the document, and it does
-    // not move the active one either (D7), so `Merge N` is still open and
+    // not move the active one either (D7), so `Join N` is still open and
     // still active here. Closing it through the test-mode close path — the
     // plain store action, no save prompt to block headless — is what returns
     // the Files panel to its pre-step count.
@@ -5093,7 +5104,7 @@ async function main() {
       `the Files panel and the active document are back where the step found them (${JSON.stringify({ docCount: mergeRestored.docCount, activeName: mergeRestored.activeName })} vs ${JSON.stringify({ docCount: mergeBefore.docCount, activeName: mergeBefore.activeName })})`
     );
     console.log(
-      '  merge clips: the pill joined both halves over a new Merge document; one Ctrl+Z each, session restored'
+      '  join clips: the pill joined both halves over a new Join document; one Ctrl+Z each, session restored'
     );
 
     // (f) D3 — a GAP is selectable, and Delete closes it.

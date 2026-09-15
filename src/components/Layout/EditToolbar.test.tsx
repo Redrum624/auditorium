@@ -84,16 +84,19 @@ describe('EditToolbar — the E2 visibility rule', () => {
   });
 });
 
-describe('EditToolbar — the nine icon buttons', () => {
-  it('renders exactly the nine commands, in the mockup order, icons only', () => {
+describe('EditToolbar — the ten icon buttons', () => {
+  // Acceptance #6 (lot H): 9 -> 10. Select All leads (H8's own group), and
+  // Merge is renamed Join (H1) but keeps its D6 position directly after Split.
+  it('renders exactly the ten commands, in the mockup order, icons only', () => {
     lastDocId = addDoc().id;
     const { container } = render(<EditToolbar />);
     const buttons = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-testid="edit-pill"] button')
     );
     expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Select All', // H4/H8 (lot H): new, leads its own group
       'Split', // item 8 (M1): the Scissors button is Split at Cursor
-      'Merge', // D6: Split's inverse, directly after it
+      'Join', // D6: Split's inverse, directly after it; H1: renamed from Merge
       'Copy',
       'Paste',
       'Delete',
@@ -102,7 +105,7 @@ describe('EditToolbar — the nine icon buttons', () => {
       'Undo',
       'Redo',
     ]);
-    expect(EDIT_TOOLBAR_ITEMS).toHaveLength(9);
+    expect(EDIT_TOOLBAR_ITEMS).toHaveLength(10);
     // Icons only: every button's visible content is an SVG glyph, no text.
     for (const b of buttons) {
       expect(b.querySelector('svg')).not.toBeNull();
@@ -289,7 +292,7 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
   });
 
   /** Two clips on one track — `[1000, 3000)` and `[5000, 8000)` — both
-   * selected: the smallest selection `multitrack.mergeClips` accepts. */
+   * selected: the smallest selection `multitrack.joinClips` accepts. */
   function seedTwoSelectedClips(): string[] {
     const ids: string[] = [];
     act(() => {
@@ -308,41 +311,119 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     return ids;
   }
 
-  // D6 — Merge is the M7 rule pointing the other way: it exists ONLY in the
+  // D6 — Join is the M7 rule pointing the other way: it exists ONLY in the
   // Multitrack view, so the tooltip that names the view that CAN do it is the
   // EDITOR one. Its predicate reads the same session store Split's does, which
   // is why the last act below is a session write with no app-store touch after
   // it: without this pill's session subscriptions the button would grey one
   // unrelated render late.
-  it('4e greys Merge in the editors, lights it for two clips on one track, and greys it again at one', () => {
+  it('4e greys Join in the editors, lights it for two clips on one track, and greys it again at one', () => {
     lastDocId = addDoc().id;
     render(<EditToolbar />);
-    expect(btn('Merge')).toBeDisabled();
-    expect(btn('Merge').title).toContain('not available in the Waveform and Spectral views');
-    expect(btn('Merge').title).toContain('Switch to Multitrack');
+    expect(btn('Join')).toBeDisabled();
+    expect(btn('Join').title).toContain('not available in the Waveform and Spectral views');
+    expect(btn('Join').title).toContain('Switch to Multitrack');
 
     act(() => useAppStore.getState().setView('multitrack'));
-    expect(btn('Merge')).toBeDisabled(); // in the right view, nothing selected
+    expect(btn('Join')).toBeDisabled(); // in the right view, nothing selected
 
     const ids = seedTwoSelectedClips();
-    expect(btn('Merge')).toBeEnabled();
-    expect(btn('Merge').title).toContain('joins the selected clips');
-    expect(btn('Merge').title).not.toContain('not available');
+    expect(btn('Join')).toBeEnabled();
+    expect(btn('Join').title).toContain('joins the selected clips');
+    expect(btn('Join').title).not.toContain('not available');
 
     act(() => useSessionStore.getState().setSelectedClip(ids[0]));
-    expect(btn('Merge')).toBeDisabled();
+    expect(btn('Join')).toBeDisabled();
   });
 
-  it('4f sends a Merge click through multitrack.mergeClips', async () => {
+  it('4f sends a Join click through multitrack.joinClips', async () => {
     lastDocId = addDoc().id;
     act(() => useAppStore.getState().setView('multitrack'));
     render(<EditToolbar />);
     seedTwoSelectedClips();
-    expect(btn('Merge')).toBeEnabled();
+    expect(btn('Join')).toBeEnabled();
 
-    await click('Merge');
+    await click('Join');
 
-    expect(mockRunCommand).toHaveBeenCalledWith('multitrack.mergeClips');
+    expect(mockRunCommand).toHaveBeenCalledWith('multitrack.joinClips');
+  });
+
+  // Acceptance #7 (lot H) — H8's routing: one command, two meanings. X3: a
+  // 130000-sample document and a non-zero standing selection (12000..71000),
+  // never the identity `start: 0` — Select All's enablement does not read the
+  // selection at all (only `activeDoc`/`hasAnyClip`), which is itself worth
+  // pinning so a later change that made it selection-dependent would be
+  // caught here rather than only in menuActions.test.ts.
+  describe('4g Select All (H4/H8, new)', () => {
+    function addLongDoc(): AudioDocument {
+      const doc = createDocument({
+        name: 'long.wav',
+        sampleRate: 44100,
+        channels: [new Float32Array(130000)],
+      });
+      act(() => useAppStore.getState().addDocument(doc));
+      act(() => useAppStore.getState().setSelection({ start: 12000, end: 71000 }));
+      return doc;
+    }
+
+    it('is enabled in the waveform view and its title names the whole file', () => {
+      lastDocId = addLongDoc().id;
+      render(<EditToolbar />);
+
+      expect(btn('Select All')).toBeEnabled();
+      expect(btn('Select All').title).toContain('the whole file');
+    });
+
+    it('sends a click through edit.selectAll', async () => {
+      lastDocId = addLongDoc().id;
+      render(<EditToolbar />);
+
+      await click('Select All');
+
+      expect(mockRunCommand).toHaveBeenCalledWith('edit.selectAll');
+    });
+
+    it('stays enabled in Multitrack with three clips on two tracks, and its title names every clip on every track', () => {
+      lastDocId = addLongDoc().id;
+      act(() => {
+        // `newSession` (beforeEach) already mints 4 empty tracks — no need to
+        // add more.
+        const [track1, track2] = useSessionStore.getState().session.tracks;
+        useSessionStore
+          .getState()
+          .addClip(
+            track1.id,
+            createClip({ documentId: 'x', startSample: 22050, offsetSample: 0, lengthSample: 2000 })
+          );
+        useSessionStore
+          .getState()
+          .addClip(
+            track1.id,
+            createClip({ documentId: 'x', startSample: 50000, offsetSample: 0, lengthSample: 1500 })
+          );
+        useSessionStore
+          .getState()
+          .addClip(
+            track2.id,
+            createClip({ documentId: 'x', startSample: 88200, offsetSample: 0, lengthSample: 1000 })
+          );
+        useAppStore.getState().setView('multitrack');
+      });
+      render(<EditToolbar />);
+
+      const button = btn('Select All');
+      expect(button).toBeEnabled();
+      expect(button.title).toContain('every clip on every track');
+      expect(button.title).not.toContain('not available');
+    });
+
+    it('is disabled in Multitrack with a session that has no clips', () => {
+      lastDocId = addLongDoc().id;
+      act(() => useAppStore.getState().setView('multitrack'));
+      render(<EditToolbar />);
+
+      expect(btn('Select All')).toBeDisabled();
+    });
   });
 
   it('D3 — Delete lights up for a selected GAP alone, and says what it will do', () => {
@@ -379,7 +460,8 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     act(() => useAppStore.getState().setView('waveform'));
     render(<EditToolbar />);
 
-    expect(btn('Delete').title).toBe('Delete (Del)');
+    // H5 (lot H): Delete now advertises its bare-letter combo too.
+    expect(btn('Delete').title).toBe('Delete (D or Del)');
     expect(btn('Delete').title).not.toContain('gap');
   });
 

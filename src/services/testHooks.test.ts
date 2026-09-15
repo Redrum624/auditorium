@@ -941,7 +941,10 @@ describe('merge clips hooks', () => {
 
     const merged = useAppStore.getState().documents[before];
     expect(clips[0].documentId).toBe(merged.id);
-    expect(merged.name).toMatch(/^Merge \d+$/);
+    // H1 (lot H): the minted document is named after the renamed command
+    // ("Join Clips", not "Merge Clips") — a stale "Merge N" name under a
+    // button labelled Join is exactly the defect this repo tracks.
+    expect(merged.name).toMatch(/^Join \d+$/);
     expect(merged.sampleRate).toBe(44100);
     expect(merged.channels[0]).toHaveLength(3000);
     // The gap between the members is silence; the members themselves are not.

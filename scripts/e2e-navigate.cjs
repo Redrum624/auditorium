@@ -885,10 +885,10 @@ async function sweepSelects(page, where) {
 
 /** Waits for the pill button labelled `label` to reach `want` for `.disabled`,
  * and says whether it got there. The multitrack enablement of Split (item 10)
- * and of Merge (D6) is driven by SESSION-store writes that reach React outside
- * any browser event, so reading `.disabled` on the very next round trip races
- * the re-render in BOTH directions — a stale read would report the previous
- * answer and pass or fail for the wrong reason. */
+ * and of Join (D6, renamed from Merge — H1) is driven by SESSION-store writes
+ * that reach React outside any browser event, so reading `.disabled` on the
+ * very next round trip races the re-render in BOTH directions — a stale read
+ * would report the previous answer and pass or fail for the wrong reason. */
 async function pillDisabledReaches(page, label, want) {
   return page
     .waitForFunction(
@@ -2721,13 +2721,14 @@ async function main() {
         // state is item 10's, not asserted here).
         const split = state.editButtons.find((b) => b.label === 'Split');
         assert(split !== undefined, `Split is present in the ${view} view`);
-        // D6: Merge Clips sits directly after Split — the verb it undoes, read
-        // beside it. One static list draws the pill, so the order is the same
-        // nine in every view.
+        // D6: Join Clips (H1: renamed from Merge Clips) sits directly after
+        // Split — the verb it undoes, read beside it. H4/H8 (lot H): Select
+        // All leads the pill now. One static list draws the pill, so the
+        // order is the same ten in every view.
         assert(
           state.editButtons.map((b) => b.label).join(',') ===
-            'Split,Merge,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
-          `the ${view} view's pill carries the nine verbs with Merge second (${state.editButtons
+            'Select All,Split,Join,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
+          `the ${view} view's pill carries the ten verbs with Join third (${state.editButtons
             .map((b) => b.label)
             .join(',')})`
         );
@@ -2792,14 +2793,14 @@ async function main() {
             'Split greys with the cursor on a clip edge — there is nothing to cut there'
           );
 
-          // D1: a merge needs two or more selected clips on one track, and the
-          // clip above is alone on its own. Merge therefore greys here for a
+          // D1: a join needs two or more selected clips on one track, and the
+          // clip above is alone on its own. Join therefore greys here for a
           // reason the cursor cannot change — the same selection that lights
           // Split leaves it dark, which is why this pair is read together.
-          const mergeAlone = await pillDisabledReaches(page, 'Merge', true);
+          const mergeAlone = await pillDisabledReaches(page, 'Join', true);
           assert(
             mergeAlone === true,
-            'Merge greys in the multitrack view with a single clip selected — one clip is not a merge'
+            'Join greys in the multitrack view with a single clip selected — one clip is not a join'
           );
 
           // D3 — a selected GAP paints a band in its own lane, and Escape is
@@ -2889,17 +2890,17 @@ async function main() {
             copy !== undefined,
             `Copy is present in the ${view} view (its enablement follows the selection)`
           );
-          // The M7 rule pointing the other way: Merge is the one first-group
+          // The M7 rule pointing the other way: Join is the one first-group
           // button the EDITORS cannot run, so it is greyed here with a tooltip
           // that names Multitrack rather than left silently dead.
-          const merge = state.editButtons.find((b) => b.label === 'Merge');
+          const merge = state.editButtons.find((b) => b.label === 'Join');
           assert(
             merge !== undefined && merge.disabled === true,
-            `Merge is greyed in the ${view} view — it joins clips, which this view has none of`
+            `Join is greyed in the ${view} view — it joins clips, which this view has none of`
           );
           assert(
             typeof merge.title === 'string' &&
-              merge.title.startsWith('Merge Clips — not available'),
+              merge.title.startsWith('Join Clips (J) — not available'),
             `and its tooltip says so, naming the view that can (${JSON.stringify(merge.title)})`
           );
         }

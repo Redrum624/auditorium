@@ -172,10 +172,13 @@ describe('edit.trim / edit.silence (U1)', () => {
     );
   });
 
-  // The repo has just paid for two labels naming keys that did nothing
-  // (File > Close's Ctrl+W, and the Save pill's). Neither command has a combo
-  // in SHORTCUT_TABLE, so neither row may advertise one.
-  it('advertises no shortcut, because neither command has one bound', () => {
+  // H5/2c (lot H): the inverse of what this test used to assert. Trim and
+  // Silence now each have a real bare-letter combo in SHORTCUT_TABLE (`t`,
+  // `s`), so each advertises it — the repo has already paid twice for a label
+  // naming a key that did nothing (File > Close's Ctrl+W, the Save pill's),
+  // and a row that stayed silent about a key that now works would be the same
+  // defect pointing the other way.
+  it('advertises "T" / "S", because edit.trim / edit.silence now have bare-letter combos bound', () => {
     const edit = getMenuSections().find((s) => s.title === 'Edit')!;
     const rows = edit.items.filter(
       (item): item is MenuCommand =>
@@ -183,10 +186,12 @@ describe('edit.trim / edit.silence (U1)', () => {
     );
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.label)).toEqual(['Trim to Selection', 'Silence Selection']);
-    for (const row of rows) expect(row.shortcut).toBeUndefined();
+    expect(rows.map((r) => r.shortcut)).toEqual(['T', 'S']);
     const bound = SHORTCUT_TABLE.map((s) => s.commandId);
-    expect(bound).not.toContain('edit.trim');
-    expect(bound).not.toContain('edit.silence');
+    expect(bound).toContain('edit.trim');
+    expect(bound).toContain('edit.silence');
+    expect(SHORTCUT_TABLE).toContainEqual({ combo: 't', commandId: 'edit.trim' });
+    expect(SHORTCUT_TABLE).toContainEqual({ combo: 's', commandId: 'edit.silence' });
   });
 
   it('greys both rows in the menu until there is a selection', () => {
@@ -388,7 +393,7 @@ describe('getMenuSections', () => {
       'edit.undo',
       'edit.redo',
       'edit.split', // item 8 (M1): the row before Cut
-      'multitrack.mergeClips', // D6: Split's inverse, directly after it
+      'multitrack.joinClips', // D6: Split's inverse, directly after it; H1: renamed Join
       'edit.cut',
       'edit.copy',
       'edit.paste',
@@ -755,6 +760,51 @@ describe('edit.split / edit.cut / marker.add in the editor views (item 8)', () =
     expect(isCommandEnabled('marker.add')).toBe(false);
     useAppStore.getState().setView('spectral');
     expect(isCommandEnabled('marker.add')).toBe(true);
+  });
+});
+
+// Acceptance #8, H8 (lot H) — one view-routed command. X3: a 130000-sample
+// document and a non-zero standing selection {12000, 71000}, never the
+// identity `start: 0`, so the waveform assertion below is provably reading
+// `docLength`, not a default the fixture happened to start at.
+describe('edit.selectAll (H4/H8, new — lot H)', () => {
+  function openLongDoc() {
+    const doc = createDocument({ name: 'a', sampleRate: 44100, channels: [new Float32Array(130000)] });
+    useAppStore.getState().addDocument(doc);
+    useAppStore.getState().setSelection({ start: 12000, end: 71000 });
+    return doc;
+  }
+
+  it('in the waveform view sets selection to the whole document, growing past the standing selection', async () => {
+    openLongDoc();
+    expect(useAppStore.getState().selection).toEqual({ start: 12000, end: 71000 });
+
+    await runCommand('edit.selectAll');
+
+    expect(useAppStore.getState().selection).toEqual({ start: 0, end: 130000 });
+  });
+
+  it('in multitrack selects every clip on every track and leaves the document selection untouched (H8)', async () => {
+    openLongDoc();
+    // `newSession` (top beforeEach) already mints 4 empty tracks.
+    const [track1, track2] = useSessionStore.getState().session.tracks;
+    const clip1 = createClip({ documentId: 'x', startSample: 22050, offsetSample: 0, lengthSample: 2000 });
+    const clip2 = createClip({ documentId: 'x', startSample: 50000, offsetSample: 0, lengthSample: 1500 });
+    const clip3 = createClip({ documentId: 'x', startSample: 88200, offsetSample: 0, lengthSample: 1000 });
+    useSessionStore.getState().addClip(track1.id, clip1);
+    useSessionStore.getState().addClip(track1.id, clip2);
+    useSessionStore.getState().addClip(track2.id, clip3);
+    useAppStore.getState().setView('multitrack');
+
+    await runCommand('edit.selectAll');
+
+    expect(new Set(useSessionStore.getState().selectedClipIds)).toEqual(
+      new Set([clip1.id, clip2.id, clip3.id])
+    );
+    // H8 — multitrack Select All is a CLIP selection, not a time range: the
+    // document `selection` behind it (not on screen there) is left exactly
+    // where the standing fixture put it.
+    expect(useAppStore.getState().selection).toEqual({ start: 12000, end: 71000 });
   });
 });
 

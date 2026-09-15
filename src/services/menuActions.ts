@@ -160,7 +160,9 @@ const LAYOUT: { title: MenuSection['title']; itemIds: (string | 'separator')[] }
       'edit.split',
       // D6: Split's inverse, the row directly after it — the verb that cuts a
       // clip in two and the verb that makes two clips one read together.
-      'multitrack.mergeClips',
+      // H1 (lot H): "Merge Clips" renamed "Join Clips" everywhere the user
+      // can see it; the id follows the label.
+      'multitrack.joinClips',
       'edit.cut',
       'edit.copy',
       'edit.paste',
@@ -800,16 +802,23 @@ function registerEditCommands(): void {
     // already require and return early without.
     // M1: both are in the Edit menu's LAYOUT too now, next to Delete — U1 left
     // the menu alone as out of its scope, which left the toolbar their only
-    // surface. Neither gets a `shortcut`, because neither has a real one.
+    // surface.
+    // H5 (lot H): each now has a real bare-letter combo in SHORTCUT_TABLE
+    // (`T`, `S`), so each advertises it — the "neither gets a `shortcut`"
+    // note above was true only while neither had a bound key; leaving the
+    // label off now would be the same dead-accelerator defect this repo has
+    // already paid for twice (Ctrl+W, Ctrl+Shift+S).
     {
       id: 'edit.trim',
       label: 'Trim to Selection',
+      shortcut: 'T',
       enabled: canEditRegion,
       run: async () => trimToSelection(),
     },
     {
       id: 'edit.silence',
       label: 'Silence Selection',
+      shortcut: 'S',
       enabled: canEditRegion,
       run: async () => silenceSelection(),
     },
@@ -1194,7 +1203,7 @@ export function splitSelectedTracksAtMtCursor(): string[] {
 // ---- end lot D ----
 
 // ---- merge clips ----
-/** `multitrack.mergeClips`' predicate (D1): the clip selection holds TWO OR
+/** `multitrack.joinClips`' predicate (D1): the clip selection holds TWO OR
  * MORE clips on at least one track. Asks `mergeTargets` — the same question the
  * verb itself answers — so the row greys for precisely the selections the merge
  * would refuse, and reads the session store directly, exactly as
@@ -1229,11 +1238,15 @@ export function mergeSelectedClips(): string[] {
     // lookup cannot miss.
     const track = session.tracks.find((t) => t.id === target.trackId)!;
     const { channels, sampleRate } = bakeMergedClip(track, target, docs, session.sampleRate);
-    // D2 — `Merge N`, numbered off its own counter like `Mixdown N`. No
+    // D2 — `Join N`, numbered off its own counter like `Mixdown N`. No
     // `filePath`, so `createDocument` stamps `neverSaved` itself (S4's default);
     // passing the flag would restate a rule that already holds.
-    const n = nextId('merge').split('-')[1];
-    const doc = createDocument({ name: `Merge ${n}`, sampleRate, channels });
+    // H1 (lot H): renamed with the command's label — a `Merge 1` file under a
+    // button labelled Join would be the stale-label defect this repo tracks.
+    // Old `.audm` projects keep the name they stored; document names are data,
+    // not derived.
+    const n = nextId('join').split('-')[1];
+    const doc = createDocument({ name: `Join ${n}`, sampleRate, channels });
     useAppStore.getState().addDocument(doc);
     return { target, documentId: doc.id };
   });
@@ -1245,7 +1258,7 @@ export function mergeSelectedClips(): string[] {
 /** Registers the Task 22 multitrack commands: the real `view.multitrack`
  * toggle (always available — the multitrack view works with no open document),
  * `multitrack.addTrack`, `multitrack.insertDoc`, `multitrack.mixdown` and
- * `multitrack.mergeClips`. The action commands are enabled only while the
+ * `multitrack.joinClips`. The action commands are enabled only while the
  * multitrack view is active. */
 function registerMultitrackCommands(): void {
   registerCommands([
@@ -1275,12 +1288,17 @@ function registerMultitrackCommands(): void {
     },
     {
       // D6 — Split's inverse, and the second command here that mints a
-      // document. No shortcut: nothing in `SHORTCUT_TABLE` claims a combo for
-      // it, and this repo has already paid for menu labels naming keys that do
-      // nothing. The predicate is the verb's own question (D1), so the row
+      // document. The predicate is the verb's own question (D1), so the row
       // greys for exactly the selections `mergeSelectedClips` would refuse.
-      id: 'multitrack.mergeClips',
-      label: 'Merge Clips',
+      // H1/H5 (lot H): renamed "Join Clips", id renamed to match (`joinClips`)
+      // — everywhere the user can see it — and it now advertises the bare `J`
+      // SHORTCUT_TABLE binds it to (H2: `M` stays Add Marker, so Join could
+      // not take it). `mergeSelectedClips`/`canMergeSelectedClips` and the
+      // `mergeClips.ts` module keep their names (not user-visible; renaming a
+      // module here would be pure churn).
+      id: 'multitrack.joinClips',
+      label: 'Join Clips',
+      shortcut: 'J',
       enabled: (s) => s.view === 'multitrack' && canMergeSelectedClips(),
       run: async () => {
         mergeSelectedClips();
