@@ -50,6 +50,7 @@ import { registerDialogSetters, type ConvertMode } from './services/dialogBus';
 // see `handleToolModuleLock` below.
 import {
   acquirePass,
+  blockedByPassReason,
   type PassDescriptor,
 } from './services/passLock';
 // ---- /lot M ----
@@ -66,6 +67,7 @@ import { registerEffectCommands } from './services/menuActions';
 import { getPipelineGroups } from './services/pipelineTools';
 import { installShortcuts } from './services/shortcuts';
 import { installTestHooks } from './services/testHooks';
+import { multitrackRecorder } from './multitrack/multitrackRecord';
 import { stopAll } from './services/transportService';
 import { useAppStore } from './stores/appStore';
 
@@ -414,20 +416,49 @@ export default function App() {
    * `passLock.ts`'s app-wide lock for every hosted dialog — the twelve
    * dialogs never call `runExclusivePass` themselves (M-b); they keep
    * publishing through this exact callback, unchanged, and it is turned into
-   * `acquire` on `true` / `release` on `false`. `??=` makes the acquire
-   * idempotent (a `locked` prop that is already `true` firing again must not
-   * double-acquire); `passReleaseRef.current?.()` makes the release
-   * idempotent the same way the closure `acquirePass` returns already is —
-   * so a release that already ran (from `showPanel`'s hand-off arm, from
-   * `closeTool`, or from the unmount effect below) is always safe to call
-   * again.
+   * `acquire` on `true` / `release` on `false`. The acquire is idempotent
+   * (skipped once `passReleaseRef.current` is already set — a `locked` prop
+   * that is already `true` firing again must not double-acquire, and must
+   * not re-attempt an acquire that already failed once for this same busy
+   * span); `passReleaseRef.current?.()` makes the release idempotent the
+   * same way the closure `acquirePass` returns already is — so a release
+   * that already ran (from `showPanel`'s hand-off arm, from `closeTool`, or
+   * from the unmount effect below) is always safe to call again.
+   *
+   * Fix round 3 (item 1) — the defence-in-depth half of "dialogs consult the
+   * lock", finally added: before this, a `null` acquire (a FOREIGN pass
+   * already holding the lock) was discarded silently — `passReleaseRef`
+   * just stayed `null`, with nothing told to the user. By the time this
+   * EFFECT runs, React has already committed the render that set the
+   * dialog's own `busy` state — the dialog's async service call was made
+   * BEFORE this callback fires, so nothing here can un-start it. What a
+   * `null` acquire CAN still do honestly is say so, naming the pass that
+   * actually holds the lock (never `describeHostedPass()` — that names the
+   * dialog ABOUT to run, not the one blocking it). This narrows, but does
+   * NOT close, the residual `App.effectHost`/pipeline-dialog gap named in
+   * fix round 1's report: a sub-action that never flips the hosted dialog's
+   * OWN `busy` (`TempoDialog`'s `detecting`, gated by a separate flag that
+   * was never wired into `dismissable`/`moduleLock`) never reaches this
+   * callback at all, so this fix cannot surface a refusal for it — that gap
+   * stays exactly as reported, unresolved by this change.
    */
   const handleToolModuleLock = useCallback(
     (running: boolean) => {
       toolRunningRef.current = running;
       setToolRunning(running);
       if (running) {
-        passReleaseRef.current ??= acquirePass(describeHostedPass());
+        if (passReleaseRef.current === null) {
+          const release = acquirePass(describeHostedPass());
+          if (release === null) {
+            void window.electronAPI?.showMessageBox({
+              type: 'info',
+              title: 'A pass is running',
+              message: blockedByPassReason() ?? 'A pass is running.',
+            });
+          } else {
+            passReleaseRef.current = release;
+          }
+        }
       } else {
         passReleaseRef.current?.();
         passReleaseRef.current = null;
@@ -444,21 +475,29 @@ export default function App() {
   // it. A stale hold here would wedge every OTHER window/session permanently,
   // which is the failure mode M5 exists to rule out.
   //
-  // Fix round 2 — `stopAll()` alongside it, for the SAME reason applied to a
-  // punch-in recording: `multitrackRecorder`'s own lock hold (see
-  // `multitrackRecord.ts`) is released from inside its `stop()`, which
-  // nothing here calls automatically on unmount otherwise — the view-switch
-  // effect above only fires on a CHANGE, never on teardown. `stopAll()` is
-  // exactly what that effect already calls (same idempotent, fire-and-forget
-  // shape: a no-op when nothing is playing or recording), reused rather than
-  // adding a second stop path. The zustand stores it writes into outlive the
-  // React tree, so the take's async commit still lands correctly even after
-  // this component is gone.
+  // Fix round 2 — a recording release alongside it, for the SAME reason:
+  // `multitrackRecorder`'s own lock hold (see `multitrackRecord.ts`) is
+  // released from inside its `stop()`, which nothing here calls
+  // automatically on unmount otherwise — the view-switch effect above only
+  // fires on a CHANGE, never on teardown.
+  //
+  // Fix round 3 (item 5) — narrowed to `multitrackRecorder.stop()` behind an
+  // `isRecording()` guard, NOT the broader `stopAll()` fix round 2 first
+  // reached for. `stopAll()` also stops `playbackEngine`/`multitrackPlayer`
+  // unconditionally, which is a new, unpinned side effect on EVERY App
+  // unmount — including every React Testing Library teardown of a test that
+  // happened to leave playback running — that nothing asked for and nothing
+  // tested. This guard is exactly the shape `transportStop()` already uses
+  // (`if (multitrackRecorder.isRecording()) void multitrackRecorder.stop();`),
+  // so it stops only what fix round 2 was actually about: a take mid-record
+  // when the whole tree tears down. The zustand stores `stop()` writes into
+  // outlive the React tree, so the take's async commit still lands correctly
+  // even after this component is gone.
   useEffect(() => {
     return () => {
       passReleaseRef.current?.();
       passReleaseRef.current = null;
-      stopAll();
+      if (multitrackRecorder.isRecording()) void multitrackRecorder.stop();
     };
   }, []);
 

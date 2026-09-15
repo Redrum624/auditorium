@@ -113,13 +113,29 @@ describe('the pass lock refuses Apply when a DIFFERENT pass already holds it (fi
       release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
     });
 
-    const applyBtn = screen.getByRole('button', { name: 'Apply' });
+    const applyBtn = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
     expect(applyBtn).toBeDisabled();
 
     fireEvent.click(applyBtn);
-    // A disabled button swallows the click natively; the call count proves
-    // the handler's own defence-in-depth check would refuse it regardless.
+    // Fix round 3 (item 4) — corrected: this proves ONLY the `disabled` prop,
+    // not `apply()`'s own `if (!canApply) return;` guard (EffectDialog.tsx:220).
+    // A DOM `disabled` button never dispatches a click for React's handler to
+    // see in the first place, so the assertion below cannot distinguish "the
+    // guard refused it" from "the click never arrived" — and it is the
+    // latter. Tried testing the guard directly by stripping the DOM
+    // `disabled` attribute before the click (so the native suppression would
+    // not apply) and firing again: React 19 still swallowed it, because its
+    // own click-suppression for disabled form elements (`shouldPreventMouseEvent`
+    // in react-dom's event system) reads the elements's LAST-RENDERED
+    // `disabled` PROP off the fiber, not the live DOM property — so mutating
+    // the DOM directly cannot exercise the handler either. Short of exporting
+    // `apply` for direct invocation (not done, to avoid widening the
+    // component's public surface for one test), this line is only ever going
+    // to prove the button is disabled — which the `toBeDisabled()` assertion
+    // above already does more directly. Left in for the `mockRun` sanity
+    // check; the comment previously here overclaimed what it covers.
     expect(mockRun).not.toHaveBeenCalled();
+
     expect(getRunningPass()?.label).toBe('Save Project');
 
     act(() => {
