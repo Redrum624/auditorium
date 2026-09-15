@@ -21,6 +21,7 @@ import { placeDocumentsOnTrack } from '../multitrack/sessionInsert';
 import { mixdownSession } from '../multitrack/mixdown';
 import { bakeMergedClip, commitMergedClips, mergeTargets } from '../multitrack/mergeClips';
 import { canRecord, transportPlayPause, transportRecord, transportStop } from './transportService';
+import { multitrackRecorder } from '../multitrack/multitrackRecord';
 import {
   cutSelection,
   copySelection,
@@ -69,7 +70,8 @@ import { runTempoAnalysis } from './tempoAnalysis';
 import {
   PASS_REFUSED,
   blockedByPassReason,
-  getRunningPass,
+  closeBlockedReason,
+  closeFree,
   isPassRunning,
   runExclusivePass,
 } from './passLock';
@@ -165,32 +167,16 @@ function passReason(): string | undefined {
 }
 
 /**
- * M-c / the lot-B close duty (ledger Ruling R14) — `file.close`'s own carve-
- * out. M-c's blanket "disabled while the lock is held" is correct for
- * file.open/file.new/session.open, which have no protection against the
- * document a pass depends on changing identity underneath it. Closing a
- * document while a HOSTED EFFECT's Apply is in flight is a DIFFERENT,
- * already-proven-safe case: the effect card resolves its target document at
- * commit time and discards a stale result instead of writing it (T6-3 / fix
- * rounds 2 and "Final round", pinned by `App.effectHost.test.tsx`'s "the
- * mouse stays live during Apply" suite — closing the document the effect is
- * applying to there raises no failure and the card shows a stale-hint
- * instead of corrupting anything). Blanket-gating `file.close` would silently
- * refuse a close that suite proves is safe, which is a real regression (X1),
- * not a theoretical one. No pipeline tool has the same proof on record (the
- * "seven" pipeline dialogs discard their result on UNMOUNT only, which a
- * document close does not trigger), so every OTHER pass kind still refuses
- * the close — which is exactly the lot-B duty: a host job's utility process
- * would otherwise be killed with no confirmation by `invalidateStemRun` /
- * `invalidateTranscript` / `invalidateLyricsAlignment` inside
- * `closeDocumentFlow`.
+ * Fix round 1 (item 6) — `closeFree`'s actual policy now lives ONCE, in
+ * `passLock.ts` (`closeFree`/`closeBlockedReason`), because `FilesPanel.tsx`'s
+ * row ✕ needs the identical question answered and cannot route through
+ * `file.close` itself (that command always closes the ACTIVE document; a row
+ * can close any OTHER open one). This is the thin adapter fitting that shared
+ * answer to `MenuCommand.reason`'s `string | undefined` shape — see
+ * `passLock.ts`'s own docblock for the full argument.
  */
-function closeFree(): boolean {
-  return passFree() || getRunningPass()?.kind === 'effect';
-}
-
 function closeReason(): string | undefined {
-  return closeFree() ? undefined : passReason();
+  return closeBlockedReason() ?? undefined;
 }
 // ---- /lot M ----
 
@@ -635,7 +621,20 @@ function registerSelectionAndTransportCommands(): void {
       // so the menu and the transport Toolbar share one source of truth.
       id: 'transport.record',
       label: 'Record',
-      enabled: () => canRecord(),
+      // Fix round 1 (item 5b) — overturns M-d's original exclusion. A
+      // recording — in either view — ends with `addDocument`, minting a new
+      // ACTIVE document exactly like `file.new`/`file.open` do; the user's
+      // own words ("never run more than one pipeline or PROCESS at a time")
+      // name a recording as one. M-d's reasoning still holds for keeping the
+      // RUNNING session itself unlocked (RecordDialog is a modal, so
+      // `hasOpenDialog()`'s stack already excludes every other pass-start
+      // while it is open) — only STARTING one is gated here. The
+      // `multitrackRecorder.isRecording()` clause keeps the multitrack
+      // punch-in STOP transition reachable unconditionally — this command
+      // is that button's only door (Toolbar.tsx), and a take already in
+      // progress must always be stoppable, lock or no lock.
+      enabled: () => canRecord() && (multitrackRecorder.isRecording() || passFree()),
+      reason: passReason,
       run: async () => transportRecord(),
     },
     stub('marker.add', 'Add Marker', 'M'),
@@ -773,6 +772,18 @@ function registerEditCommands(): void {
       // D3: a GAP arms it too, and closes instead of removing. The store keeps
       // the two selections mutually exclusive, so this reads the gap first and
       // never has to arbitrate.
+      //
+      // Lot M — deliberately NOT gated on `passFree()`. This is an EDIT, not a
+      // pass-start (M1 does not name it), and it is already reachable via
+      // mouse during a background pass today — `EditToolbar.tsx`'s Delete
+      // button reads only `isCommandEnabled('edit.delete')`, with no
+      // `hasOpenDialog`/`toolRunning` check anywhere in that file or here.
+      // M6 removing the blanket keyboard suspension makes the bare `d`
+      // shortcut match that pre-existing mouse behaviour, not a new hazard —
+      // gating every mutating command was considered and rejected (M-c).
+      // The lot-H bare letter is intended to fire mid-pass exactly like the
+      // toolbar button already does; whatever the running pass is writing to
+      // is protected by ITS OWN staleness/cancel-ref guard, not by this gate.
       enabled: (s) =>
         s.view === 'multitrack'
           ? useSessionStore.getState().selectedClipId !== null ||
@@ -994,10 +1005,11 @@ function registerFileCommands(): void {
       id: 'file.close',
       label: 'Close',
       shortcut: 'Ctrl+W',
-      // M-c / the lot-B close duty (ledger R14): gated on `closeFree()`, NOT
-      // the blanket `passFree()` every other door here uses — see that
-      // function's own docblock for why a running hosted EFFECT is a carved-
-      // out exception and every other pass kind is not.
+      // M-c / the lot-B close duty (ledger R14): gated on `passLock.ts`'s
+      // `closeFree()`, NOT the blanket `passFree()` every other door here
+      // uses — see that function's own docblock (fix round 1, item 6: it is
+      // exported from there ONCE now, shared with `FilesPanel.tsx`'s row ✕,
+      // rather than reimplemented in both places).
       enabled: (s) => hasDoc(s) && closeFree(),
       reason: closeReason,
       run: async () => {

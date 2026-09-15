@@ -10,7 +10,7 @@ import { defaultParamsFor, getEffect, getVisibleEffects } from './effects/Effect
 import { focusTranscriptPanel, hasOpenDialog } from './services/dialogBus';
 import { runEffectOnSelection } from './services/effectRunner';
 import { isCommandEnabled, runCommand } from './services/menuActions';
-import { _resetPassLock, isPassRunning } from './services/passLock';
+import { _resetPassLock, getRunningPass, isPassRunning } from './services/passLock';
 import { getHistory } from './services/undoHistory';
 import { makeInitialState, useAppStore } from './stores/appStore';
 
@@ -317,6 +317,10 @@ describe('interplay with the pipeline tools', () => {
     await openTool('tempo.match');
     fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
 
+    // Fix round 1 (MED) — restores the coverage the old
+    // `showMessageBox.mock.calls[0][0].message).toContain('Match Tempo')`
+    // assertion carried: `describeHostedPass()`'s label for a hosted TOOL.
+    expect(getRunningPass()?.label).toBe('Match Tempo');
     expect(isCommandEnabled('effect.amplify')).toBe(false);
     await openTool('effect.amplify');
 
@@ -347,6 +351,11 @@ describe('the module lock, during Apply only (N16)', () => {
     // running now".
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(true);
+    // Fix round 1 (MED) — restores the coverage the old
+    // `showMessageBox.mock.calls[0][0].message).toContain(getEffect('amplify')!.name)`
+    // assertion carried: `describeHostedPass()`'s label for a hosted EFFECT —
+    // the real registry name, never the `'A pipeline pass'` fallback.
+    expect(getRunningPass()?.label).toBe(getEffect('amplify')!.name);
     for (const button of within(strip()).getAllByRole('button')) {
       expect(button).toBeDisabled();
       expect(button.title).toBe(MODULE_SWITCH_LOCKED_EFFECT);
@@ -667,6 +676,10 @@ describe('a hand-off command mid-Apply never releases the effect card (final rou
     });
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(true);
+    // Fix round 1 (MED) — restores the coverage the old
+    // `showMessageBox.mock.calls[0][0].message).toContain(getEffect('amplify')!.name)`
+    // assertion carried.
+    expect(getRunningPass()?.label).toBe(getEffect('amplify')!.name);
 
     expect(isCommandEnabled('edit.transcribe')).toBe(false);
     await openTool('edit.transcribe');

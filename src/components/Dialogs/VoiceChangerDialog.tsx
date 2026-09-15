@@ -21,6 +21,7 @@ import {
   type VoiceModelState,
   type VoiceProgress,
 } from '../../services/voiceService';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, GlassField, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -95,6 +96,8 @@ export default function VoiceChangerDialog({ onClose }: { onClose: () => void })
 
   const busy = downloading || running || saving;
   const profiles = getVoiceProfiles();
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
 
   const unmountedRef = useRef(false);
   const runningRef = useRef(false);
@@ -194,6 +197,8 @@ export default function VoiceChangerDialog({ onClose }: { onClose: () => void })
   }
 
   async function handleSaveVoice(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canSaveVoice`.
+    if (isPassRunning()) return;
     if (!pending) return;
     setSaving(true);
     setError(null);
@@ -226,6 +231,8 @@ export default function VoiceChangerDialog({ onClose }: { onClose: () => void })
   }
 
   async function handleConvert(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canConvert`.
+    if (isPassRunning()) return;
     const live = liveDoc();
     if (!live) {
       setError('No document is open.');
@@ -273,14 +280,20 @@ export default function VoiceChangerDialog({ onClose }: { onClose: () => void })
 
   const expectedBytes = model?.expectedBytes ?? 0;
   const modelMissing = model !== null && !model.downloaded;
+  // Fix round 1 — `runningPass === null` on both: Convert and Save Voice
+  // share the same `busy`/`dismissable` lifecycle (`saving` is one of
+  // `busy`'s three sources above), so both are pass starts this card can
+  // launch while idle and a FOREIGN pass holds the lock.
   const canConvert =
     !busy &&
     doc !== null &&
     length > 0 &&
     model?.downloaded === true &&
     selectedProfileId !== null &&
-    consent;
-  const canSaveVoice = !busy && pending !== null && pendingName.trim().length > 0 && consent;
+    consent &&
+    runningPass === null;
+  const canSaveVoice =
+    !busy && pending !== null && pendingName.trim().length > 0 && consent && runningPass === null;
   const profilesLoadError = getVoiceProfilesLoadError();
   const message = error ?? (doc === null ? 'No document is open.' : null);
   const modelSamples = doc ? Math.round(length * (VC_SAMPLE_RATE / doc.sampleRate)) : 0;

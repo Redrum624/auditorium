@@ -18,6 +18,7 @@ import { defaultSessionZoom } from '../../multitrack/sessionZoom';
 import { multitrackPlayer } from '../../multitrack/MultitrackPlayer';
 import { registerDialogSetters } from '../../services/dialogBus';
 import { _resetSnapPreference, isSnapEnabled, setSnapEnabled } from '../../services/snapPreference';
+import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { formatTime } from '../../utils/timeFormat';
 
 function makeDoc(): AudioDocument {
@@ -80,6 +81,11 @@ function registerSetters(overrides: Partial<Parameters<typeof registerDialogSett
 describe('Toolbar (transport pill — previously TransportBar)', () => {
   beforeEach(() => {
     useAppStore.setState(makeInitialState());
+    _resetPassLock();
+  });
+
+  afterEach(() => {
+    _resetPassLock();
   });
 
   it('renders the transport controls', () => {
@@ -130,6 +136,30 @@ describe('Toolbar (transport pill — previously TransportBar)', () => {
 
     // Restore session store for later suites.
     act(() => useSessionStore.getState().newSession(44100));
+  });
+
+  // Fix round 1 (item 5b) — before this fix, `recordEnabled` read
+  // `transportService.canRecord()` directly: a second mouse door that
+  // bypassed `transport.record`'s own `enabled` (which now ANDs in
+  // `passFree()`), leaving the button looking live while `runCommand` would
+  // have silently refused the click underneath it (the exact class of bug
+  // EffectsPanel's old `openEffectDialog` bypass was).
+  it('greys Record while a pass holds the lock, and re-enables when it releases', () => {
+    const doc = makeDoc();
+    useAppStore.getState().addDocument(doc);
+    render(<Toolbar />);
+    expect(screen.getByRole('button', { name: 'Record' })).toBeEnabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+    });
+    expect(screen.getByRole('button', { name: 'Record' })).toBeDisabled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByRole('button', { name: 'Record' })).toBeEnabled();
   });
 
   describe('reload effect narrowing (Task M9 / F13)', () => {

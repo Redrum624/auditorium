@@ -13,6 +13,7 @@ import {
   type AlignPlan,
   type AlignRefusal,
 } from '../../services/timingAlignService';
+import { usePassLock } from '../../services/passLock';
 import { FieldLabel, GlassButton, GlassSelect, GlassSlider, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -107,6 +108,10 @@ export default function AlignTimingDialog({ onClose }: { onClose: () => void }) 
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  // Fix round 1 — subscribed, called before the `if (!doc) return null;`
+  // below; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
+
   /**
    * T6-3 — the unmount guard this dialog had NONE of.
    *
@@ -172,7 +177,7 @@ export default function AlignTimingDialog({ onClose }: { onClose: () => void }) 
   const bpm = grid ? gridBpm(grid) : null;
   const lowConfidence = grid !== null && grid.confidence < CONFIDENCE_LOW;
   const canRegrid = grid !== null && grid.origin === 'own' && getTempo(doc) !== null;
-  const canApply = !busy && plan !== null && confirmed && strengthPct > 0;
+  const canApply = !busy && plan !== null && confirmed && strengthPct > 0 && runningPass === null;
 
   async function correctOctave(periodMultiplier: 2 | 0.5) {
     if (!doc || !canRegrid) return;

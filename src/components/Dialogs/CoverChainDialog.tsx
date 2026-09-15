@@ -34,6 +34,7 @@ import {
 } from '../../services/coverPlacement';
 import { useHistoryVersion } from '../../services/undoHistory';
 import type { DerivedValue, StageStatus } from '../../services/vocalChain';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -352,6 +353,8 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [running, setRunning] = useState<string | null>(null);
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
   const [report, setReport] = useState<CoverJourneyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [liveResults, setLiveResults] = useState<CoverJourneyStageResult[]>([]);
@@ -375,7 +378,11 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
 
   const take = documents.find((d) => d.id === takeDocId) ?? null;
   const song = documents.find((d) => d.id === songDocId) ?? null;
-  const ready = take !== null && song !== null && song.id !== take.id;
+  // Fix round 1 — `runningPass === null` added; M-a's evidence
+  // (`coverJourney.ts:829` calls `separateStems` FROM INSIDE this run) is
+  // exactly why the lock must be checked HERE, at the surface, rather than
+  // inside `runCoverJourney`/`separateStems` themselves.
+  const ready = take !== null && song !== null && song.id !== take.id && runningPass === null;
   const done = report !== null;
   const locked = busy || done;
 
@@ -397,7 +404,7 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
   );
 
   async function handleRun(): Promise<void> {
-    if (!ready || busy || done) return;
+    if (!ready || busy || done || isPassRunning()) return;
     setBusy(true);
     setProgress(0);
     setRunning(null);

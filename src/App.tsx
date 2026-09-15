@@ -296,9 +296,8 @@ export default function App() {
       message:
         `${label} is still running.\n\n` +
         'Its progress lives in the tool, so leaving now would discard the pass. ' +
-        'Wait for it to finish — the waveform, the transport and the editor stay ' +
-        'usable with the mouse while it runs (keyboard shortcuts resume when it ' +
-        'is done).',
+        'Wait for it to finish — the editor, the transport and the keyboard all ' +
+        'stay live while it runs; only starting another pass is refused.',
     });
   }, [describeHostedPass]);
 

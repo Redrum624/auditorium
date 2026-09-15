@@ -5,6 +5,7 @@ import { getEffect } from '../../effects/EffectRegistry';
 import type { EffectParamDef, EffectParamValue } from '../../effects/types';
 import { runEffectOnSelection } from '../../services/effectRunner';
 import { getNoiseProfile, useNoiseProfileVersion } from '../../services/noiseProfile';
+import { usePassLock } from '../../services/passLock';
 import { resolveRegion } from '../../services/selectionRegion';
 import { useAppStore } from '../../stores/appStore';
 import { formatTime } from '../../utils/timeFormat';
@@ -165,9 +166,23 @@ export default function EffectDialog({
   const hasNoiseProfile = getNoiseProfile() !== null;
   const missingNoiseProfile = isNoiseReduction && !hasNoiseProfile;
 
+  // Fix round 1 — the real start seam. `busy` alone only stopped THIS card
+  // from starting a second Apply on top of its own; it said nothing about a
+  // DIFFERENT pass already holding `passLock.ts`'s app-wide lock (Save, a
+  // sibling hosted tool, an export). Subscribed (not a bare `isPassRunning()`
+  // call) so the button re-greys the instant a FOREIGN pass acquires the lock
+  // while this card sits open and idle — the exact reproduction the review
+  // found: open an idle effect card, start Save, click Apply.
+  const runningPass = usePassLock();
+
   const canApply = useMemo(
-    () => Boolean(def) && activeDocumentId !== null && !busy && !missingNoiseProfile,
-    [def, activeDocumentId, busy, missingNoiseProfile]
+    () =>
+      Boolean(def) &&
+      activeDocumentId !== null &&
+      !busy &&
+      !missingNoiseProfile &&
+      runningPass === null,
+    [def, activeDocumentId, busy, missingNoiseProfile, runningPass]
   );
 
   if (!def) return null;

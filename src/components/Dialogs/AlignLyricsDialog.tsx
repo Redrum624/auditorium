@@ -22,6 +22,7 @@ import {
   type LyricsAlignment,
   type PlacedWord,
 } from '../../services/alignLyricsService';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -154,6 +155,8 @@ export default function AlignLyricsDialog({
   const stale = doc ? isLyricsAlignmentStale(doc.id) : false;
 
   const busy = downloading || running || acquiring || recording || splicing;
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
 
   // The unmount mirror (SeparateDialog.tsx:94's unmountedRef): a ref, because
   // the cleanup must read the CURRENT value, not the one captured when the
@@ -245,6 +248,8 @@ export default function AlignLyricsDialog({
   }
 
   async function handleAlign(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canAlign`.
+    if (isPassRunning()) return;
     const live = liveDoc();
     if (!live) {
       setError('No document is open.');
@@ -336,6 +341,8 @@ export default function AlignLyricsDialog({
   }
 
   async function handleReplace(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canReplace`.
+    if (isPassRunning()) return;
     const live = liveDoc();
     if (!live || selectedWord === null || !take) return;
     setSplicing(true);
@@ -371,9 +378,10 @@ export default function AlignLyricsDialog({
   const expectedBytes = model?.expectedBytes ?? 0;
   const modelMissing = model !== null && !model.downloaded;
   const hasText = text.trim().length > 0;
-  const canAlign = !busy && doc !== null && length > 0 && hasText && model?.downloaded === true;
+  const canAlign =
+    !busy && doc !== null && length > 0 && hasText && model?.downloaded === true && runningPass === null;
   const takeMatchesSelection = take !== null && selectedWord !== null && take.forWord === selectedWord;
-  const canReplace = !busy && takeMatchesSelection && alignment !== null && !stale;
+  const canReplace = !busy && takeMatchesSelection && alignment !== null && !stale && runningPass === null;
   const message = error ?? (doc === null ? 'No document is open.' : null);
   const regionSamples = selection && selection.end > selection.start ? selection.end - selection.start : length;
   const estimateSeconds = doc ? regionSamples / doc.sampleRate / MEASURED_ALIGN_REALTIME_FACTOR : 0;

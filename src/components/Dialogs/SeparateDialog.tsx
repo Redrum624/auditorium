@@ -45,6 +45,7 @@ import {
   type DiarizationEvidence,
 } from '../../dsp/diarization';
 import type { SeparateMode } from '../../services/dialogBus';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, GlassSelect, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -238,6 +239,8 @@ export default function SeparateDialog({
 
   const running = stage !== 'idle';
   const busy = downloading || running;
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
 
   // The unmount mirror (RemixDialog.tsx:124's cancelledRef): a ref, because the
   // cleanup must read the CURRENT value, not the one captured when the effect
@@ -362,6 +365,10 @@ export default function SeparateDialog({
   }
 
   async function handleSeparate(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canSeparate`
+    // (this function never re-checked its own button's gate, unlike the
+    // sibling dialogs' `handleApply`/`handleCreate`).
+    if (isPassRunning()) return;
     // Resolved from LIVE state, never captured at open.
     const live = liveDoc();
     if (!live) {
@@ -527,7 +534,10 @@ export default function SeparateDialog({
   const probed = stemModel !== null && (!voice || speakerModel !== null);
   const modelsReady = stemModel?.downloaded === true && (!voice || speakerModel?.downloaded === true);
   const modelMissing = probed && !modelsReady;
-  const canSeparate = !busy && notes === null && review === null && doc !== null && length > 0 && modelsReady;
+  // Fix round 1 — subscribed, so a FOREIGN pass starting while this card
+  // sits open and idle re-greys Separate immediately.
+  const canSeparate =
+    !busy && notes === null && review === null && doc !== null && length > 0 && modelsReady && runningPass === null;
   const message = error ?? (doc === null ? 'No document is open.' : null);
 
   // D5: the pre-run estimate sums stage 1 (Demucs, 1/1.52 x realtime) and the

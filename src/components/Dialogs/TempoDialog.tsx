@@ -20,6 +20,7 @@ import {
   type TempoRefusal,
 } from '../../services/tempoService';
 import { resolveRegion } from '../../services/selectionRegion';
+import { usePassLock } from '../../services/passLock';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { MIN_RATIO, MAX_RATIO } from '../../dsp/wsola';
 import { Gauge } from 'lucide-react';
@@ -173,6 +174,12 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   const [progress, setProgress] = useState(0);
   const [applyError, setApplyError] = useState<string | null>(null);
 
+  // Fix round 1 — subscribed (not a bare `isPassRunning()` call), called
+  // before the `if (!doc) return null;` below since hooks can't be
+  // conditional; see EffectDialog's identical comment for why this must be
+  // reactive.
+  const runningPass = usePassLock();
+
   const sourceInputRef = useRef<HTMLInputElement>(null);
 
   /**
@@ -288,9 +295,10 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   const variablePlan = variableCheck?.ok ? variableCheck.plan : null;
 
   const canApply =
-    correction === 'follow-beats'
+    runningPass === null &&
+    (correction === 'follow-beats'
       ? !busy && gridConfirmed && variablePlan !== null
-      : validSource && validTarget && !busy && ((check !== null && check.ok) || noOpWithMarkers);
+      : validSource && validTarget && !busy && ((check !== null && check.ok) || noOpWithMarkers));
 
   async function handleDetect() {
     if (!doc || detecting) return;

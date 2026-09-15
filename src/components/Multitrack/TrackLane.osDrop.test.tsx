@@ -10,6 +10,7 @@ import {
   undoSession,
 } from '../../multitrack/sessionUndo';
 import { _resetPendingOpens } from '../../services/openProgress';
+import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { _resetSnapPreference, setSnapEnabled } from '../../services/snapPreference';
 import { getHistory } from '../../services/undoHistory';
 import { makeInitialState, useAppStore } from '../../stores/appStore';
@@ -158,10 +159,12 @@ beforeEach(() => {
     sampleRate: SESSION_RATE,
   });
   _resetSessionUndo();
+  _resetPassLock();
 });
 
 afterEach(() => {
   _resetSnapPreference();
+  _resetPassLock();
 });
 
 describe('an audio file dropped on a lane', () => {
@@ -307,5 +310,25 @@ describe('a drop the open path refuses', () => {
     expect(clips()).toHaveLength(1);
     expect(clips()[0].startSample).toBe(2_000);
     expect(doneLabels()).toEqual(['Add clip']);
+  });
+
+  // Fix round 1 (item 5a) — FAILS on the pre-fix-round code. A second,
+  // mouse-only `file.open` door: this path runs the SAME `openFilePath` the
+  // `file.open` menu command does and activates each new document, which is
+  // exactly the hazard `file.open`'s own registry gate exists to close
+  // (M-c). The registry never saw this drag-and-drop handler.
+  it('refuses the whole drop while a pass holds the lock, naming it, and opens nothing', async () => {
+    const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+
+    await act(async () => {
+      await dropFilesOnTrack([dropped('song.wav')], trackId(0), 1_000);
+    });
+
+    expect(api.readFile).not.toHaveBeenCalled();
+    expect(docs()).toHaveLength(0);
+    expect(clips()).toHaveLength(0);
+    expect(refusals()[0].message).toContain('Cover Chain');
+
+    release!();
   });
 });

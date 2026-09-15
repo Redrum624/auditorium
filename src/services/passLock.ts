@@ -110,6 +110,41 @@ export function blockedByPassReason(): string | null {
 }
 
 /**
+ * Fix round 1 (item 6) — M-c / the lot-B close duty (ledger Ruling R14),
+ * exported from HERE rather than reimplemented by each of its two consumers
+ * (`menuActions.ts`'s `file.close`, `FilesPanel.tsx`'s row ✕ — the ✕ cannot
+ * route through `file.close` itself, since that command always closes the
+ * ACTIVE document and a row can close any OTHER open one).
+ *
+ * `passFree()`'s blanket "disabled while the lock is held" is correct for
+ * file.open/file.new/session.open/transport.record, which have no protection
+ * against the document a pass depends on changing identity underneath them.
+ * Closing a document while a HOSTED EFFECT's Apply is in flight is a
+ * DIFFERENT, already-proven-safe case: the effect card resolves its target
+ * document at commit time and discards a stale result instead of writing it
+ * (T6-3 / fix rounds 2 and "Final round", pinned by
+ * `App.effectHost.test.tsx`'s "the mouse stays live during Apply" suite —
+ * closing the document the effect is applying to there raises no failure and
+ * the card shows a stale-hint instead of corrupting anything). Blanket-gating
+ * the close would silently refuse a close that suite proves is safe — a real
+ * regression (X1), not a theoretical one. No pipeline tool has the same proof
+ * on record (the "seven" pipeline dialogs discard their result on UNMOUNT
+ * only, which a document close does not trigger), so every OTHER pass kind
+ * still refuses the close — which is exactly the lot-B duty: a host job's
+ * utility process would otherwise be killed with no confirmation by
+ * `invalidateStemRun` / `invalidateTranscript` / `invalidateLyricsAlignment`
+ * inside `closeDocumentFlow`.
+ */
+export function closeFree(): boolean {
+  return !isPassRunning() || getRunningPass()?.kind === 'effect';
+}
+
+/** The reason a close is refused, or `null` when `closeFree()`. */
+export function closeBlockedReason(): string | null {
+  return closeFree() ? null : blockedByPassReason();
+}
+
+/**
  * M4 — the only public imperative hold for code that is not already inside
  * `runExclusivePass`. Returns an idempotent release closure, or `null` when
  * the lock is already held (the refusal M1 asks for). The closure no-ops

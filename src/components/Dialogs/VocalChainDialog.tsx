@@ -17,6 +17,7 @@ import {
   type VocalChainStageResult,
 } from '../../services/vocalChain';
 import { noiseGateEffect } from '../../effects/dynamics/NoiseGateEffect';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -265,6 +266,8 @@ export default function VocalChainDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [running, setRunning] = useState<string | null>(null);
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
   const [report, setReport] = useState<VocalChainReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The live half of the stepper. `liveResults` holds the engine's OWN result
@@ -316,7 +319,9 @@ export default function VocalChainDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function handleApply(): Promise<void> {
-    if (busy || done || !anyEnabled || gateLevelMissing) return;
+    // Fix round 1 — the real start seam: a FOREIGN pass already holding
+    // `passLock.ts` must refuse this too, not just our own `busy`.
+    if (busy || done || !anyEnabled || gateLevelMissing || isPassRunning()) return;
     setBusy(true);
     setProgress(0);
     setRunning(null);
@@ -677,7 +682,7 @@ export default function VocalChainDialog({ onClose }: { onClose: () => void }) {
                 variant="primary"
                 data-testid="vocal-chain-apply"
                 onClick={() => void handleApply()}
-                disabled={busy || !anyEnabled || gateLevelMissing}
+                disabled={busy || !anyEnabled || gateLevelMissing || runningPass !== null}
               >
                 Apply
               </GlassButton>

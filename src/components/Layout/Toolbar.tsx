@@ -11,7 +11,6 @@ import { commandReason, isCommandEnabled, runCommand, showEditorView } from '../
 import { usePassLock } from '../../services/passLock';
 import { useHistoryVersion } from '../../services/undoHistory';
 import { toggleSnap, useSnapEnabled } from '../../services/snapPreference';
-import { canRecord } from '../../services/transportService';
 // F11-9: the zoom limits are the store's now, so the toolbar imports the one
 // resolver instead of re-stating MIN_SPP and a ceiling of its own.
 import { applyEditorZoom, defaultZoom, useAppStore } from '../../stores/appStore';
@@ -241,8 +240,8 @@ export default function Toolbar() {
   // MT1-1: the readout re-renders with the session's zoom and length.
   const session = useSessionStore((s) => s.session);
   const mtZoom = useSessionStore((s) => s.mtZoom);
-  // Subscribe to the armed set (value unused directly) so canRecord() below is
-  // re-evaluated whenever a track is armed/disarmed.
+  // Subscribe to the armed set (value unused directly) so `transport.record`'s
+  // enablement below is re-evaluated whenever a track is armed/disarmed.
   useSessionStore((s) => s.session.tracks.some((t) => t.armed));
 
   // Lot A: Save / Export read the PROJECT through the commands' own
@@ -274,11 +273,16 @@ export default function Toolbar() {
 
   // Live punch-in recording state, mirrored from the multitrack recorder so the
   // Record button can pulse red while a take is running. Enablement comes from
-  // transportService.canRecord() — the same source the menu command uses — and
-  // is re-derived on every armed-set / view / recording-state render trigger.
+  // `isCommandEnabled('transport.record')` — the registry's OWN predicate,
+  // not a bare `canRecord()` (fix round 1: the bare call was a second mouse
+  // door that bypassed `transport.record`'s pass-lock gate the same way the
+  // Effects card's old `openEffectDialog` call bypassed `effect.<id>`'s —
+  // the button would have shown live while `runCommand` silently refused the
+  // click underneath it) — and is re-derived on every armed-set / view /
+  // recording-state / pass-lock render trigger.
   const [mtRecording, setMtRecording] = useState(() => multitrackRecorder.isRecording());
   useEffect(() => multitrackRecorder.onChange(setMtRecording), []);
-  const recordEnabled = canRecord();
+  const recordEnabled = isCommandEnabled('transport.record');
 
   // Load the active document into the engine whenever its identity (id),
   // audio data (channels array reference), or sample rate changes — but NOT on
@@ -521,6 +525,7 @@ export default function Toolbar() {
           label={mtRecording ? 'Stop recording' : 'Record'}
           icon
           disabled={!recordEnabled}
+          title={commandReason('transport.record') ?? undefined}
           onClick={() => void runCommand('transport.record')}
         >
           <Circle

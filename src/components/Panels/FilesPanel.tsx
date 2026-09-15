@@ -3,7 +3,7 @@ import { docDuration } from '../../audio/AudioDocument';
 import { DOC_DRAG_MIME, beginDocumentDrag, endDocumentDrag } from '../../multitrack/laneDrop';
 import { closeDocumentFlow } from '../../services/fileService';
 import { usePendingOpens } from '../../services/openProgress';
-import { blockedByPassReason, getRunningPass, isPassRunning, usePassLock } from '../../services/passLock';
+import { closeBlockedReason, closeFree, usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
 
 /** Format a duration in seconds as `m:ss`. */
@@ -28,13 +28,15 @@ function formatDuration(seconds: number): string {
  * document being closed, with no confirmation of their own — before this lot
  * the ✕ was gated only on `hasDoc`, so one click mid-transcription silently
  * killed the job. `passLock.ts` is the only thing that knows a pass is
- * running, so the ✕ reads it directly (not through `menuActions`'
- * `file.close`, which only ever closes the ACTIVE document — a row here can
- * close any OTHER open one too). The gate is the same conservative one
- * `menuActions.ts`'s `closeFree()` uses for `file.close`: every pass kind
- * refuses a close EXCEPT a running hosted EFFECT, which is proven safe
- * against it (`App.effectHost.test.tsx`'s "the mouse stays live during
- * Apply" suite) — see that function's own docblock for the full argument.
+ * running, so the ✕ reads `closeFree()`/`closeBlockedReason()` from there
+ * directly (not through `menuActions`' `file.close`, which only ever closes
+ * the ACTIVE document — a row here can close any OTHER open one too). Fix
+ * round 1 (item 6): that policy is exported from `passLock.ts` exactly ONCE
+ * now — `menuActions.ts`'s `file.close` reads the same two functions — where
+ * before each of these two doors reimplemented it. See `closeFree`'s own
+ * docblock in `passLock.ts` for the full argument (every pass kind refuses a
+ * close except a running hosted EFFECT, proven safe against it by
+ * `App.effectHost.test.tsx`'s "the mouse stays live during Apply" suite).
  */
 export default function FilesPanel() {
   const documents = useAppStore((s) => s.documents);
@@ -48,8 +50,8 @@ export default function FilesPanel() {
   // Lot M: module state, not zustand — subscribe so every row's ✕ recomputes
   // the instant the lock moves.
   usePassLock();
-  const closeFree = isPassRunning() ? getRunningPass()?.kind === 'effect' : true;
-  const closeReason = closeFree ? undefined : (blockedByPassReason() ?? undefined);
+  const canClose = closeFree();
+  const closeTitle = closeBlockedReason() ?? undefined;
 
   if (documents.length === 0 && pendingOpens.length === 0) {
     return <div className="p-2 text-sm text-[#8b8b92]">No files open.</div>;
@@ -120,9 +122,9 @@ export default function FilesPanel() {
               <button
                 type="button"
                 aria-label={`Close ${doc.name}`}
-                title={closeFree ? 'Close' : closeReason}
-                disabled={!closeFree}
-                onClick={() => closeFree && void closeDocumentFlow(doc.id)}
+                title={canClose ? 'Close' : closeTitle}
+                disabled={!canClose}
+                onClick={() => canClose && void closeDocumentFlow(doc.id)}
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#8b8b92] opacity-0 transition-opacity hover:bg-white/10 hover:text-[#d4d4d8] group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <X size={14} />

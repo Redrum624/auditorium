@@ -6,6 +6,7 @@ import { registerAllEffects } from '../../effects/registerAll';
 import { runEffectOnSelection } from '../../services/effectRunner';
 import { deleteSelection } from '../../services/editOps';
 import { captureNoiseProfile, clearNoiseProfile } from '../../services/noiseProfile';
+import { _resetPassLock, acquirePass, getRunningPass } from '../../services/passLock';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { createDocument } from '../../audio/AudioDocument';
 import type { PlaybackEngine } from '../../audio/PlaybackEngine';
@@ -86,10 +87,46 @@ beforeEach(() => {
   clearNoiseProfile();
   mockRun.mockReset();
   mockRun.mockImplementation(realRun);
+  _resetPassLock();
 });
 
 afterEach(() => {
   clearNoiseProfile();
+  _resetPassLock();
+});
+
+// Fix round 1 (HIGH) — the real start seam. Before this fix, `canApply` never
+// consulted `passLock.ts`: an idle, open card's Apply button ran the effect
+// even while a DIFFERENT pass (Save, another hosted tool) already held the
+// app-wide lock, because `handleToolModuleLock`'s `acquirePass` failure was
+// silently discarded (the ref just stayed `null` — no lock leak, but no
+// refusal either). Reproduces the review's own scenario: open the card idle,
+// have something else take the lock, then try Apply.
+describe('the pass lock refuses Apply when a DIFFERENT pass already holds it (fix round 1)', () => {
+  it('does not run the effect, and the button is disabled, while a foreign pass holds the lock', async () => {
+    seedActiveDoc();
+    render(<EffectDialog effectId="amplify" onClose={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+
+    const applyBtn = screen.getByRole('button', { name: 'Apply' });
+    expect(applyBtn).toBeDisabled();
+
+    fireEvent.click(applyBtn);
+    // A disabled button swallows the click natively; the call count proves
+    // the handler's own defence-in-depth check would refuse it regardless.
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(getRunningPass()?.label).toBe('Save Project');
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+  });
 });
 
 describe('EffectDialog noise-reduction gating (Task F8: reactive hasNoiseProfile)', () => {

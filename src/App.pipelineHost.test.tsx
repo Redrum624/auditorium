@@ -6,7 +6,7 @@ import { MODULE_COLUMN_WIDTH } from './components/Layout/ModuleStrip';
 import { createDocument } from './audio/AudioDocument';
 import { hasOpenDialog } from './services/dialogBus';
 import { isCommandEnabled, runCommand } from './services/menuActions';
-import { _resetPassLock, isPassRunning } from './services/passLock';
+import { _resetPassLock, getRunningPass, isPassRunning } from './services/passLock';
 import { makeInitialState, useAppStore } from './stores/appStore';
 
 /**
@@ -295,6 +295,11 @@ describe('while a hosted pass is running', () => {
   // still refuses directly (see the test below this one).
   it('refuses to swap in another tool via the registry gate — the row was already disabled, no message box', async () => {
     await startPass();
+    // Fix round 1 (MED) — restores the coverage the old
+    // `showMessageBox.mock.calls[0][0].message).toContain('Match Tempo')`
+    // assertion carried: `describeHostedPass()`'s label, now read straight
+    // off the lock rather than off a message box nobody shows any more.
+    expect(getRunningPass()?.label).toBe('Match Tempo');
     expect(isCommandEnabled('effects.coverChain')).toBe(false);
 
     await openTool('effects.coverChain');

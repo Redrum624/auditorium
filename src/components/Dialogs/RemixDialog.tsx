@@ -15,6 +15,7 @@ import {
 import { regridTempo, runRemixAnalysis, setRemixAnalysis } from '../../services/tempoAnalysis';
 import { createRemixDocument } from '../../services/remixService';
 import { focusRemixPanel } from '../../services/dialogBus';
+import { usePassLock } from '../../services/passLock';
 // Structure-strip derivation + meter labels are shared with the persistent
 // TEMPO card (G4) — one colour cycle, one run derivation, one meter label.
 import { clusterColor, meterLabel, METERS, structureRuns } from '../../utils/structureStrip';
@@ -222,8 +223,18 @@ export default function RemixDialog({ onClose }: { onClose: () => void }) {
     : crossfadeMs;
   const crossfadeCapped = appliedCrossfadeMs < crossfadeMs;
 
+  // Fix round 1 — subscribed, so a FOREIGN pass starting while this card
+  // sits open and idle re-greys Create Remix immediately.
+  const runningPass = usePassLock();
+
   const canCreate =
-    !busy && !noTempo && tempoConfirmed && targetSample !== null && plan !== null && plan.ok;
+    !busy &&
+    !noTempo &&
+    tempoConfirmed &&
+    targetSample !== null &&
+    plan !== null &&
+    plan.ok &&
+    runningPass === null;
 
   function liveDoc() {
     const state = useAppStore.getState();
