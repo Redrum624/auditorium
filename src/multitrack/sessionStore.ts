@@ -127,6 +127,15 @@ export interface SessionState {
 export interface SessionActions {
   newSession(sampleRate: number): void; // 'Untitled Session', 4 empty tracks 'Track 1'..'Track 4'
   addTrack(): void;
+  /** Lot E — splices `tracks` in as-is (already built, already carrying their
+   * own clips) at `atIndex`; appends when `atIndex` is omitted or out of the
+   * current track array's range. `addTrack()` cannot be reused for this: it
+   * mints its own `Track N` name and an empty clip array, and a landing's
+   * tracks already have both. R3 no-op guard: an empty `tracks` array records
+   * nothing. Re-fit is `addClip`'s own arm, copied rather than shared because
+   * this insert can carry MANY clips at once and the "did this change what Fit
+   * means" question is still asked against the state BEFORE the splice. */
+  insertTracks(tracks: readonly Track[], atIndex?: number): void;
   removeTrack(id: string): void;
   renameTrack(id: string, name: string): void;
   setTrackParam(
@@ -356,8 +365,10 @@ function freshSessionState(sampleRate: number): Pick<SessionState, 'session' | '
 }
 
 /** True when any track carries a clip — the predicate `addClip`'s re-fit arm
- * reads, and the one `menuActions`/`MultitrackView` state for their own gates. */
-function hasAnyClip(session: Session): boolean {
+ * reads, and the one `menuActions`/`MultitrackView`/`sessionLanding` state for
+ * their own gates (lot E: THE emptiness predicate — E2/E3's "the session
+ * already has clips" gate reads this and nothing else). */
+export function hasAnyClip(session: Session): boolean {
   return session.tracks.some((t) => t.clips.length > 0);
 }
 
@@ -849,6 +860,33 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
         return { session: { ...s.session, tracks: [...s.session.tracks, createTrack(name)] } };
       });
     });
+  },
+
+  insertTracks(tracks, atIndex) {
+    // Same shape as `addClip`'s re-fit arm just above: captured from the state
+    // BEFORE the splice, outside the recording bracket, because `mtZoom` is
+    // deliberately absent from `SessionSnapshot` (sessionUndo ruling 3) and a
+    // call inside `recordSessionMutation` would put zoom into the undo entry.
+    let refit = false;
+    recordSessionMutation('Add tracks', () => {
+      set((s) => {
+        if (tracks.length === 0) return s; // R3 no-op guard
+        refit =
+          !hasAnyClip(s.session) ||
+          s.mtZoom.samplesPerPixel >= fitSessionSamplesPerPixel(s.session);
+        const idx =
+          atIndex !== undefined && atIndex >= 0 && atIndex <= s.session.tracks.length
+            ? atIndex
+            : s.session.tracks.length;
+        return {
+          session: {
+            ...s.session,
+            tracks: [...s.session.tracks.slice(0, idx), ...tracks, ...s.session.tracks.slice(idx)],
+          },
+        };
+      });
+    });
+    if (refit) applySessionZoom({ samplesPerPixel: Number.POSITIVE_INFINITY, scrollSample: 0 });
   },
 
   removeTrack(id) {

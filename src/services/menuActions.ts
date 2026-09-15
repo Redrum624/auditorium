@@ -4,6 +4,7 @@ import { applyEditorZoom, useAppStore } from '../stores/appStore';
 import {
   applySessionZoom,
   closeGap, // D3
+  hasAnyClip, // lot E
   removeClips,
   rippleDeleteClips,
   splitClipsAt,
@@ -404,7 +405,7 @@ function registerSelectionAndTransportCommands(): void {
       id: 'edit.selectAll',
       label: 'Select All',
       shortcut: 'Ctrl+A',
-      enabled: (s) => (s.view === 'multitrack' ? sessionHasClips() : activeDoc(s) !== null),
+      enabled: (s) => (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : activeDoc(s) !== null),
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           const { session, setSelectedClips } = useSessionStore.getState();
@@ -478,14 +479,14 @@ function registerSelectionAndTransportCommands(): void {
     {
       // T5 — "the end" of a SESSION is the end of its last clip, across every
       // track (`sessionEndSample`, the same number the zoom's fit is stated
-      // in). Gated on `sessionHasClips()` rather than on the view alone: with
-      // no clips the end IS the start, and a key that lands where the cursor
+      // in). Gated on `hasAnyClip` rather than on the view alone: with no
+      // clips the end IS the start, and a key that lands where the cursor
       // already is should say so by being disabled, exactly as the clip-edge
       // pair does.
       id: 'transport.goToEnd',
       label: 'Go to End',
       shortcut: 'End',
-      enabled: (s) => (s.view === 'multitrack' ? sessionHasClips() : activeDoc(s) !== null),
+      enabled: (s) => (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : activeDoc(s) !== null),
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           const { session, mtZoom, setMtCursor } = useSessionStore.getState();
@@ -885,7 +886,7 @@ function registerFileCommands(): void {
       // document. Known, accepted staleness: MenuBar does not subscribe to the
       // session store, so an OPEN File menu re-greys this on the next
       // appStore/history change — the same as `multitrack.mixdown` today.
-      enabled: (s) => (s.view === 'multitrack' ? sessionHasClips() : hasDoc(s)),
+      enabled: (s) => (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : hasDoc(s)),
       run: async () => openExportDialog(),
     },
     {
@@ -1112,11 +1113,6 @@ function registerDocumentToolCommands(): void {
   ]);
 }
 
-/** True when the current session has at least one clip on any track. */
-function sessionHasClips(): boolean {
-  return useSessionStore.getState().session.tracks.some((t) => t.clips.length > 0);
-}
-
 /** Inserts the entire active document as a clip at the multitrack cursor. The
  * target track is the one holding the selected clip, else the first track. The
  * placement itself — the doc-rate/session-rate conversion, an empty session
@@ -1274,7 +1270,7 @@ function registerMultitrackCommands(): void {
     {
       id: 'multitrack.mixdown',
       label: 'Mix Down to New File',
-      enabled: (s) => s.view === 'multitrack' && sessionHasClips(),
+      enabled: (s) => s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session),
       run: async () => mixdownToNewFile(),
     },
     {
@@ -1301,20 +1297,20 @@ function registerMultitrackCommands(): void {
     // is what makes them safe while playing, and it is a property of the
     // existing cursor contract rather than anything K1 added.
     //
-    // Enabled on `sessionHasClips()` — no clips, no edges, so the key would
-    // have nowhere to go and the menu row should say so.
+    // Enabled on `hasAnyClip` — no clips, no edges, so the key would have
+    // nowhere to go and the menu row should say so.
     {
       id: 'multitrack.prevClipEdge',
       label: 'Previous Clip Edge',
       shortcut: 'Ctrl+Left',
-      enabled: (s) => s.view === 'multitrack' && sessionHasClips(),
+      enabled: (s) => s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session),
       run: async () => moveCursorToClipEdge('prev'),
     },
     {
       id: 'multitrack.nextClipEdge',
       label: 'Next Clip Edge',
       shortcut: 'Ctrl+Right',
-      enabled: (s) => s.view === 'multitrack' && sessionHasClips(),
+      enabled: (s) => s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session),
       run: async () => moveCursorToClipEdge('next'),
     },
   ]);

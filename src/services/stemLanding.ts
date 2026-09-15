@@ -78,7 +78,9 @@
  * ---------------------------------------------------------------------------
  * THE CONDITION THE GUARANTEE CARRIES (S2 review, measured)
  * ---------------------------------------------------------------------------
- * `mixdownSession` HARD CLAMPS the master bus to ±1 (`mixdown.ts:68-70,155-158`).
+ * `mixdownSession` HARD CLAMPS the master bus to ±1 (`mixdown.ts:165-166`,
+ * applied at `:626-627` — not `:68-70,155-158`, which is `dbToLinear` and the
+ * spatial pan gain).
  * A document whose samples exceed full scale — reachable after gain/EQ inside
  * the app — therefore reconstructs with large error (S2 measured 0.600 at
  * |mix| = 1.6) even though the raw sum is still exact. That clamp is documented
@@ -91,13 +93,18 @@
  */
 import { createDocument, docLength, type AudioDocument } from '../audio/AudioDocument';
 import { keepSpans, type SampleSpan } from '../dsp/spanMask';
-import { createClip, createTrack, type Session, type Track } from '../multitrack/session';
+import { warmClipResample } from '../multitrack/mixdown';
+import { createClip, createTrack, documentClipLength, type Session, type Track } from '../multitrack/session';
+import {
+  commitLanding,
+  installSession,
+  planLanding,
+  type LandingMode,
+} from '../multitrack/sessionLanding';
 import { useSessionStore } from '../multitrack/sessionStore';
-import { clearSessionHistory } from '../multitrack/sessionUndo';
 import { useAppStore } from '../stores/appStore';
 import { linkDerivedDocument } from './beatGrid';
 import { STEM_LABELS, type StemSeparationOutput } from './stemService';
-import { defaultSessionZoom } from '../multitrack/sessionZoom';
 
 /**
  * The five track/document labels in the order ruling 6 pins them, Residual
@@ -169,9 +176,15 @@ export interface StemDocumentsResult {
    */
   sourcePeak: number | null;
   /**
-   * Whether mixing the untouched session down reproduces the source exactly.
-   * `false` when `sourcePeak > 1`: the master bus's ±1 clamp flat-tops the sum
-   * (see the module header).
+   * Lot E (E5 part 2) — whether the landed TRACKS add back up to the source
+   * exactly, not whether mixing the whole session down does: once a landing
+   * can share a timeline with the user's other tracks (`'in-place'` /
+   * `'appended'`), a whole-session mixdown also measures THEIR audio, and the
+   * identity this field reports stops being checkable that way. It is measured
+   * from `sourcePeak` alone (arm-independent) and is the same fact in every
+   * arm — a caller who wants to SEE it holds mixes only the landed tracks,
+   * through {@link landedTracksProbeSession}. `false` when `sourcePeak > 1`:
+   * the master bus's ±1 clamp flat-tops the sum (see the module header).
    *
    * `null` in TWO cases, and a caller must not read the second as the first:
    * the verdict could not be determined (`sourcePeak` is `null` — the source
@@ -189,8 +202,23 @@ export interface StemDocumentsResult {
 export interface StemSessionResult {
   /** The five created track ids, in document order. */
   trackIds: string[];
-  /** `<source> — Stems`, also the default filename for the project save. */
+  /**
+   * `<source> — Stems`. Also the default filename for the project save ONLY
+   * in the `'replaced'` arm — `'in-place'`/`'appended'` land into a session
+   * that may already have its own name (and its own `.audm` path), so this is
+   * the live `session.name`, echoed rather than implied to be a save target.
+   */
   sessionName: string;
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: LandingMode;
+  /** Lot E (E4) — the session-sample start every landed clip was built at: 0
+   * except `'in-place'`, where it is the displaced anchor clip's own
+   * `startSample`. */
+  landedStartSample: number;
+  /** Lot E (E6) — true when the source document's rate differed from the
+   * session's. Always `false` for `'replaced'`: that arm builds a FRESH
+   * session at the document's own rate, so nothing was converted. */
+  rateConverted: boolean;
 }
 
 export interface StemLandingResult {
@@ -198,7 +226,12 @@ export interface StemLandingResult {
   documentIds: string[];
   /** The five created track ids, in the same order. */
   trackIds: string[];
-  /** `<source> — Stems`, also the default filename for the project save. */
+  /**
+   * `<source> — Stems`. Also the default filename for the project save ONLY
+   * in the `'replaced'` arm — `'in-place'`/`'appended'` land into a session
+   * that may already have its own name (and its own `.audm` path), so this is
+   * the live `session.name`, echoed rather than implied to be a save target.
+   */
   sessionName: string;
   /**
    * True when the source was MONO and its stems were laid down as dual-mono
@@ -213,9 +246,15 @@ export interface StemLandingResult {
    */
   sourcePeak: number | null;
   /**
-   * Whether mixing the untouched session down reproduces the source exactly.
-   * `false` when `sourcePeak > 1`: the master bus's ±1 clamp flat-tops the sum
-   * (see the module header).
+   * Lot E (E5 part 2) — whether the landed TRACKS add back up to the source
+   * exactly, not whether mixing the whole session down does: once a landing
+   * can share a timeline with the user's other tracks (`'in-place'` /
+   * `'appended'`), a whole-session mixdown also measures THEIR audio, and the
+   * identity this field reports stops being checkable that way. It is measured
+   * from `sourcePeak` alone (arm-independent) and is the same fact in every
+   * arm — a caller who wants to SEE it holds mixes only the landed tracks,
+   * through {@link landedTracksProbeSession}. `false` when `sourcePeak > 1`:
+   * the master bus's ±1 clamp flat-tops the sum (see the module header).
    *
    * `null` in TWO cases, and a caller must not read the second as the first:
    * the verdict could not be determined (`sourcePeak` is `null` — the source
@@ -227,6 +266,16 @@ export interface StemLandingResult {
    * explains this field must say "no claim", not "the check could not be made".
    */
   exactSumHolds: boolean | null;
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: LandingMode;
+  /** Lot E (E4) — the session-sample start every landed clip was built at: 0
+   * except `'in-place'`, where it is the displaced anchor clip's own
+   * `startSample`. */
+  landedStartSample: number;
+  /** Lot E (E6) — true when the source document's rate differed from the
+   * session's. Always `false` for `'replaced'`: that arm builds a FRESH
+   * session at the document's own rate, so nothing was converted. */
+  rateConverted: boolean;
 }
 
 /** Largest |sample| across every channel; 0 for an empty document. */
@@ -325,11 +374,16 @@ function createLandingDocuments(
 }
 
 /**
- * CC4 (CJ-1) — the DESTRUCTIVE half: a five-track session over the documents
- * {@link createStemDocuments} just created, installed in place of whatever
- * session was open, and the multitrack view. Every caller of THIS half is
- * replacing the user's session, which is why it is a separate call: a caller
- * that only wanted documents cannot reach it by accident.
+ * CC4 (CJ-1) — the SESSION half: lands a track per document over the
+ * documents {@link createStemDocuments} just created.
+ *
+ * Lot E: no longer always a wholesale replacement. `planLanding` decides
+ * which of the three arms this landing takes (E2/E3's gate is "the open
+ * session already has clips"); `'replaced'` is the pre-lot-E behaviour
+ * verbatim, now via `installSession`. Every caller of this half accepts
+ * whichever arm the open session calls for — a caller that only wanted
+ * documents cannot reach it by accident (that is still `createStemDocuments`
+ * on its own).
  *
  * `documentIds` must be in {@link STEM_TRACK_LABELS} order — Residual LAST,
  * which the module header explains is load-bearing for the exact-sum identity.
@@ -342,72 +396,124 @@ export function buildStemSession(
     output,
     documentIds,
     STEM_TRACK_LABELS,
-    stemSessionName(output.sourceName)
+    stemSessionName(output.sourceName),
+    'Separate into Stems'
   );
 }
 
 /**
- * D4 — the body `buildStemSession` and `landVoice` share: one full-length clip
- * per document on a track named after it, installed in place of whatever
- * session was open, transients cleared, history dropped, multitrack shown. The
- * track NAMES and the session name are the only difference between the two
- * landings.
+ * D4 (lot E) — the body `buildStemSession`, `landVoice` and `landSpeakers`
+ * share: one full-length clip per document on a track named after it, landed
+ * through whichever arm {@link planLanding} calls for. The track NAMES, the
+ * session name and the undo gesture's label are the only differences between
+ * the three landings.
+ *
+ * `'replaced'` is `installSession` over a fresh session at the document's own
+ * rate — the pre-lot-E behaviour, byte-identical (E3's guard).
+ *
+ * `'in-place'`/`'appended'` build their tracks against the OPEN session's own
+ * rate (E6: the session rate never moves once it has a clip —
+ * `adoptSessionRate` already refuses), then hand them to `commitLanding`,
+ * which removes whatever `planLanding` marked displaced and splices the new
+ * tracks in as one undo gesture. `'in-place'` inherits the displaced anchor
+ * clip's window VERBATIM (E6: a landed document is a partition of the source
+ * at the source's own rate/length, so a window valid over the source is valid
+ * over it with no arithmetic) and subtracts the mono compensation from its
+ * inherited gain so the mix does not get 3.0103 dB louder for having been
+ * split (E1's refinement). `'appended'` has no anchor to inherit from, so its
+ * clip starts at 0 with the plain doc-rate/session-rate conversion every other
+ * placement in this app uses (`documentClipLength`).
+ *
+ * `warmClipResample` runs per landed clip once the gesture closes — the same
+ * off-play-path conversion `sessionInsert.placeDocumentsOnTrack` gives every
+ * other placement, so a mismatched rate does not re-create the measured
+ * 22 039 ms `play()` stall (E6).
  */
 function buildLandingSession(
   output: StemSeparationOutput,
   documentIds: readonly string[],
   labels: readonly string[],
-  name: string
+  name: string,
+  gestureLabel: string
 ): StemSessionResult {
+  const plan = planLanding(output.sourceDocId, output.sampleRate);
+
+  if (plan.mode === 'replaced') {
+    const tracks: Track[] = documentIds.map((documentId, i) => {
+      const track = createTrack(labels[i]);
+      track.clips = [
+        createClip({
+          documentId,
+          startSample: 0,
+          offsetSample: 0,
+          // Session rate == document rate == output.sampleRate, so session
+          // samples and document samples are the same unit here.
+          lengthSample: output.lengthSamples,
+        }),
+      ];
+      return track;
+    });
+
+    const session: Session = { name, sampleRate: output.sampleRate, tracks };
+    installSession(session, null); // Lot A (M4): a landed stem session is a new, unsaved project.
+
+    return {
+      trackIds: tracks.map((t) => t.id),
+      sessionName: session.name,
+      landingMode: 'replaced',
+      landedStartSample: 0,
+      rateConverted: false, // nothing converted — the session took the document's own rate
+    };
+  }
+
+  // Mono-widened stems become DUAL-MONO stereo documents (module header,
+  // MONO), which take the unity balance law instead of the constant-power law
+  // the inherited clip's original mono source used — same derivation
+  // `createLandingDocuments` uses for `monoRoutedAsDualMono`.
+  const monoRoutedAsDualMono = output.channelCount === 1;
+  const app = useAppStore.getState();
+  const sessionRate = useSessionStore.getState().session.sampleRate;
+
   const tracks: Track[] = documentIds.map((documentId, i) => {
-    const track = createTrack(labels[i]);
-    track.clips = [
-      createClip({
-        documentId,
-        startSample: 0,
-        offsetSample: 0,
-        // Session rate == document rate == output.sampleRate, so session
-        // samples and document samples are the same unit here.
-        lengthSample: output.lengthSamples,
-      }),
-    ];
+    const base = createTrack(labels[i]);
+    const track: Track =
+      plan.mode === 'in-place' && plan.trackParams ? { ...base, ...plan.trackParams } : base;
+    const clip =
+      plan.mode === 'in-place' && plan.window
+        ? createClip({
+            documentId,
+            startSample: plan.startSample,
+            offsetSample: plan.window.offsetSample,
+            lengthSample: plan.window.lengthSample,
+            gainDb: plan.window.gainDb - (monoRoutedAsDualMono ? MONO_PAN_COMPENSATION_DB : 0),
+          })
+        : createClip({
+            documentId,
+            startSample: 0,
+            offsetSample: 0,
+            lengthSample: documentClipLength(
+              app.documents.find((d) => d.id === documentId)!,
+              sessionRate
+            ),
+          });
+    track.clips = [clip];
     return track;
   });
 
-  const session: Session = {
-    name,
-    sampleRate: output.sampleRate,
-    tracks,
+  commitLanding(plan, tracks, gestureLabel);
+
+  for (const track of tracks) {
+    const doc = app.documents.find((d) => d.id === track.clips[0].documentId);
+    if (doc) warmClipResample(doc, track.clips[0], sessionRate);
+  }
+
+  return {
+    trackIds: tracks.map((t) => t.id),
+    sessionName: useSessionStore.getState().session.name,
+    landingMode: plan.mode,
+    landedStartSample: plan.startSample,
+    rateConverted: plan.rateConverted,
   };
-
-  // Wholesale session replacement, following `openSessionViaDialog`'s apply
-  // block: every transient (selection, cursor, zoom, transport) belonged to the
-  // session that just went away.
-  useSessionStore.setState({
-    session,
-    selectedClipId: null,
-    mtCursorSample: 0,
-    // MT1 (C1): fitted, not the hardcoded 512 — see sessionFile's twin. Landing
-    // stems is how a user MOST often arrives at a long multitrack session, so
-    // this path showed the reported symptom more often than the one it was
-    // filed against.
-    mtZoom: defaultSessionZoom(session),
-    mtPlayState: 'stopped',
-    mtPlayheadSample: 0,
-    // Lot A (M4): a landed stem session is a new, unsaved project — the
-    // `.audm` that was open before is not where these tracks live.
-    projectPath: null,
-  });
-  // R3: stem landing is a LOAD-shaped replacement (this module deliberately
-  // follows openSessionViaDialog's apply block) — it starts a new editing
-  // timeline, so the previous session's undo history is dropped rather than
-  // recorded. Leaving it standing would be worse than either: entries are
-  // whole-state snapshots, so undoing a pre-landing entry would silently
-  // revert the landing itself (the recording invariant in sessionUndo.ts).
-  clearSessionHistory();
-  useAppStore.getState().setView('multitrack');
-
-  return { trackIds: tracks.map((t) => t.id), sessionName: session.name };
 }
 
 /**
@@ -498,7 +604,8 @@ export function landVoice(output: StemSeparationOutput): StemLandingResult {
     output,
     documents.documentIds,
     VOICE_TRACK_LABELS,
-    voiceSessionName(output.sourceName)
+    voiceSessionName(output.sourceName),
+    'Separate Voice'
   );
   return { ...documents, ...session };
 }
@@ -634,10 +741,48 @@ export function landSpeakers(
     output,
     documents.documentIds,
     labels,
-    speakersSessionName(output.sourceName)
+    speakersSessionName(output.sourceName),
+    'Separate Speakers'
   );
   // The verdict `createLandingDocuments` measures is about a PARTITION of the
   // source, which this landing is not (see the docblock): it is overridden to
   // "no claim", never inherited.
   return { ...documents, ...session, exactSumHolds: null };
+}
+
+/**
+ * Lot E (E5 part 4) — keeps the exactness guarantee MEASURABLE once a landing
+ * can share a timeline with the user's other tracks. Mixing down the WHOLE
+ * session no longer isolates what a landing produced (`'in-place'` and
+ * `'appended'` both leave the user's other tracks standing), so this builds a
+ * session holding ONLY the named tracks, every clip and track param reset to
+ * what `landStems`'s own exactness guarantee assumes: `startSample: 0` (so
+ * the landed material lines up for comparison against the source regardless
+ * of where it actually sits on the timeline), `gainDb: 0`, and every track at
+ * `volumeDb: 0, pan: 0, muted: false, solo: false` — the same "every param at
+ * its default" precondition the module header states for the identity to
+ * hold at all.
+ *
+ * In the `'replaced'` arm every track is already at these defaults and
+ * `startSample` is already 0, so the probe is identical to the live session
+ * and every pre-lot-E pin (`mixdownCurrentSession` in this module's own
+ * suite) stays green unchanged.
+ */
+export function landedTracksProbeSession(trackIds: readonly string[]): Session {
+  const session = useSessionStore.getState().session;
+  const byId = new Map(session.tracks.map((t) => [t.id, t]));
+  const tracks: Track[] = [];
+  for (const id of trackIds) {
+    const track = byId.get(id);
+    if (!track) continue;
+    tracks.push({
+      ...track,
+      volumeDb: 0,
+      pan: 0,
+      muted: false,
+      solo: false,
+      clips: track.clips.map((c) => ({ ...c, startSample: 0, gainDb: 0 })),
+    });
+  }
+  return { name: session.name, sampleRate: session.sampleRate, tracks };
 }

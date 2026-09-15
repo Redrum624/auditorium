@@ -8002,8 +8002,19 @@ async function main() {
     console.log(`  separateVoiceLand: ${JSON.stringify(landed)}`);
     assert(landed.ok === true, `the landing ran (${JSON.stringify(landed)})`);
     assert(
-      JSON.stringify(landed.trackNames) === JSON.stringify(['Voice', 'Backing']),
-      `two tracks, Voice first (${JSON.stringify(landed.trackNames)})`
+      JSON.stringify(landed.landedTrackNames) === JSON.stringify(['Voice', 'Backing']),
+      `two tracks, Voice first (${JSON.stringify(landed.landedTrackNames)})`
+    );
+    // Lot E: this step's own tracks (the split/merge/gap block earlier in this
+    // run left clips standing and never called `newSession` since — no
+    // `newSession` between here and line ~4760) mean the open session already
+    // has clips, so E3's gate takes a non-replaced arm. The source document
+    // this step opened was never placed on the timeline, so there is no
+    // anchor clip to land in place of — the landing appends instead.
+    assert(
+      landed.landingMode !== 'replaced',
+      `the open session already has clips, so this landing must not replace it (got ` +
+        `${JSON.stringify(landed.landingMode)})`
     );
     assert(
       JSON.stringify(landed.documentNames) ===
@@ -8116,8 +8127,16 @@ async function main() {
         `(requested ${speakers.requestedSpeakerCount}, assembled ${speakers.speakerCount})`
     );
     assert(
-      JSON.stringify(speakers.trackNames) === JSON.stringify(['Speaker 1', 'Speaker 2', 'Backing']),
-      `three tracks: the speakers in order, Backing LAST (${JSON.stringify(speakers.trackNames)})`
+      JSON.stringify(speakers.landedTrackNames) === JSON.stringify(['Speaker 1', 'Speaker 2', 'Backing']),
+      `three tracks: the speakers in order, Backing LAST (${JSON.stringify(speakers.landedTrackNames)})`
+    );
+    // Lot E: same gate as the voice landing above — the open session already
+    // has clips, and this source document is still never placed on the
+    // timeline, so this landing must append rather than replace.
+    assert(
+      speakers.landingMode !== 'replaced',
+      `the open session already has clips, so this landing must not replace it (got ` +
+        `${JSON.stringify(speakers.landingMode)})`
     );
     assert(
       JSON.stringify(speakers.documentNames) ===

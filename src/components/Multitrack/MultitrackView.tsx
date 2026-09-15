@@ -4,7 +4,7 @@ import { FileDown, FilePlus2, Plus } from 'lucide-react';
 import { GlassButton } from '../UI/glass';
 import { runCommand } from '../../services/menuActions';
 import { useAppStore } from '../../stores/appStore';
-import { publishSessionLaneWidth, useSessionStore } from '../../multitrack/sessionStore';
+import { hasAnyClip, publishSessionLaneWidth, useSessionStore } from '../../multitrack/sessionStore';
 import { sessionLaneWidth } from '../../multitrack/sessionViewport';
 import { snapSample } from '../../services/snap';
 import TimelineRuler from '../Editor/TimelineRuler';
@@ -112,7 +112,7 @@ export default function MultitrackView() {
   const [dragTargetTrackId, setDragTargetTrackId] = useState<string | null>(null);
 
   const docs = new Map(documents.map((d) => [d.id, d]));
-  const hasClips = session.tracks.some((t) => t.clips.length > 0);
+  const hasClips = hasAnyClip(session);
   const hasActiveDoc = activeDocumentId !== null;
 
   const resolveTrackAt = useCallback((clientX: number, clientY: number): string | null => {

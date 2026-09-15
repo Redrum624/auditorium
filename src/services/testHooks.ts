@@ -104,7 +104,7 @@ import {
   type VoiceProgress,
 } from './voiceService';
 import { formatSrt, formatWebVtt } from './subtitleFormat';
-import { landSpeakers, landStems, landVoice } from './stemLanding';
+import { landedTracksProbeSession, landSpeakers, landStems, landVoice } from './stemLanding';
 import type { SampleSpan } from '../dsp/spanMask';
 import {
   assembledFrameCount,
@@ -886,14 +886,20 @@ export interface TranscriptionSummary {
   phasesSeen: string[];
 }
 
-/** D4 — plain-JSON result of the `separateVoiceLand` hook. */
+/** D4 (lot E) — plain-JSON result of the `separateVoiceLand` hook. */
 export interface VoiceLandingSummary {
   /** False when there was no active document, or it held no audio. */
   ok: boolean;
   /** `['<source> — Voice', '<source> — Backing']`, in track order. */
   documentNames: string[];
-  /** The landed session's track names, in order. */
+  /** EVERY track in the landed session, in order — unchanged meaning; a
+   * non-replaced landing leaves the user's other tracks standing beside the
+   * two this hook just landed. */
   trackNames: string[];
+  /** Just the two tracks THIS landing created, in order. */
+  landedTrackNames: string[];
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: string;
   sessionName: string | null;
   sampleRate: number;
   lengthSamples: number;
@@ -905,15 +911,21 @@ export interface VoiceLandingSummary {
   worstAbsError: number | null;
 }
 
-/** D4/D6 — plain-JSON result of the `separateSpeakersLand` hook. */
+/** D4/D6 (lot E) — plain-JSON result of the `separateSpeakersLand` hook. */
 export interface SpeakerLandingSummary {
   /** False when there was no active document, or it held no audio. */
   ok: boolean;
   /** `['<source> — Speaker 1', …, '<source> — Backing']`, in track order —
    * or the two `landVoice` names when one speaker (or none) came out. */
   documentNames: string[];
-  /** The landed session's track names, in order. */
+  /** EVERY track in the landed session, in order — unchanged meaning; a
+   * non-replaced landing leaves the user's other tracks standing beside the
+   * ones this hook just landed. */
   trackNames: string[];
+  /** Just the tracks THIS landing created, in order. */
+  landedTrackNames: string[];
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: string;
   sessionName: string | null;
   /** Speakers the ASSEMBLY produced, which is what landed: `requested` and
    * this differ whenever a cluster fell under the share floor (D3). */
@@ -993,6 +1005,10 @@ export interface StemSeparationSummary {
   message: string | null;
   /** The five stem document names, in track order (Residual last). */
   documentNames: string[];
+  /** Lot E — just the five tracks THIS landing created, in order. */
+  landedTrackNames: string[];
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: string;
   sessionName: string | null;
   lengthSamples: number;
   sampleRate: number;
@@ -1512,6 +1528,16 @@ function channelsPeak(channels: readonly Float32Array[]): number {
     }
   }
   return peak;
+}
+
+/** Lot E — `trackIds` (a landing's own `trackIds`, in track order) resolved to
+ * the live session's current track NAMES, so a caller can tell "the tracks
+ * this landing created" (`landedTrackNames`) apart from "every track in the
+ * session" (`trackNames`, unchanged meaning) without re-deriving the lookup
+ * three times. */
+function landedTrackNames(trackIds: readonly string[]): string[] {
+  const byId = new Map(useSessionStore.getState().session.tracks.map((t) => [t.id, t.name]));
+  return trackIds.map((id) => byId.get(id) ?? '(missing)');
 }
 
 /**
@@ -2782,6 +2808,8 @@ export function installTestHooks(): void {
         ok: false,
         documentNames: [],
         trackNames: [],
+        landedTrackNames: [],
+        landingMode: '',
         sessionName: null,
         sampleRate: 0,
         lengthSamples: 0,
@@ -2820,6 +2848,8 @@ export function installTestHooks(): void {
         ok: true,
         documentNames: landed.map((d) => d?.name ?? '(missing)'),
         trackNames: useSessionStore.getState().session.tracks.map((t) => t.name),
+        landedTrackNames: landedTrackNames(landing.trackIds),
+        landingMode: landing.landingMode,
         sessionName: landing.sessionName,
         sampleRate: source.sampleRate,
         lengthSamples: length,
@@ -2853,6 +2883,8 @@ export function installTestHooks(): void {
         ok: false,
         documentNames: [],
         trackNames: [],
+        landedTrackNames: [],
+        landingMode: '',
         sessionName: null,
         speakerCount: 0,
         requestedSpeakerCount,
@@ -2905,6 +2937,8 @@ export function installTestHooks(): void {
         ok: true,
         documentNames: landed.map((d) => d?.name ?? '(missing)'),
         trackNames: useSessionStore.getState().session.tracks.map((t) => t.name),
+        landedTrackNames: landedTrackNames(landing.trackIds),
+        landingMode: landing.landingMode,
         sessionName: landing.sessionName,
         speakerCount: diarization.speakerCount,
         requestedSpeakerCount,
@@ -2942,6 +2976,8 @@ export function installTestHooks(): void {
         status: 'no-document',
         message: null,
         documentNames: [],
+        landedTrackNames: [],
+        landingMode: '',
         sessionName: null,
         lengthSamples: 0,
         sampleRate: 0,
@@ -2974,6 +3010,8 @@ export function installTestHooks(): void {
         ok: true,
         status: 'ok',
         documentNames: landing.documentIds.map((id) => byId.get(id)?.name ?? '(missing)'),
+        landedTrackNames: landedTrackNames(landing.trackIds),
+        landingMode: landing.landingMode,
         sessionName: landing.sessionName,
         lengthSamples: result.output.lengthSamples,
         sampleRate: result.output.sampleRate,
@@ -2991,7 +3029,11 @@ export function installTestHooks(): void {
       const live = byId.get(sourceId);
       if (!live) return summary;
 
-      const { channels: master } = renderMixdown(useSessionStore.getState().session, byId);
+      // Lot E: mixes only the tracks THIS landing created, through the same
+      // probe the exactness guarantee is now measured over
+      // (`landedTracksProbeSession`) — a whole-session mixdown would also sum
+      // whatever else this landing's arm left standing on the timeline.
+      const { channels: master } = renderMixdown(landedTracksProbeSession(landing.trackIds), byId);
       const length = Math.min(master[0]?.length ?? 0, live.channels[0]?.length ?? 0);
       let worst = 0;
       let peak = 0;

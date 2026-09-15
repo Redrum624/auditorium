@@ -1982,3 +1982,40 @@ describe('lot A (M4): the cover session replaces the project', () => {
     expect(isSessionDirty()).toBe(false);
   });
 });
+
+// ── Lot E (E2 verdict): the cover journey always REPLACES ───────────────────
+/**
+ * decisions.md's E2 table rules this site "RULE DOES NOT APPLY" — CJ-1's own
+ * contract is that the journey BUILDS a session at this stage (the docblock
+ * at `coverJourney.ts:40-52`), so it is always a replacement, never an
+ * in-place/appended landing, regardless of whether the OPEN session already
+ * has clips. These two tests are acceptance items 9 (second half) and 10.
+ */
+describe('lot E — the per-site verdict: the cover journey replaces even when the open session already has clips', () => {
+  it('lands a fresh, named 2-track session over one that already carries a clip at a non-zero start', async () => {
+    const existing = createTrack('Existing');
+    existing.clips = [
+      createClip({ documentId: 'doc-existing', startSample: 4321, offsetSample: 0, lengthSample: 500 }),
+    ];
+    const existingSession: Session = { name: 'My Session', sampleRate: 44100, tracks: [existing] };
+    useSessionStore.setState({ session: existingSession });
+    expect(useSessionStore.getState().session.tracks[0].clips).toHaveLength(1); // precondition
+
+    const report = await runCoverJourney({ songDocId: songId, takeDocId: takeId });
+
+    expect(report!.completed).toBe(true);
+    const session = useSessionStore.getState().session;
+    expect(session.name).toBe(coverSessionName('song'));
+    expect(session.tracks).toHaveLength(2);
+  });
+
+  it('resets mtEnvelope to null — the drift the three sibling copies used to disagree on', async () => {
+    useSessionStore.getState().setMtEnvelope({ trackId: 't1', param: 'volumeDb' });
+    expect(useSessionStore.getState().mtEnvelope).not.toBeNull();
+
+    const report = await runCoverJourney({ songDocId: songId, takeDocId: takeId });
+
+    expect(report!.completed).toBe(true);
+    expect(useSessionStore.getState().mtEnvelope).toBeNull();
+  });
+});

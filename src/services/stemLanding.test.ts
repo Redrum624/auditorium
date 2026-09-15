@@ -20,8 +20,9 @@ import { createDocument, docLength, type AudioDocument } from '../audio/AudioDoc
 import { partitionStems } from '../dsp/stemPartition';
 import { mixdownSession } from '../multitrack/mixdown';
 import { createClip, createTrack } from '../multitrack/session';
+import { placeDocumentsOnTrack } from '../multitrack/sessionInsert';
 import { useSessionStore } from '../multitrack/sessionStore';
-import { canUndoSession, isSessionDirty } from '../multitrack/sessionUndo';
+import { canUndoSession, isSessionDirty, undoSession } from '../multitrack/sessionUndo';
 import { defaultSessionZoom, sessionEndSample } from '../multitrack/sessionZoom';
 import { FALLBACK_SESSION_LANE_WIDTH, _resetSessionLaneWidth } from '../multitrack/sessionViewport';
 import { useAppStore, makeInitialState } from '../stores/appStore';
@@ -41,6 +42,7 @@ import {
   speakersSessionName,
   speakerDocumentBytes,
   SPEAKER_LANDING_BUDGET_BYTES,
+  landedTracksProbeSession,
 } from './stemLanding';
 import { clearBeatGridLinks, _getBeatGridLinkForTest } from './beatGrid';
 import { keepSpans } from '../dsp/spanMask';
@@ -1458,5 +1460,231 @@ describe('D4 exactSumHolds — the field documents BOTH meanings of null', () =>
     // rewritten by the second.
     const voice = landVoice(makeOutput(addSourceDocument(2, 44100, 'Other')));
     expect([voice.exactSumHolds, voice.sourcePeak === null]).toEqual([true, false]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lot E — a landing into a session that already has clips does not replace it
+// ---------------------------------------------------------------------------
+/**
+ * X3: every fixture below plants its source clip on TRACK 2 (index 1), never
+ * track 1, and at a non-zero, non-round `startSample` — a session with one
+ * track and a clip at `start: 0` would pass even a broken landing.
+ */
+
+/** Adds `clip` (documentId/startSample/lengthSample as given, offsetSample 0)
+ * onto `session.tracks[trackIndex]` via a raw, UNRECORDED write — test setup
+ * is a load, not a user act, exactly as `sessionStore.undo.test.ts`'s own
+ * `seedSession` helper. Returns the clip id. */
+function placeClip(
+  trackIndex: number,
+  documentId: string,
+  startSample: number,
+  lengthSample: number,
+  gainDb = 0
+): string {
+  const clip = createClip({ documentId, startSample, offsetSample: 0, lengthSample, gainDb });
+  const tracks = useSessionStore.getState().session.tracks;
+  useSessionStore.setState({
+    session: {
+      ...useSessionStore.getState().session,
+      tracks: tracks.map((t, i) => (i === trackIndex ? { ...t, clips: [...t.clips, clip] } : t)),
+    },
+  });
+  return clip.id;
+}
+
+/** The shared fixture for acceptance items 1 and 2: a foreign clip on track 1
+ * at 132_300, the about-to-be-separated source on track 2 at 220_500 — the
+ * source clip is deliberately NOT on the first track. */
+function seedForeignAndSource(): { source: AudioDocument; sourceClipId: string } {
+  const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+  placeClip(0, foreign.id, 132_300, 2000);
+  const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH);
+  const sourceClipId = placeClip(1, source.id, 220_500, FIXTURE_LENGTH);
+  return { source, sourceClipId };
+}
+
+/** Mixes down ONLY the tracks `landing` created, through the probe E5 part 4
+ * adds — the test-local wrapper the brief's Outputs section names. */
+function mixdownLandedTracks(landing: { trackIds: string[] }) {
+  const docs = new Map(useAppStore.getState().documents.map((d) => [d.id, d]));
+  return mixdownSession(landedTracksProbeSession(landing.trackIds), docs);
+}
+
+describe('lot E acceptance 1/2 — landVoice lands IN PLACE of the source track (FAILS TODAY)', () => {
+  it('leaves the foreign clip standing, removes every clip carrying the source, and lands Voice+Backing at the displaced clip’s own startSample', () => {
+    const { source } = seedForeignAndSource();
+
+    const landing = landVoice(makeOutput(source));
+
+    const tracks = useSessionStore.getState().session.tracks;
+    expect(tracks[0].clips).toHaveLength(1);
+    expect(tracks[0].clips[0].startSample).toBe(132_300);
+    expect(tracks[0].clips[0].documentId).not.toBe(source.id);
+
+    const stillCarriesSource = tracks.some((t) => t.clips.some((c) => c.documentId === source.id));
+    expect(stillCarriesSource).toBe(false);
+
+    const landedClips = tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips).toHaveLength(2); // Voice, Backing
+    for (const c of landedClips) expect(c.startSample).toBe(220_500);
+
+    expect(landing.landingMode).toBe('in-place');
+    expect(landing.landedStartSample).toBe(220_500);
+  });
+
+  it('undo: exactly one undoSession() restores the source clip and removes the landed Voice track; projectPath is untouched', () => {
+    const { source, sourceClipId } = seedForeignAndSource();
+    useSessionStore.getState().setProjectPath('D:\\p.audm');
+
+    landVoice(makeOutput(source));
+
+    expect(useSessionStore.getState().projectPath).toBe('D:\\p.audm');
+    expect(canUndoSession()).toBe(true);
+
+    undoSession();
+
+    const tracks = useSessionStore.getState().session.tracks;
+    const restored = tracks.flatMap((t) => t.clips).find((c) => c.id === sourceClipId);
+    expect(restored).toBeDefined();
+    expect(restored!.startSample).toBe(220_500);
+    expect(tracks.some((t) => t.name === 'Voice')).toBe(false);
+    expect(useSessionStore.getState().projectPath).toBe('D:\\p.audm');
+  });
+});
+
+describe('lot E acceptance 3 — landStems APPENDS when the source document is not on any clip', () => {
+  it('lands 5 new tracks at the end at startSample 0, leaving the foreign clip untouched', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH); // never placed on any clip
+
+    const landing = landStems(makeOutput(source));
+
+    expect(landing.landingMode).toBe('appended');
+    const tracks = useSessionStore.getState().session.tracks;
+    expect(tracks).toHaveLength(9); // 4 seeded + 5
+    for (const id of landing.trackIds) {
+      const track = tracks.find((t) => t.id === id)!;
+      expect(track.clips).toHaveLength(1);
+      expect(track.clips[0].startSample).toBe(0);
+    }
+    expect(tracks[0].clips[0].startSample).toBe(132_300); // untouched
+  });
+});
+
+describe('lot E acceptance 4 — E3: an empty session still replaces wholesale', () => {
+  it('landingMode is "replaced" and every pre-lot-E field is unchanged', () => {
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH);
+
+    const landing = landStems(makeOutput(source));
+
+    expect(landing.landingMode).toBe('replaced');
+    expect(useSessionStore.getState().session.tracks).toHaveLength(5);
+    expect(useSessionStore.getState().projectPath).toBeNull();
+    expect(canUndoSession()).toBe(false);
+    expect(landing.sessionName).toBe(stemSessionName(source.name));
+  });
+});
+
+describe('lot E acceptance 5 — the exactness guarantee stays measurable via landedTracksProbeSession', () => {
+  it('the probe reconstructs the source exactly; the raw session does not, because the landing is not at sample 0 any more', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source = addSourceDocument(2, 44100, 'Song', FIXTURE_LENGTH);
+    placeClip(1, source.id, 220_500, FIXTURE_LENGTH);
+    const sourceCopy = source.channels.map((c) => Float32Array.from(c));
+
+    const landing = landStems(makeOutput(source));
+    expect(landing.landingMode).toBe('in-place'); // precondition — this is the arm under test
+
+    const probeReport = measureIdentity(mixdownLandedTracks(landing), sourceCopy);
+    expect(probeReport.worstAbs).toBe(0);
+
+    // The WHOLE session's mixdown does NOT reproduce the source when compared
+    // the naive way: the landed clip sits at 220_500, not 0 (E4), so the
+    // whole-session mix is not even the same LENGTH as the source any more —
+    // `measureIdentity` requires matching lengths, so a length mismatch here
+    // is itself the proof that a whole-session comparison is not even the
+    // right question, which is precisely why the probe exists.
+    const wholeSessionMix = mixdownCurrentSession();
+    expect(wholeSessionMix.channels[0].length).not.toBe(sourceCopy[0].length);
+  });
+});
+
+describe('lot E acceptance 6 — the mono level (E1 refinement 3)', () => {
+  it('a MONO source subtracts MONO_PAN_COMPENSATION_DB from the inherited clip gain', () => {
+    const monoSource = addSourceDocument(1, 44100, 'MonoSong', FIXTURE_LENGTH);
+    placeClip(1, monoSource.id, 5000, FIXTURE_LENGTH, -4);
+
+    const landing = landStems(makeOutput(monoSource));
+
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    // Pins the constant itself, at the actual float64 value this engine
+    // computes for it (the brief's acceptance text rounds the last digit:
+    // "-7.010299956639812" vs the exact "...98125" below — MONO_PAN_COMPENSATION_DB
+    // is pre-existing and already pinned at full precision by this file's own
+    // "S5 rejected" fixture; this is the same number, not a new one).
+    expect(-4 - MONO_PAN_COMPENSATION_DB).toBe(-7.0102999566398125);
+    for (const c of landedClips) expect(c.gainDb).toBe(-4 - MONO_PAN_COMPENSATION_DB);
+  });
+
+  it('a STEREO source keeps the inherited gain exactly — no compensation', () => {
+    const stereoSource = addSourceDocument(2, 44100, 'StereoSong', FIXTURE_LENGTH);
+    placeClip(1, stereoSource.id, 5000, FIXTURE_LENGTH, -4);
+
+    const landing = landStems(makeOutput(stereoSource));
+
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) expect(c.gainDb).toBe(-4);
+  });
+});
+
+describe('lot E acceptance 7 — E6: sample-rate mismatch is accepted, converted, never refused', () => {
+  it('in-place: the landed clip inherits the anchor’s own already-converted window; the session rate never moves', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000); // a clip already on the session — the E6 fixture's precondition
+    const source48 = addSourceDocument(2, 48000, 'Song48', 48_000);
+    const track2 = useSessionStore.getState().session.tracks[1];
+    const [placed] = placeDocumentsOnTrack([source48], track2.id, 300_000);
+    // Precondition this fixture leans on: the real doc-rate/session-rate
+    // conversion every other placement in this app uses.
+    expect(placed.lengthSample).toBe(44_100);
+
+    const landing = landStems(makeOutput(source48));
+
+    expect(landing.landingMode).toBe('in-place');
+    expect(landing.rateConverted).toBe(true);
+    expect(useSessionStore.getState().session.sampleRate).toBe(44100); // E6: never adopted
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) {
+      expect(c.lengthSample).toBe(44_100);
+      expect(c.offsetSample).toBe(0);
+    }
+  });
+
+  it('appended: the plain doc-rate/session-rate conversion, at the same rates', () => {
+    const foreign = addSourceDocument(2, 44100, 'Foreign', 2000);
+    placeClip(0, foreign.id, 132_300, 2000);
+    const source48 = addSourceDocument(2, 48000, 'Song48', 48_000); // never placed on any clip
+
+    const landing = landStems(makeOutput(source48));
+
+    expect(landing.landingMode).toBe('appended');
+    const landedClips = useSessionStore
+      .getState()
+      .session.tracks.flatMap((t) => t.clips.filter((c) => landing.documentIds.includes(c.documentId)));
+    expect(landedClips.length).toBeGreaterThan(0);
+    for (const c of landedClips) expect(c.lengthSample).toBe(44_100);
   });
 });

@@ -39,6 +39,8 @@ import {
   type Diarization,
   type DiarizationEvidence,
 } from '../../dsp/diarization';
+import { createClip, createTrack } from '../../multitrack/session'; // lot E
+import { useSessionStore } from '../../multitrack/sessionStore'; // lot E
 
 // The RemixDialog.test.tsx / ConvertDialog.test.tsx pattern: everything pure
 // (the label lists, the constants, the formatting) stays REAL via requireActual;
@@ -151,6 +153,12 @@ function makeLanding(overrides: Partial<StemLandingResult> = {}): StemLandingRes
     monoRoutedAsDualMono: false,
     sourcePeak: 0.8,
     exactSumHolds: true,
+    // Lot E: these mocked landings stand in for `landStems`/`landVoice`, which
+    // this dialog no longer reads for the arm — the dialog's own copy comes
+    // from the LIVE `planLanding` selector, not from the landing result.
+    landingMode: 'replaced',
+    landedStartSample: 0,
+    rateConverted: false,
     ...overrides,
   };
 }
@@ -1936,5 +1944,38 @@ describe('SeparateDialog — voice mode (D5, three stages)', () => {
     expect(mockLandStems).toHaveBeenCalledTimes(1);
     expect(mockDiarize).not.toHaveBeenCalled();
     expect(mockLandSpeakers).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lot E (acceptance 11) — the arm-aware copy. `sessionLanding` is deliberately
+// NOT mocked above (only `stemLanding`'s landing calls are): `planLanding` is
+// a handful of array scans, and mocking it would test the mock's return value
+// rather than the live selector `SeparateDialog` reads it through.
+// ---------------------------------------------------------------------------
+describe('lot E — the arm-aware copy', () => {
+  it('with the active document already on a clip in the open session, separate-produces says "in place of" and separate-guarantees adds the mix-down qualifier', async () => {
+    const doc = seedDoc('song.wav', 16 * SR);
+    const track = createTrack('Track 1');
+    track.clips = [
+      createClip({ documentId: doc.id, startSample: 5000, offsetSample: 0, lengthSample: 1000 }),
+    ];
+    useSessionStore.setState({ session: { name: 'My Session', sampleRate: SR, tracks: [track] } });
+
+    await renderSettled();
+
+    expect(screen.getByTestId('separate-produces')).toHaveTextContent('in place of');
+    expect(screen.getByTestId('separate-guarantees')).toHaveTextContent(
+      'Mixing the session down now gives you the whole session'
+    );
+  });
+
+  it('with an empty session, separate-produces still promises a new multitrack session (E3 unchanged)', async () => {
+    seedDoc('song.wav', 16 * SR);
+    useSessionStore.getState().newSession(SR);
+
+    await renderSettled();
+
+    expect(screen.getByTestId('separate-produces')).toHaveTextContent('in a new multitrack session');
   });
 });

@@ -34,7 +34,7 @@ import { invalidateLyricsAlignment } from './alignLyricsService';
 // Lot A (M4): Save is a PROJECT save. No cycle — sessionFile imports the
 // stores, sessionUndo, undoHistory, wavCodec and AudioDocument; none of those
 // import this module.
-import { useSessionStore } from '../multitrack/sessionStore';
+import { hasAnyClip, useSessionStore } from '../multitrack/sessionStore'; // lot E: hasAnyClip
 import { isSessionDirty } from '../multitrack/sessionUndo';
 import { saveProject } from '../multitrack/sessionFile';
 // Lot A (M5): Export in the multitrack view renders the session — the offline
@@ -810,10 +810,7 @@ export function closeNeedsPrompt(doc: AudioDocument): boolean {
 /** True when there is anything to put in a project file: an open document,
  * or a clip on any track. */
 export function projectHasContent(): boolean {
-  return (
-    store().documents.length > 0 ||
-    useSessionStore.getState().session.tracks.some((t) => t.clips.length > 0)
-  );
+  return store().documents.length > 0 || hasAnyClip(useSessionStore.getState().session);
 }
 
 /**

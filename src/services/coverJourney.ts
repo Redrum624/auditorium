@@ -83,12 +83,12 @@ import {
   type Session,
   type Track,
 } from '../multitrack/session';
+import { installSession } from '../multitrack/sessionLanding';
 import { useSessionStore } from '../multitrack/sessionStore';
-import { defaultSessionZoom } from '../multitrack/sessionZoom';
 // V4: the trim's two fader writes are ONE user-visible act, and the fader's
 // legal range is already stated once — in the automation layer, which the
 // mixer strip and the parse boundary both read.
-import { clearSessionHistory, withSessionGesture } from '../multitrack/sessionUndo';
+import { withSessionGesture } from '../multitrack/sessionUndo';
 import { clampAutomationValue, resolveAutomation } from '../multitrack/automation';
 import { useAppStore } from '../stores/appStore';
 import { linkDerivedDocument } from './beatGrid';
@@ -1383,32 +1383,18 @@ export async function runCoverJourney(
       tracks: [instrumentalTrack, takeTrack],
     };
 
-    // The load-shaped replacement `openSessionViaDialog` and `landStems` both
-    // use: every transient belonged to the session that just went away, and the
-    // previous session's undo entries are whole-state snapshots, so undoing one
-    // would silently revert this landing.
-    useSessionStore.setState({
-      session,
-      selectedClipId: null,
-      mtCursorSample: 0,
-      // MT1 (C1): fitted, not the hardcoded 512 — the same ruling as
-      // `sessionFile`, `stemLanding` and the `openSessionFrom` test hook. This
-      // is the FIFTH load-shaped apply and it was written in parallel with that
-      // fix, so it inherited the constant those four had just lost. It matters
-      // most here: a cover session is a whole song plus a take, and 512
-      // samples/px is ~16 s of timeline whatever is on it.
-      mtZoom: defaultSessionZoom(session),
-      mtPlayState: 'stopped',
-      mtPlayheadSample: 0,
-      // Lot A (M4): a cover session is a new, unsaved project.
-      projectPath: null,
-    });
-    // MT1 (I7) deleted `clipWaveformCache` and its eight call sites: clips now
-    // draw straight to the on-screen canvas, so nothing produces an entry and
-    // there is no per-clip bitmap left to strand here. This was the ninth call
-    // site, written in parallel with that deletion.
-    clearSessionHistory();
-    useAppStore.getState().setView('multitrack');
+    // Lot E: the shared REPLACE arm every wholesale session swap now goes
+    // through (`sessionLanding.installSession`) — the load-shaped block
+    // `openSessionViaDialog` and `landStems` both used, consolidated after it
+    // drifted between the three copies (one was missing `mtEnvelope: null`,
+    // stranding a stale open-envelope target). The cover journey's own E2
+    // verdict is "does not apply": CJ-1's contract is that the journey BUILDS
+    // a session at this stage, so it is always a replacement, never an
+    // in-place/appended landing — see `coverJourney.test.ts`'s pin that a
+    // cancelled run leaves the user's session untouched precisely because the
+    // build is deferred to here, not because it appends.
+    // Lot A (M4): a cover session is a new, unsaved project.
+    installSession(session, null);
 
     placement = {
       sessionName: session.name,
