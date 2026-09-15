@@ -293,6 +293,11 @@ export interface TestApi {
   /** D3: reads the selected gap back (`getStateSummary` carries no session
    * selection). */
   getSelectedGap(): TrackGap | null;
+  /** K2/K3: reads the CURRENT track id back — `getStateSummary` carries no
+   * session selection, and lot L's paste target has no other way in for the
+   * harness (no marquee hook exists either; Playwright drags the real lane,
+   * see the brief's own "no marquee hook" ruling). */
+  getCurrentTrack(): string | null;
   /** Join Clips (`multitrack.joinClips`; H1 lot H — renamed from Merge Clips,
    * this hook and `mergeSelectedClips`/`canMergeSelectedClips` keep their
    * names) on the current clip selection, through the menu action itself —
@@ -1983,6 +1988,8 @@ export function installTestHooks(): void {
       // reach into the store (trap T16's argument, one object at a time).
       return gap === null ? null : { ...gap };
     },
+
+    getCurrentTrack: () => useSessionStore.getState().currentTrackId,
 
     // The menu action verbatim (not a re-implementation): one `Join N`
     // document per merged track plus one undo entry, so the smoke asserts the

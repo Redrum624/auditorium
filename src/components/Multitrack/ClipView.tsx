@@ -213,6 +213,7 @@ export default function ClipView({
   const moveClip = useSessionStore((s) => s.moveClip);
   const trimClip = useSessionStore((s) => s.trimClip);
   const setSelectedClip = useSessionStore((s) => s.setSelectedClip);
+  const setCurrentTrack = useSessionStore((s) => s.setCurrentTrack); // K2
   // K1 — the extended selection is read from the STORE here rather than
   // threaded down through MultitrackView and TrackLane as a prop. Two reasons,
   // and the second is the load-bearing one: this component needs the set for
@@ -770,6 +771,12 @@ export default function ClipView({
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    // K2 — pointer contract row 7: a press on a CLIP also marks its track
+    // current, the same rule a background press applies (`TrackLane.tsx`'s
+    // own `onPointerDown`), so a copy-then-paste on the clip just pressed
+    // always has a target, and a group/trim drag that starts on a clip on
+    // another track leaves the mark on the track the pointer is actually on.
+    setCurrentTrack(trackId);
 
     // K1 — WHEN THE SELECTION IS COMMITTED, and why it is not always here.
     //

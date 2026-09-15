@@ -17,6 +17,13 @@ import {
   pixelToSample,
   sampleToPixel,
 } from '../Editor/waveformRender';
+import {
+  clipIdsInSpan,
+  marqueeExceeded,
+  marqueeModeFor,
+  orderedSpan,
+  trackIdsInBand,
+} from './marqueeSelect';
 import { sessionSnapTargets } from './sessionSnapTargets';
 import TrackHeader from './TrackHeader';
 import TrackLane from './TrackLane';
@@ -71,6 +78,14 @@ export default function MultitrackView() {
   const mtPlayheadSample = useSessionStore((s) => s.mtPlayheadSample);
   const setMtCursor = useSessionStore((s) => s.setMtCursor);
   const addTrack = useSessionStore((s) => s.addTrack);
+  // K2/K3 — the CURRENT track, so each row can mark itself.
+  const currentTrackId = useSessionStore((s) => s.currentTrackId);
+  // K1 — the marquee's own writers. Read as actions here (not captured at
+  // gesture start) because the commit reads `selectedClipIds` fresh from
+  // `getState()` at press time instead (K5's `baseIds`).
+  const setSelectedClip = useSessionStore((s) => s.setSelectedClip);
+  const setSelectedClips = useSessionStore((s) => s.setSelectedClips);
+  const setSelectedGap = useSessionStore((s) => s.setSelectedGap);
 
   const documents = useAppStore((s) => s.documents);
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
@@ -174,6 +189,247 @@ export default function MultitrackView() {
   const laneXAtClientX = (clientX: number): number => {
     const rect = overlayRef.current?.getBoundingClientRect() ?? { left: 0 };
     return clientX - rect.left - HEADER_W;
+  };
+
+  // K1 — THE MARQUEE. One gesture record for the whole press, mirroring the
+  // cursor handle's own `handleDragRef` shape above: captured once at
+  // pointerdown, read and cleared at pointerup/cancel, nothing kept in React
+  // state except what must repaint (`marqueeRect`, the drawn rectangle).
+  //
+  // `targetEl` is the element pointer capture was actually taken on (risk 1,
+  // the brief's own hazard) — released against the SAME element, never
+  // `overlayRef`. `anchorSample`/`anchorContentY` are the press position in
+  // SAMPLE and SCROLLER-CONTENT-Y space respectively (not client px), so a
+  // mid-drag zoom, scroll or horizontal pan cannot detach the rectangle from
+  // what it is supposed to be drawn against (risk 8). `anchorClientX/Y` are
+  // kept separately, in raw client px, purely for the THRESHOLD test — CSS
+  // px is what `MARQUEE_DRAG_THRESHOLD_PX` and every sibling drag threshold
+  // on this surface are measured in, and re-deriving px from the sample
+  // anchor would reintroduce the samples/px rounding the threshold must not
+  // see. `baseIds` is the selection as it stood at press time (K5's Ctrl
+  // union base); `deferredClear` is X6's flag — Ctrl or Shift held at press,
+  // committed (or not) at pointerup by `TrackLane`'s own half of this rule.
+  const marqueeRef = useRef<{
+    pointerId: number;
+    targetEl: Element;
+    mode: 'add' | 'replace';
+    anchorSample: number;
+    anchorContentY: number;
+    anchorClientX: number;
+    anchorClientY: number;
+    lastClientX: number;
+    lastClientY: number;
+    baseIds: string[];
+    deferredClear: boolean;
+    exceeded: boolean;
+  } | null>(null);
+  const [marqueeRect, setMarqueeRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  /** The sample a client x lands on, clamped at 0 — the same conversion the
+   * cursor handle uses (`laneXAtClientX` + `pixelToSample`), reused here so
+   * the marquee's horizontal span and the bar's own position agree on one
+   * pixel↔sample mapping. */
+  const marqueeSampleAt = (clientX: number): number =>
+    pixelToSample(Math.max(0, laneXAtClientX(clientX)), mtZoom.scrollSample, mtZoom.samplesPerPixel);
+
+  /** The scroller-content Y for a client y: the inverse of the rectangle's own
+   * `top` arithmetic below, and the SAME transform `anchorContentY` was
+   * captured with at pointerdown, so a live drag and a post-scroll redraw
+   * both read the same coordinate space. */
+  const contentYAt = (clientY: number): number => {
+    const rect = scrollRef.current?.getBoundingClientRect();
+    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    return clientY - (rect?.top ?? 0) + scrollTop;
+  };
+
+  /** The drawn rectangle for a gesture anchored at `rec`'s sample/content-Y,
+   * dragged to `(clientX, clientY)` — one derivation, shared by the live
+   * pointermove handler and the `onScroll` redraw below, so the two can never
+   * draw two different rectangles for the same gesture. Left is clamped at
+   * the lane origin (a drag off the left edge must not paint under the
+   * header column); top/height are in on-screen (viewport) px, converted back
+   * from content-Y by subtracting the CURRENT scrollTop, which is exactly
+   * what makes the scroll handler's redraw track a scroll with no auto-scroll
+   * of its own (K6). */
+  const marqueeRectFor = (
+    rec: { anchorSample: number; anchorContentY: number },
+    clientX: number,
+    clientY: number
+  ): { left: number; top: number; width: number; height: number } => {
+    const span = orderedSpan(rec.anchorSample, marqueeSampleAt(clientX));
+    const rawLeft = HEADER_W + sampleToPixel(span.startSample, mtZoom.scrollSample, mtZoom.samplesPerPixel);
+    const rawRight = HEADER_W + sampleToPixel(span.endSample, mtZoom.scrollSample, mtZoom.samplesPerPixel);
+    const left = Math.max(HEADER_W, rawLeft);
+    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    const contentY = contentYAt(clientY);
+    const yTop = Math.min(rec.anchorContentY, contentY) - scrollTop;
+    const yBottom = Math.max(rec.anchorContentY, contentY) - scrollTop;
+    return { left, top: yTop, width: Math.max(0, rawRight - left), height: Math.max(0, yBottom - yTop) };
+  };
+
+  /** K1/X6 — the capture-phase gate. CAPTURE, not bubble: it must decide
+   * before `TrackLane`'s own bubble `onPointerDown` runs, so `baseIds` below
+   * is the selection as it stood BEFORE that handler's deferred clear, and so
+   * a Shift press can refuse to start a marquee at all (J7) before anything
+   * downstream sees the event.
+   *
+   * The positive target test is mandatory, not defensive (risk 4): several
+   * surfaces under this wrapper bubble a button-0 pointerdown without
+   * stopping it (`mt-cursor-handle`, `TrackHeader`'s Vol/Pan inputs and
+   * rename box), and capturing a marquee under one of THOSE presses would
+   * starve the real gesture of `pointerup` the moment its own capture takes
+   * over. Checking `e.target` here (not `e.currentTarget`, which is always
+   * this wrapper) is what tells a lane/scroller background press apart from
+   * every one of them. */
+  const onOverlayPointerDownCapture = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const isLaneBg = target.dataset.testid === 'track-lane';
+    const isScrollerBg = target === scrollRef.current;
+    if (!isLaneBg && !isScrollerBg) return;
+
+    const mode = marqueeModeFor(e);
+    if (mode === 'range') return; // J7 — Shift is lot J's time-range sweep
+    // (see the pointer contract table); it starts no marquee here, and no
+    // record is written, so TrackLane's own click-away clear (X6) is the
+    // only thing that runs for a sub-threshold Shift press.
+
+    // Pointer capture on `e.target` — the lane or the scroller — and NEVER on
+    // `overlayRef` (the brief's own hazard 1): Chromium retargets the
+    // compatibility mouse events (click/dblclick) to the CAPTURING element,
+    // so capturing on an ancestor would silently move `TrackLane`'s
+    // `onDoubleClick`'s `e.target === e.currentTarget` gap gesture off itself
+    // and kill it with no jsdom test able to see it (jsdom does not
+    // implement the retargeting).
+    target.setPointerCapture?.(e.pointerId);
+
+    const anchorSample = marqueeSampleAt(e.clientX);
+    const anchorContentY = contentYAt(e.clientY);
+    marqueeRef.current = {
+      pointerId: e.pointerId,
+      targetEl: target,
+      mode,
+      anchorSample,
+      anchorContentY,
+      anchorClientX: e.clientX,
+      anchorClientY: e.clientY,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+      baseIds: [...useSessionStore.getState().selectedClipIds],
+      deferredClear: e.ctrlKey || e.shiftKey, // X6 — TrackLane skips its own
+      // clear under the same condition; this half commits it at pointerup.
+      exceeded: false,
+    };
+  };
+
+  const onOverlayPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const rec = marqueeRef.current;
+    if (!rec || e.pointerId !== rec.pointerId) return;
+    rec.lastClientX = e.clientX;
+    rec.lastClientY = e.clientY;
+    if (!rec.exceeded && marqueeExceeded(rec.anchorClientX, rec.anchorClientY, e.clientX, e.clientY)) {
+      rec.exceeded = true;
+    }
+    // Below the threshold, render NOTHING — this is what keeps the gap
+    // double-click's two sub-threshold presses from flashing a rectangle
+    // (risk 3): the first press's pointerup below commits nothing at all
+    // while `!rec.exceeded`, not even an empty selection.
+    if (rec.exceeded) setMarqueeRect(marqueeRectFor(rec, e.clientX, e.clientY));
+  };
+
+  /** K6 — no edge auto-scroll, but a plain (uncaptured) vertical scroll mid-drag
+   * still happens, and the drawn rectangle must track it: `anchorContentY` and
+   * the live content-Y are both scroll-invariant, so re-deriving the ON-SCREEN
+   * rectangle against the CURRENT `scrollTop` is the entire fix. A React prop,
+   * so there is no listener to remove. */
+  const onScrollerScroll = () => {
+    const rec = marqueeRef.current;
+    if (!rec || !rec.exceeded) return;
+    setMarqueeRect(marqueeRectFor(rec, rec.lastClientX, rec.lastClientY));
+  };
+
+  /** The row rects the commit hit-tests against: `scrollRef.current`'s DIRECT
+   * children carrying `data-track-id`, never `querySelectorAll` (risk 7) —
+   * `TrackLane`'s own root ALSO carries that attribute, nested one level
+   * deeper, so an unscoped query would return 2N elements and silently double
+   * the row mapping. Content-Y, the same transform `anchorContentY` uses. */
+  const marqueeRows = (): { id: string; top: number; bottom: number }[] => {
+    const scroller = scrollRef.current;
+    if (!scroller) return [];
+    const scrollerRect = scroller.getBoundingClientRect();
+    const scrollTop = scroller.scrollTop;
+    return Array.from(scroller.children)
+      .filter((el): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute('data-track-id'))
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          id: el.getAttribute('data-track-id') as string,
+          top: r.top - scrollerRect.top + scrollTop,
+          bottom: r.bottom - scrollerRect.top + scrollTop,
+        };
+      });
+  };
+
+  const onOverlayPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const rec = marqueeRef.current;
+    if (!rec || e.pointerId !== rec.pointerId) return;
+    marqueeRef.current = null;
+    setMarqueeRect(null);
+    try {
+      rec.targetEl.releasePointerCapture?.(rec.pointerId);
+    } catch {
+      // Capture may already have been released (lost on blur); ignore — the
+      // same pattern the cursor handle's own release uses above.
+    }
+    if (!rec.exceeded) {
+      // X6 — the deferred clear's other half: a press that never became a
+      // drag is a CLICK, and `TrackLane` already spoke for the current-track
+      // write; all that is left is the clear it skipped when Ctrl/Shift was
+      // held. Nothing else, ever — a sub-threshold release must commit no
+      // selection at all (risk 3), so the gap double-click's first press
+      // stays inert.
+      if (rec.deferredClear) setSelectedClip(null);
+      return;
+    }
+    const rowIds = trackIdsInBand(marqueeRows(), rec.anchorContentY, contentYAt(e.clientY));
+    const span = orderedSpan(rec.anchorSample, marqueeSampleAt(e.clientX));
+    const hits = clipIdsInSpan(session.tracks, rowIds, span.startSample, span.endSample);
+    // The primary ruling (`sessionStore.ts:1406-1409`'s "last id wins" +
+    // `mergeClips.ts:218-226`'s same reordering trick): REVERSED reading
+    // order seats the topmost track's earliest clip as primary. For a Ctrl
+    // union the base ids go first, so the standing primary (already the last
+    // id in `baseIds` by construction) survives the store's own rule and
+    // nothing moves.
+    const reversedHits = [...hits].reverse();
+    setSelectedClips(rec.mode === 'add' ? [...rec.baseIds, ...reversedHits] : reversedHits);
+    // The zero-hit sweep and a standing gap: a committed drag always clears
+    // it (a drag proves the press was not the first half of the gap
+    // double-click), and `setSelectedGap`'s own no-op guard makes this free
+    // when `setSelectedClips` already cleared it via a non-empty hit set.
+    setSelectedGap(null);
+  };
+
+  const onOverlayPointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const rec = marqueeRef.current;
+    if (!rec || e.pointerId !== rec.pointerId) return;
+    marqueeRef.current = null;
+    setMarqueeRect(null);
+    // T1's written precedent (`ClipView.tsx:956-975`): A CANCELLED GESTURE
+    // COMMITS NOTHING. The platform took the gesture away — capture lost on
+    // blur, alt-tab, the OS stealing the pointer — so the press was never
+    // completed and is not a click either; no selection write, no
+    // `deferredClear` commit, just teardown.
+    try {
+      rec.targetEl.releasePointerCapture?.(rec.pointerId);
+    } catch {
+      // Capture may already have been released; ignore.
+    }
   };
 
   /** The editor's `snapped()` shape with the session's pieces: snap the RAW
@@ -355,9 +611,23 @@ export default function MultitrackView() {
         </div>
       </div>
 
-      {/* Lanes + headers (relative wrapper carries the playhead/cursor overlays) */}
-      <div ref={overlayRef} className="relative min-h-0 flex-1 overflow-hidden">
-        <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden">
+      {/* Lanes + headers (relative wrapper carries the playhead/cursor overlays).
+          K1 — the marquee's capture-phase gate and its move/up/cancel triplet
+          live on THIS wrapper (bubble phase for the latter three: the capture
+          target sits inside it, so captured moves/ups still reach it here). */}
+      <div
+        ref={overlayRef}
+        className="relative min-h-0 flex-1 overflow-hidden"
+        onPointerDownCapture={onOverlayPointerDownCapture}
+        onPointerMove={onOverlayPointerMove}
+        onPointerUp={onOverlayPointerUp}
+        onPointerCancel={onOverlayPointerCancel}
+      >
+        <div
+          ref={scrollRef}
+          className="h-full overflow-y-auto overflow-x-hidden"
+          onScroll={onScrollerScroll}
+        >
           {session.tracks.map((track) => (
             <div
               key={track.id}
@@ -391,6 +661,7 @@ export default function MultitrackView() {
                 laneHeight={LANE_H}
                 selectedClipId={selectedClipId}
                 isDragTarget={dragTargetTrackId === track.id}
+                isCurrent={currentTrackId === track.id}
                 resolveTrackAt={resolveTrackAt}
                 onDragOverTrack={setDragTargetTrackId}
               />
@@ -425,6 +696,31 @@ export default function MultitrackView() {
             data-testid="mt-cursor-line"
             className="pointer-events-none absolute top-0 bottom-0 w-px bg-[#d4d4d8]/70"
             style={{ left: cursorX }}
+          />
+        )}
+        {/* K1 — the marquee rectangle. Lives HERE, in the overlay wrapper, and
+            NOT as a child of any one lane: `TrackLane`'s root is
+            `overflow-clip` on purpose (its own V1 docblock), and a rectangle
+            spanning several rows would be clipped at the first lane's box.
+            No `z-index` of its own, so it paints UNDER an open
+            `EnvelopeLane` (z-10) and under the cursor handle (z 20) — both
+            correct and intended: an open envelope owns its lane's pointer
+            events regardless, and the handle must keep winning the press
+            over everything in the lanes. `pointer-events-none`, like the drop
+            ghost: it is drawn feedback for a gesture already owned by the
+            overlay wrapper's own handlers, never a hit target of its own. */}
+        {marqueeRect !== null && (
+          <div
+            data-testid="mt-marquee"
+            className="pointer-events-none absolute"
+            style={{
+              left: marqueeRect.left,
+              top: marqueeRect.top,
+              width: marqueeRect.width,
+              height: marqueeRect.height,
+              backgroundColor: 'var(--accent-soft)',
+              boxShadow: 'inset 0 0 0 1px var(--accent)',
+            }}
           />
         )}
         {/* T7: the cursor's red grab handle, riding the top of the lanes area

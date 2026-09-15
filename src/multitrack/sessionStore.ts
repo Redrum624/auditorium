@@ -75,6 +75,24 @@ export interface SessionState {
    */
   selectedGap: TrackGap | null;
   /**
+   * K2/K3 — the CURRENT track: the one a background click, or a press on any
+   * clip, was most recently made on (`TrackLane.onPointerDown` /
+   * `ClipView.onPointerDown`). Lot L's paste target reads this and nothing
+   * else. `null` means no track has been pressed since the session last
+   * replaced wholesale (or the track it named was removed).
+   *
+   * UI-only state, in the `selectedGap` style (ruling 3): NOT in
+   * `SessionSnapshot`, so an undo/redo neither restores nor steals it, and
+   * NOT on `Session`, so `serializeSession*` never writes it — the `.audm`
+   * byte-identity pins are unaffected by construction.
+   *
+   * Reconciled by the same session subscriber that holds the clip/gap
+   * invariants, for the same reason: `removeTrack`, `newSession`, a `.audm`
+   * load and undo/redo can all remove the track this names, and none of them
+   * runs a per-action fixup of its own.
+   */
+  currentTrackId: string | null;
+  /**
    * G6 (item 7) - the "last cut point" anchor: what `splitClipsAt` cut last,
    * every piece that cut made, and the selection it left standing. `null`
    * when there is nothing to remember - no split yet, or an intervening act
@@ -366,6 +384,13 @@ export interface SessionActions {
    * resolved it through `gapAt` a moment earlier. Records no undo entry: a
    * selection is view state. */
   setSelectedGap(gap: TrackGap | null): void;
+  /** K2/K3 — names the CURRENT track (or clears it with `null`). Ignores an
+   * id no track in the session carries — the set may never hold a dangling
+   * reference, the same discipline `toggleSelectedClip` applies to a clip id.
+   * No-op guard: a background press on the lane that is already current must
+   * not mint a new state object for every subscriber to see. Records no undo
+   * entry: like `selectedGap`, this is view state. */
+  setCurrentTrack(id: string | null): void;
   /** F0 — opens/closes a track's envelope lane (see `mtEnvelope`). */
   setMtEnvelope(v: SessionState['mtEnvelope']): void;
   /** T5 — publishes (or clears, with `null`) the live group-drag preview. The
@@ -859,6 +884,7 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
   selectedClipId: null,
   selectedClipIds: [], // K1
   selectedGap: null, // D3
+  currentTrackId: null, // K2/K3
   lastSplit: null, // G6 (item 7)
   mtCursorSample: 0,
   mtPlayState: 'stopped',
@@ -1559,6 +1585,18 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
     });
   },
 
+  setCurrentTrack(id) {
+    // K2/K3 (pointer contract row 7). The raw setter: `TrackLane` and
+    // `ClipView` always pass a real track id, so the liveness check mostly
+    // guards a future caller rather than a live path — the same asymmetry
+    // `setSelectedClip`'s own docblock names for the clip case.
+    set((s) => {
+      if (id === s.currentTrackId) return s;
+      if (id !== null && !s.session.tracks.some((t) => t.id === id)) return s;
+      return { currentTrackId: id };
+    });
+  },
+
   setMtEnvelope(v) {
     set({ mtEnvelope: v });
   },
@@ -2193,6 +2231,13 @@ useSessionStore.subscribe((s) => {
       // Writes no session, so the re-entry this causes returns at the guard.
       useSessionStore.setState({ selectedGap: null });
     }
+  }
+  // K2/K3 — the CURRENT TRACK is reconciled here too, same argument as the gap
+  // just above: `removeTrack`, `newSession`, a `.audm` load and undo/redo can
+  // all remove the track it names, and none of them runs a per-action fixup.
+  if (s.currentTrackId !== null && !s.session.tracks.some((t) => t.id === s.currentTrackId)) {
+    // Writes no session, so the re-entry this causes returns at the guard.
+    useSessionStore.setState({ currentTrackId: null });
   }
   if (s.selectedClipId === null && s.selectedClipIds.length === 0) return;
   const next = reconcileSelection(s.session, s.selectedClipId, s.selectedClipIds);
