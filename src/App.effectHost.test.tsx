@@ -588,6 +588,10 @@ describe('a pass that finishes while backgrounded lands silently (C-h)', () => {
     expect(screen.getByTestId('sidebar-panel')).toHaveAttribute('data-active-tab', 'markers');
     const badge = screen.getByTestId('module-badge-effects');
     expect(badge).toHaveAttribute('data-running', 'true');
+    // Fix round 3, item 2 — Acceptance 6 (lot-c-brief.md:303-306) names the
+    // TITLE explicitly, not just `data-running`; the idle-badge test already
+    // covers the title's wiring while idle, this is the RUNNING case.
+    expect(stripButton('Effects').title).toContain('Amplify');
 
     await act(async () => {
       finish('committed');
@@ -909,6 +913,93 @@ describe('the mouse stays live during Apply: a document that moved is never writ
     expect(showMessageBox).not.toHaveBeenCalled();
     expect(hasOpenDialog()).toBe(false);
     expect(isPassRunning()).toBe(false);
+  });
+});
+
+/**
+ * Fix round 3, item 1 (coordinator) — the invariant fix round 1's edit #9
+ * actually narrowed, found and re-pinned: `activeDocumentId` can change
+ * while the effect card stays FOREGROUNDED the whole time — not only through
+ * the `setActiveDocument` ACTION my round-2 investigation searched for, but
+ * through `closeDocument` and `addDocument` (`stores/appStore.ts`), which
+ * mutate it directly. Both are reachable through real menu commands
+ * (`file.close`, `file.open`) that touch neither `sidebarTab` nor
+ * `columnHost` — `App.effectHost.test.tsx`'s own "File > Close... raises no
+ * 'document not found' failure" test (above, mid-Apply) proves exactly that
+ * for Apply's stale-hint, but never looked at Preview. This is that missing
+ * proof, modeled on it: same door (`file.close`), same "card never
+ * backgrounds" shape, Preview instead of Apply.
+ */
+describe('a document switch under a live Preview, with the card never backgrounded (fix round 3)', () => {
+  /** A document File > Close can close without a Save prompt (clean, on disk). */
+  function addSavedDoc(name: string) {
+    const doc = createDocument({
+      name,
+      sampleRate: 44100,
+      channels: [new Float32Array(44100)],
+      filePath: `C:/takes/${name}`,
+      neverSaved: false,
+    });
+    act(() => {
+      useAppStore.getState().addDocument(doc);
+    });
+    return doc;
+  }
+
+  it('File > Close ends a live Preview cleanly — no stale "Stop Preview", the engine handed to the document now active', async () => {
+    const a = addSavedDoc('take.wav');
+    const b = addSavedDoc('other.wav');
+    act(() => {
+      useAppStore.getState().setActiveDocument(a.id);
+    });
+    render(<App />);
+    await openTool('effect.amplify');
+    expect(isCommandEnabled('file.close')).toBe(true);
+
+    const stop = jest.spyOn(playbackEngine, 'stop');
+    const load = jest.spyOn(playbackEngine, 'load');
+    try {
+      fireEvent.click(within(host()).getByRole('button', { name: 'Preview' }));
+      expect(within(host()).getByRole('button', { name: 'Stop Preview' })).toBeInTheDocument();
+      stop.mockClear();
+      load.mockClear();
+
+      // The menu's own command; a clean document closes without a prompt.
+      // `file.close`/`closeDocumentFlow` touch neither `sidebarTab` nor
+      // `columnHost` — the card stays FOREGROUNDED throughout.
+      let closing!: Promise<void>;
+      act(() => {
+        closing = runCommand('file.close');
+      });
+      expect(useAppStore.getState().documents.find((d) => d.id === a.id)).toBeUndefined();
+      expect(useAppStore.getState().activeDocumentId).toBe(b.id);
+      expect(host()).not.toHaveAttribute('data-backgrounded');
+
+      // The transport's own load effect (keyed on the store's activeDocumentId)
+      // takes the shared engine for `b` — the card must not still claim a
+      // preview is running.
+      expect(stop).toHaveBeenCalled();
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ id: b.id }));
+      expect(playbackEngine.loadedDocumentId).toBe(b.id);
+      expect(within(host()).getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+      expect(within(host()).queryByRole('button', { name: 'Stop Preview' })).toBeNull();
+
+      await act(async () => {
+        await closing;
+      });
+      expect(showMessageBox).not.toHaveBeenCalled();
+
+      // Pressing it now starts a FRESH preview of the document the user is
+      // now on — never a stop of playback nobody asked to stop.
+      load.mockClear();
+      fireEvent.click(within(host()).getByRole('button', { name: 'Preview' }));
+      expect(within(host()).getByRole('button', { name: 'Stop Preview' })).toBeInTheDocument();
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(load.mock.calls[0][0].id).not.toBe(b.id);
+    } finally {
+      stop.mockRestore();
+      load.mockRestore();
+    }
   });
 });
 
