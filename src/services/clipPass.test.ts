@@ -8,6 +8,7 @@ import { useAppStore, makeInitialState } from '../stores/appStore';
 import {
   beginClipWork,
   clipPassTarget,
+  clipWorkTargetId,
   endClipWork,
   EFFECT_CARD_WORK_ID,
   _resetClipWork,
@@ -148,16 +149,22 @@ it('acceptance 4 (D6): one undoSession restores the clip to its original source 
   expect(canUndoSession()).toBe(true);
   undoSession();
 
-  const restored = useSessionStore
-    .getState()
-    .session.tracks.flatMap((t) => t.clips)
-    .find((c) => c.id === clipA.id);
+  const clips = useSessionStore.getState().session.tracks.flatMap((t) => t.clips);
+  const restored = clips.find((c) => c.id === clipA.id);
   expect(restored).toBeDefined();
   expect(restored!.documentId).toBe(source.id);
   expect(restored!.offsetSample).toBe(CLIP_OFFSET);
   expect(restored!.lengthSample).toBe(CLIP_LENGTH);
   expect(restored!.startSample).toBe(CLIP_START);
   expect(restored!.gainDb).toBe(CLIP_GAIN_DB);
+  // Fix round 1 (finding 3) — without `withSessionGesture` around
+  // `addClip`+`removeClip`, each pushes its OWN entry (two, not one), and one
+  // `undoSession()` would only pop the most recent ("Remove clip"), leaving
+  // BOTH the restored original clip AND the still-repointed `next` clip
+  // (`documentId === work.id`) in the track simultaneously. The four field
+  // checks above pass either way (clip A comes back regardless), so this is
+  // the assertion that actually falls when the gesture wrap is removed.
+  expect(clips.some((c) => c.documentId === work.id)).toBe(false);
 });
 
 // Acceptance 5 (D5)
@@ -170,6 +177,12 @@ it('acceptance 5 (D5): a second clip on the same source document is unaffected',
     lengthSample: 60_000,
   });
   useSessionStore.getState().addClip(trackId, clipB);
+  // Fix round 1 (finding 4) — D5's real hazard is B's AUDIO, which B does not
+  // own (it is a window into `source`'s channels): B's own metadata fields
+  // never move regardless of what this lot does, so the load-bearing check is
+  // that `source` itself — what B actually reads at render/mixdown — is the
+  // one thing D5 forbids writing. Captured here, matching acceptance 1.
+  const sourceChannelsBefore = source.channels[0];
 
   beginClipWork(EFFECT_CARD_WORK_ID); // still targets clip A — B was never selected
   const work = findWorkDoc(source.id);
@@ -177,6 +190,9 @@ it('acceptance 5 (D5): a second clip on the same source document is unaffected',
     ...work,
     channels: [new Float32Array(30_000), new Float32Array(30_000)],
   });
+
+  const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+  expect(sourceNow.channels[0]).toBe(sourceChannelsBefore); // same reference — B's audio is intact
 
   const b = useSessionStore
     .getState()
@@ -248,4 +264,107 @@ it('acceptance 7: release — endClipWork stops the subscription from firing', (
     channels: [new Float32Array(3), new Float32Array(3)],
   });
   expect(watched!).toHaveBeenCalledTimes(1); // one call TOTAL after — unchanged
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1 — the CRITICAL/HIGH findings: per-kind slot ownership, and the
+// drift-safe discard that keeps a watcher-triggered close from fighting
+// whatever already moved `activeDocumentId` on. See lot-d-report.md's
+// "Fix round 1" section for the full reproduction and the `activeDocumentId`
+// writer enumeration; the App-level half of the fix (the drift watcher that
+// actually closes a stale host) is pinned in App.effectHost.test.tsx instead
+// — this file can only see clipPass.ts's own half of the contract.
+// ---------------------------------------------------------------------------
+
+// Acceptance-2-adjacent (X3) — `clipPassTarget()`'s fourth refusal, the one
+// branch with no coverage anywhere else in this lot (fix round 1, finding 8).
+it('clipPassTarget: empty-window when the clip reads nothing from its (still open) source', () => {
+  const { source, trackId } = setupClipFixture();
+  // Offset sits exactly at the end of the 240_000-sample source: the
+  // resolved window clamps to [240_000, 240_000) — empty, not merely short.
+  const clip = createClip({
+    documentId: source.id,
+    startSample: 500_000,
+    offsetSample: SOURCE_LEN,
+    lengthSample: 1_000,
+  });
+  useSessionStore.getState().addClip(trackId, clip);
+  useSessionStore.getState().setSelectedClips([clip.id]);
+
+  expect(clipPassTarget()).toBe('empty-window');
+});
+
+// Fix round 1 (CRITICAL) — the per-kind ownership half of the fix: opening a
+// SECOND, unrelated tool must never discard the effect card's own slot (the
+// exact mechanism the reviewer's reproduction used — `edit.transcribe` is not
+// a `CLIP_WORK_COMMANDS` member, so it mints nothing of its own, and the
+// single-slot design's unconditional `endClipWork()` used to discard the
+// effect's slot anyway).
+it("fix round 1 (CRITICAL): opening an unrelated tool does not discard the effect card's slot", () => {
+  const { source } = setupClipFixture();
+
+  beginClipWork(EFFECT_CARD_WORK_ID);
+  const effectTarget = clipWorkTargetId('effect');
+  expect(effectTarget).not.toBeNull();
+  expect(effectTarget).not.toBe(source.id);
+
+  // 'edit.transcribe' is not a CLIP_WORK_COMMANDS member and mints nothing —
+  // exactly the reviewer's reproduction's step 3.
+  beginClipWork('edit.transcribe');
+
+  expect(clipWorkTargetId('tool')).toBeNull(); // nothing minted for the tool kind
+  expect(clipWorkTargetId('effect')).toBe(effectTarget); // UNTOUCHED
+  // The working document itself is still open and active — proof this is not
+  // merely "the id string survived", the actual document is intact.
+  expect(useAppStore.getState().documents.some((d) => d.id === effectTarget)).toBe(true);
+});
+
+// Fix round 1 (CRITICAL) — the symmetric case: opening the effect card must
+// never discard an already-open TOOL slot either.
+it("fix round 1 (CRITICAL): opening the effect card does not discard a retained tool's slot", () => {
+  setupClipFixture();
+
+  beginClipWork('tempo.match');
+  const toolTarget = clipWorkTargetId('tool');
+  expect(toolTarget).not.toBeNull();
+
+  beginClipWork(EFFECT_CARD_WORK_ID);
+
+  expect(clipWorkTargetId('tool')).toBe(toolTarget); // UNTOUCHED
+  expect(clipWorkTargetId('effect')).not.toBeNull();
+  expect(clipWorkTargetId('effect')).not.toBe(toolTarget);
+});
+
+// Fix round 1 (HIGH) — the drift-safe discard: `endClipWork` must not FIGHT
+// an `activeDocumentId` some OTHER writer already moved on its own (the
+// watcher's own call arrives exactly in this state). Simulates "any writer"
+// generically (`setActiveDocument`, standing in for FilesPanel/
+// primeMultitrackDocTarget/a landing/etc. — see the enumeration in the
+// report) rather than one specific call site.
+it('fix round 1 (HIGH): a drifted discard closes the orphaned working copy without restoring over the new active document', () => {
+  const { source } = setupClipFixture();
+  const other = createDocument({
+    name: 'Other.wav',
+    sampleRate: SOURCE_SR,
+    channels: [new Float32Array(1000)],
+  });
+  useAppStore.getState().addDocument(other); // becomes active momentarily
+  useAppStore.getState().setView('multitrack'); // addDocument doesn't touch view
+
+  beginClipWork(EFFECT_CARD_WORK_ID);
+  const workId = clipWorkTargetId('effect')!;
+  expect(useAppStore.getState().activeDocumentId).toBe(workId);
+
+  // Something else (any of the enumerated writers) redirects the active
+  // document away from the working copy WITHOUT going through clipPass.ts.
+  useAppStore.getState().setActiveDocument(other.id);
+
+  endClipWork('effect'); // the watcher's own call, in this exact state
+
+  const app = useAppStore.getState();
+  // The orphaned working copy is gone...
+  expect(app.documents.some((d) => d.id === workId)).toBe(false);
+  // ...but the drift is NOT fought: `other` stays active, not `source`
+  // (the slot's captured restore point) and not reverted at all.
+  expect(app.activeDocumentId).toBe(other.id);
 });

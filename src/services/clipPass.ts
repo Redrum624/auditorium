@@ -25,6 +25,20 @@
 // document edit itself lives on the working document's own (separate) undo
 // stack, reachable from Waveform on that document — never a cross-stack
 // entry, per `menuActions.ts`'s "the two stacks never interleave".
+//
+// Fix round 1 (CRITICAL/HIGH) — TWO independent slots, keyed by host KIND
+// ('tool' | 'effect'), matching `App.tsx`'s C5 `hostedTool`/`hostedEffect`
+// EXACTLY rather than the single global slot this module shipped with. The
+// single-slot design let opening ANY tool (even one that itself never mints a
+// working copy, e.g. `edit.transcribe`) discard a DIFFERENT, still-mounted
+// host's uncommitted working copy — while that host stayed retained (lot C's
+// C1/C2) and fully appliable, with its Apply button silently landing on
+// whatever document `endClipWork`'s discard reactivated. See
+// `lot-d-report.md`'s "Fix round 1" section for the full reproduction, the
+// `activeDocumentId` writer enumeration, and why a per-kind slot plus the
+// `App.tsx` drift watcher (`clipWorkTargetId`) closes it — this module cannot
+// close it alone, because the vulnerable state is "a MOUNTED dialog whose
+// Apply reads the live active document", and only `App.tsx` can unmount it.
 import { cloneRegion, createDocument, nextId, type AudioDocument } from '../audio/AudioDocument';
 import {
   clampFadePair,
@@ -144,6 +158,19 @@ export const CLIP_WORK_COMMANDS: ReadonlySet<string> = new Set([
  * `openEffect` calls `beginClipWork` with this constant instead. */
 export const EFFECT_CARD_WORK_ID = 'effect.card';
 
+/** Fix round 1 — the two independent slots, matching `App.tsx`'s
+ * `hostedTool`/`hostedEffect` (C5). `commandId === EFFECT_CARD_WORK_ID` is
+ * the ONLY thing that ever opens the `'effect'` kind; every other id
+ * `beginClipWork` is ever called with is the `'tool'` kind, whether or not it
+ * is a `CLIP_WORK_COMMANDS` member (a non-member still REPLACES whatever
+ * `hostedTool` was showing, per C5's single-tool-slot shape, so its slot must
+ * still release — just never the effect's). */
+export type ClipWorkKind = 'tool' | 'effect';
+
+function kindOf(commandId: string): ClipWorkKind {
+  return commandId === EFFECT_CARD_WORK_ID ? 'effect' : 'tool';
+}
+
 interface ClipWorkSlot {
   commandId: string;
   clipId: string;
@@ -158,23 +185,40 @@ interface ClipWorkSlot {
   /** The working document's `channels` reference at the last observation —
    * an audio edit (and ONLY an audio edit) replaces this array, never a
    * metadata write (`markDirty`, a rename) — same identity key
-   * `EffectDialog.tsx`/`tempoService.ts` already read for "did this actually
+   * `EffectDialog.tsx`/`tempoService.ts` already use for "did this actually
    * change the audio". */
   lastChannels: Float32Array[];
   unsubscribe: () => void;
 }
 
-/** Single module-level slot — matching the "at most one retained X" shape
- * this codebase already uses for a hosted card (`App.tsx`'s C5). Scoped to
- * the WORKING COPY specifically, narrower than C5's two independent
- * `hostedTool`/`hostedEffect` slots: only one clip-scoped working document can
- * be the live active document at a time (there is only one `activeDocumentId`
- * at all), so only one can be "in flight" regardless of how many hosted cards
- * are retained. Opening a second clip-scoped tool/effect while one is already
- * open discards the first's uncommitted working copy — see this lot's report
- * for the evidence that the pass lock (M1) makes this unreachable while
- * either is actually RUNNING; only two idle/retained hosts can collide. */
-let slot: ClipWorkSlot | null = null;
+let toolSlot: ClipWorkSlot | null = null;
+let effectSlot: ClipWorkSlot | null = null;
+
+function slotFor(kind: ClipWorkKind): ClipWorkSlot | null {
+  return kind === 'tool' ? toolSlot : effectSlot;
+}
+
+function setSlotFor(kind: ClipWorkKind, next: ClipWorkSlot | null): void {
+  if (kind === 'tool') toolSlot = next;
+  else effectSlot = next;
+}
+
+/**
+ * Fix round 1 — the non-reactive read `App.tsx`'s drift watcher polls: the
+ * live working-document id a still-open slot of this kind wants to be the
+ * active document, or `null` when this kind has no open slot at all (either
+ * it never minted one — the ordinary case for every command outside
+ * multitrack, or a `CLIP_WORK_COMMANDS`/effect-card open with no valid clip
+ * target — or its own host already closed it). `App.tsx` compares this
+ * against the live `activeDocumentId`: ANY writer of that field other than
+ * this module's own (`beginClipWork`'s mint, `endClipWork`'s restore) — see
+ * `lot-d-report.md`'s enumeration — can drift it away from a slot's target
+ * while the slot's own host stays mounted and appliable, and this is the one
+ * signal that lets `App.tsx` close that host before a stale Apply can fire.
+ */
+export function clipWorkTargetId(kind: ClipWorkKind): string | null {
+  return slotFor(kind)?.workDocId ?? null;
+}
 
 /**
  * Re-points the clip at the working document once it has actually been
@@ -191,9 +235,10 @@ let slot: ClipWorkSlot | null = null;
  * skipped" skip rule) does nothing but mark the slot committed, exactly as
  * `mergeClips.ts:185-187` documents for the analogous case.
  */
-function repointClip(): void {
-  if (!slot) return;
-  const { clipId, workDocId } = slot;
+function repointClip(kind: ClipWorkKind): void {
+  const current = slotFor(kind);
+  if (!current) return;
+  const { clipId, workDocId } = current;
 
   const session = useSessionStore.getState().session;
   let old: Clip | null = null;
@@ -208,7 +253,7 @@ function repointClip(): void {
   }
   const workDoc = useAppStore.getState().documents.find((d) => d.id === workDocId) ?? null;
   if (!old || trackId === null || !workDoc) {
-    slot.committed = true;
+    current.committed = true;
     return;
   }
 
@@ -232,15 +277,20 @@ function repointClip(): void {
   });
   useSessionStore.getState().setSelectedClips([next.id]);
 
-  slot.committed = true;
+  current.committed = true;
 }
 
 /**
  * Opens a clip-scoped working copy for `commandId`, or does nothing beyond
- * releasing whatever was open before.
+ * releasing whatever was open before **of the SAME kind**.
  *
- * (1) `endClipWork()` first, unconditionally — a new slot never opens on top
- * of a stale one (matches C5's "opening one replaces the retained one").
+ * (1) `endClipWork(kindOf(commandId))` first, unconditionally — a new slot
+ * never opens on top of a stale one OF ITS OWN KIND (matches C5's "opening
+ * one replaces the retained one" — `hostedTool` and `hostedEffect` are each
+ * single-valued, so a NEW tool always replaces whatever tool was retained,
+ * and a NEW effect always replaces whatever effect was retained, but the two
+ * kinds never replace each other — fix round 1 closes the CRITICAL cross-kind
+ * discard the single-slot design had).
  * (2) Returns unless `commandId` is one of `CLIP_WORK_COMMANDS` or the effect
  * card's id AND `clipPassTarget()` actually resolves a target — a call from
  * Waveform/Spectral, or from multitrack with no valid clip, mints nothing.
@@ -253,9 +303,14 @@ function repointClip(): void {
  * no runner edited.
  * (5) Subscribes to the working document's `channels` identity and re-points
  * the clip the moment it changes.
+ *
+ * What this function does NOT do (fix round 1): re-assert that the target is
+ * STILL live at the moment of Apply. That is `App.tsx`'s drift watcher's job
+ * (`clipWorkTargetId`) — this module cannot unmount a dialog, only React can.
  */
 export function beginClipWork(commandId: string): void {
-  endClipWork();
+  const kind = kindOf(commandId);
+  endClipWork(kind);
 
   if (!CLIP_WORK_COMMANDS.has(commandId) && commandId !== EFFECT_CARD_WORK_ID) return;
   const target = clipPassTarget();
@@ -291,58 +346,82 @@ export function beginClipWork(commandId: string): void {
     const cur = useAppStore.getState().documents.find((d) => d.id === workDocId);
     if (!cur || cur.channels === newSlot.lastChannels) return;
     newSlot.lastChannels = cur.channels;
-    repointClip();
+    repointClip(kind);
   });
-  slot = newSlot;
+  setSlotFor(kind, newSlot);
 }
 
 /**
- * Releases the current clip-work slot, if any — the single release point
- * (Risk 1): `beginClipWork`'s leading call, `App.tsx`'s `closeTool`/
- * `closeEffect`, and the App-level unmount safety net all call this, and
- * every one of the three is safe to call with no slot open.
+ * Releases a clip-work slot — the single release point per kind (Risk 1):
+ * `beginClipWork`'s leading call (same kind only, fix round 1), `App.tsx`'s
+ * `closeTool` (`'tool'`) / `closeEffect` (`'effect'`) / drift watcher (either,
+ * on a stale target), and the App-level unmount safety net (both, via the
+ * no-argument overload) all call this, and every one of them is safe to call
+ * with no slot open.
  *
  * Unsubscribes FIRST, unconditionally, so a throw below can never strand the
- * listener. An uncommitted slot (the card was dismissed without applying)
- * discards the working document and restores the four captured fields —
- * `setActiveDocument` only when the original document is still open (closing
- * the working copy already re-activated SOME document by index,
- * `appStore.ts`'s `closeDocument`, and re-activating a document that no
- * longer exists would be a no-op fighting nothing); `setSelection`/
- * `setCursor`/`setZoom` run regardless, because both `closeDocument`'s own
- * re-activation AND a `setActiveDocument` call apply `activationReset`
- * (selection null, cursor 0, default zoom), either of which would otherwise
- * stand in place of the selection the user actually left.
+ * listener. An uncommitted slot (the card was dismissed without applying, OR
+ * `App.tsx`'s drift watcher is closing an orphaned one) discards the working
+ * document.
+ *
+ * Fix round 1 — the restore of the four captured view fields is now GATED on
+ * `stillLive`: `activeDocumentId` still naming THIS slot's own working
+ * document at the moment this runs. A normal close (the card's own ✕) is
+ * always `stillLive` (nothing else has touched `activeDocumentId` since this
+ * slot opened), so acceptance 6's restore is unaffected. A DRIFTED close
+ * (the watcher calling this because something else already redirected
+ * `activeDocumentId` elsewhere — a Files-panel row, `primeMultitrackDocTarget`,
+ * a landing, any of the writers enumerated in `lot-d-report.md`) is NOT
+ * `stillLive`: restoring here would fight whatever legitimately took over,
+ * so the working document is simply closed (harmless — `closeDocument` on a
+ * document that is not the active one touches nothing else) and the active
+ * document/selection/cursor/zoom are left exactly as the drift's own cause
+ * set them.
  */
-export function endClipWork(): void {
-  if (!slot) return;
-  const s = slot;
-  s.unsubscribe();
-  slot = null;
-
-  if (!s.committed) {
-    useAppStore.getState().closeDocument(s.workDocId);
-    const app = useAppStore.getState();
-    if (s.restore.activeDocumentId !== null && app.documents.some((d) => d.id === s.restore.activeDocumentId)) {
-      app.setActiveDocument(s.restore.activeDocumentId);
-    }
-    const cur = useAppStore.getState();
-    cur.setSelection(s.restore.selection);
-    cur.setCursor(s.restore.cursorSample);
-    cur.setZoom(s.restore.zoom);
+export function endClipWork(kind?: ClipWorkKind): void {
+  if (kind === undefined) {
+    endClipWork('tool');
+    endClipWork('effect');
+    return;
   }
+  const current = slotFor(kind);
+  if (!current) return;
+  current.unsubscribe();
+  setSlotFor(kind, null);
+
+  if (current.committed) return;
+
+  const stillLive = useAppStore.getState().activeDocumentId === current.workDocId;
+  useAppStore.getState().closeDocument(current.workDocId);
+  if (!stillLive) return;
+
+  const app = useAppStore.getState();
+  if (
+    current.restore.activeDocumentId !== null &&
+    app.documents.some((d) => d.id === current.restore.activeDocumentId)
+  ) {
+    app.setActiveDocument(current.restore.activeDocumentId);
+  }
+  const cur = useAppStore.getState();
+  cur.setSelection(current.restore.selection);
+  cur.setCursor(current.restore.cursorSample);
+  cur.setZoom(current.restore.zoom);
 }
 
-/** Test-only: drops the module slot without performing `endClipWork`'s store
- * side effects (no document close, no restore) — mirrors `_resetSessionUndo`'s
- * "reset module state" framing, scoped to THIS module's own bookkeeping
- * rather than to the app/session stores a shared test fixture may already be
- * resetting in its own `beforeEach`. Unsubscribes first, same as
- * `endClipWork`, so a suite that leaves a slot open never hands the next test
- * a stray listener. */
+/** Test-only: drops both module slots without performing `endClipWork`'s
+ * store side effects (no document close, no restore) — mirrors
+ * `_resetSessionUndo`'s "reset module state" framing, scoped to THIS module's
+ * own bookkeeping rather than to the app/session stores a shared test fixture
+ * may already be resetting in its own `beforeEach`. Unsubscribes first, same
+ * as `endClipWork`, so a suite that leaves a slot open never hands the next
+ * test a stray listener. */
 export function _resetClipWork(): void {
-  if (slot) {
-    slot.unsubscribe();
-    slot = null;
+  if (toolSlot) {
+    toolSlot.unsubscribe();
+    toolSlot = null;
+  }
+  if (effectSlot) {
+    effectSlot.unsubscribe();
+    effectSlot = null;
   }
 }

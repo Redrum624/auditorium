@@ -12,7 +12,7 @@ import {
   type TempoEntry,
   type RemixAnalysis,
 } from '../../services/tempoAnalysis';
-import { runCommand } from '../../services/menuActions';
+import { multitrackToolDoc, runCommand } from '../../services/menuActions';
 
 jest.mock('../../services/tempoAnalysis', () => ({
   getTempo: jest.fn(() => null),
@@ -31,6 +31,15 @@ jest.mock('../../services/menuActions', () => ({
   // before; the lock-specific case gets its own test below.
   isCommandEnabled: jest.fn(() => true),
   commandReason: jest.fn(() => null),
+  // Lot D fix round 1 (finding 5): the card's own document resolver. Every
+  // fixture below runs in the default (waveform) view, so mirroring D1's
+  // unchanged non-multitrack arm — the active document — keeps every
+  // existing assertion here reading exactly what it read before this lot;
+  // the multitrack-aware case gets its own test below.
+  multitrackToolDoc: jest.fn(
+    (s: { documents: { id: string }[]; activeDocumentId: string | null }) =>
+      s.documents.find((d) => d.id === s.activeDocumentId) ?? null
+  ),
 }));
 
 const mockGetTempo = getTempo as jest.MockedFunction<typeof getTempo>;
@@ -39,6 +48,7 @@ const mockRegridTempo = regridTempo as jest.MockedFunction<typeof regridTempo>;
 const mockIsTempoRunning = isTempoRunning as jest.MockedFunction<typeof isTempoRunning>;
 const mockRunTempoAnalysis = runTempoAnalysis as jest.MockedFunction<typeof runTempoAnalysis>;
 const mockRunCommand = runCommand as jest.MockedFunction<typeof runCommand>;
+const mockMultitrackToolDoc = multitrackToolDoc as jest.MockedFunction<typeof multitrackToolDoc>;
 void useTempoVersion; // imported only so the mock factory's shape stays type-checked
 
 function makeTempoEntry(overrides: Partial<TempoEntry> = {}): TempoEntry {
@@ -255,5 +265,38 @@ describe('TempoCard — chips', () => {
     expect(screen.getByRole('button', { name: 'Double tempo' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Halve tempo' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Re-detect tempo' })).toBeDisabled();
+  });
+});
+
+// Lot D fix round 1 (finding 5) — the card must show whichever document
+// `tempo.detect` would actually analyse (`multitrackToolDoc`), not merely the
+// active one: with a clip selected in multitrack, those two can differ (the
+// active document is whatever was last active before switching views, or a
+// freshly landed stem), and "Re-detect tempo on this document" must not lie.
+describe('TempoCard — follows multitrackToolDoc, not the raw active document (fix round 1, finding 5)', () => {
+  it('reads the resolved multitrack target rather than activeDocumentId when they differ', () => {
+    const active = addDoc();
+    const clipSource = createDocument({
+      name: 'clip-source.wav',
+      sampleRate: 44100,
+      channels: [new Float32Array(44100)],
+    });
+    useAppStore.getState().addDocument(clipSource);
+    useAppStore.getState().setActiveDocument(active.id); // active !== clipSource
+
+    const entry = makeTempoEntry();
+    mockGetTempo.mockImplementation((d: AudioDocument) => (d.id === clipSource.id ? entry : null));
+    // Simulates `clipPassTarget()` resolving the SELECTED CLIP's source
+    // document (`clipSource`), independent of whichever document is merely
+    // active (`active`) — exactly the multitrack divergence this fix closes.
+    mockMultitrackToolDoc.mockReturnValue(clipSource);
+
+    render(<TempoCard />);
+
+    // The card renders (it found an entry) precisely because it asked
+    // `multitrackToolDoc`, not `activeDocumentId`, for its document.
+    expect(screen.getByTestId('tempo-card-readout')).toHaveTextContent('♩ 128.4 · conf 0.72');
+    expect(mockGetTempo).toHaveBeenCalledWith(clipSource);
+    expect(mockGetTempo).not.toHaveBeenCalledWith(active);
   });
 });

@@ -6,7 +6,7 @@ import { useSessionStore } from '../multitrack/sessionStore';
 import { createClip } from '../multitrack/session';
 import { createDocument, type AudioDocument } from '../audio/AudioDocument';
 import { _resetSessionUndo } from '../multitrack/sessionUndo';
-import { _resetPassLock } from './passLock';
+import { _resetPassLock, acquirePass } from './passLock';
 
 /**
  * Lot D (item 4), acceptance 8-9 — the registry-level refusals (D2/D2-a, D3,
@@ -171,5 +171,82 @@ describe('clipPassReason — the exact strings', () => {
     );
     expect(clipPassReason('empty-window')).toBe('This clip reads nothing from its source file.');
     expect(clipPassReason('not-multitrack')).toBeUndefined();
+  });
+});
+
+// Fix round 1 (finding 9) — the reason PRECEDENCE (`pipelineReason` composing
+// `passReason() ?? passTargetReason(s)`) had no test naming both conditions
+// at once. In multitrack with NO clip selected (a real target reason exists)
+// AND a different pass already holding the lock (a real busy reason exists
+// too), the busy reason must win — it is the more urgent, app-wide fact.
+describe('reason precedence (fix round 1, finding 9): a running pass outranks a missing target', () => {
+  beforeEach(() => {
+    useAppStore.setState(makeInitialState());
+    useSessionStore.getState().newSession(SR);
+    useSessionStore.getState().setProjectPath(null);
+    _resetSessionUndo();
+    _resetPassLock();
+  });
+
+  it('shows the busy reason, not the D2 target reason, when both conditions hold', () => {
+    openDoc();
+    useAppStore.getState().setView('multitrack');
+    useSessionStore.getState().addTrack();
+    // No clip selected — passTargetReason() alone would name D2's string.
+
+    const release = acquirePass({ id: 'edit.remix', label: 'Auto-Remix', kind: 'pipeline' });
+    expect(release).not.toBeNull();
+
+    expect(isCommandEnabled('effects.vocalChain')).toBe(false);
+    const reason = commandReason('effects.vocalChain');
+    expect(reason).toContain('Auto-Remix');
+    expect(reason).not.toContain('Select a clip');
+
+    release!();
+  });
+
+  // `noise.capture` is the one row this lot deliberately EXCLUDES from the
+  // composition (M-d: never gated on the pass lock) — its reason must stay
+  // the pure target reason even while an unrelated pass runs, or the row
+  // would misattribute its OWN (unrelated) disablement to the lock.
+  it('noise.capture keeps the pure target reason even while a different pass runs', () => {
+    openDoc();
+    useAppStore.getState().setView('multitrack');
+    useSessionStore.getState().addTrack();
+
+    const release = acquirePass({ id: 'edit.remix', label: 'Auto-Remix', kind: 'pipeline' });
+
+    // noise.capture is not gated on the lock at all — still enabled/disabled
+    // purely by whether it has a target, unaffected by the running pass.
+    expect(isCommandEnabled('noise.capture')).toBe(false);
+    expect(commandReason('noise.capture')).toBe(
+      'Select a clip to run this on it, or switch to Waveform to run it on the whole file.'
+    );
+
+    release!();
+  });
+});
+
+// Fix round 1 (finding 9) — pins the deliberate deviation from the brief's
+// literal `effects.coverChain` predicate (report §7): `passFree()` is KEPT,
+// so a running pass still refuses Cover Chain even outside multitrack, where
+// D1's own multitrack refusal does not apply.
+describe('effects.coverChain keeps the pass-lock gate (fix round 1, finding 9)', () => {
+  beforeEach(() => {
+    useAppStore.setState(makeInitialState());
+    _resetPassLock();
+  });
+
+  it('is disabled and names the running pass, in waveform, with an active document', () => {
+    openDoc();
+    expect(isCommandEnabled('effects.coverChain')).toBe(true);
+
+    const release = acquirePass({ id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' });
+
+    expect(isCommandEnabled('effects.coverChain')).toBe(false);
+    expect(commandReason('effects.coverChain')).toContain('Detect Tempo');
+
+    release!();
+    expect(isCommandEnabled('effects.coverChain')).toBe(true);
   });
 });

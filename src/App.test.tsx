@@ -12,6 +12,8 @@ import { createClip } from './multitrack/session';
 import { runCommand } from './services/menuActions';
 import { getRemixSession } from './services/remixService';
 import { focusTranscriptPanel } from './services/dialogBus';
+import { _resetClipWork, clipWorkTargetId } from './services/clipPass';
+import { _resetPassLock } from './services/passLock';
 // U2: the strip registry's own answers, so these tests assert the RULE (Files
 // leads, History trails) rather than a second copy of today's roster.
 import { DEFAULT_PANEL, stripTabs } from './components/Layout/ModuleStrip';
@@ -62,6 +64,8 @@ beforeEach(() => {
   useSessionStore.getState().newSession(44100);
   useSessionStore.getState().setProjectPath(null);
   _resetSessionUndo();
+  _resetPassLock();
+  _resetClipWork();
   delete (window as { electronAPI?: unknown }).electronAPI;
   mockGetInFlightSaveCount.mockReturnValue(0);
   mockIsProjectSaveInFlight.mockReturnValue(false);
@@ -741,5 +745,102 @@ describe('the window drop guard is about Files, and only Files (F11)', () => {
     unmount();
 
     expect(dispatch('drop', ['Files']).defaultPrevented).toBe(false);
+  });
+});
+
+/**
+ * Lot D fix round 1 (CRITICAL/HIGH) — the drift watcher, at the React level
+ * `clipPass.test.ts` cannot reach (that file pins the per-kind slot
+ * ownership half of the fix; this is the half that actually unmounts a
+ * stale host). The reviewer's reproduction: an effect card mints a working
+ * copy in multitrack, then something ELSE (any of the writers enumerated in
+ * `lot-d-report.md`'s "Fix round 1" section — a Files-panel row,
+ * `primeMultitrackDocTarget` priming a different command, a landing) moves
+ * `activeDocumentId` away from it WHILE the card stays mounted and
+ * retained (lot C's C1/C2). Simulated here with a direct `setActiveDocument`
+ * call rather than one specific R16 dialog, because the watcher's whole
+ * point is that it does not matter which writer caused the drift.
+ */
+describe('the clip-work drift watcher closes a stale host before Apply can reach it (lot D, fix round 1)', () => {
+  function setupMultitrackClip() {
+    const source = createDocument({
+      name: 'source.wav',
+      sampleRate: 44100,
+      channels: [new Float32Array(44100)],
+    });
+    act(() => {
+      useAppStore.getState().addDocument(source);
+      useAppStore.getState().setView('multitrack');
+      useSessionStore.getState().addTrack();
+    });
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: source.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    act(() => {
+      useSessionStore.getState().addClip(trackId, clip);
+      useSessionStore.getState().setSelectedClips([clip.id]);
+    });
+    return source;
+  }
+
+  it('closes the retained effect card and never lets Apply reach the source document', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+
+    const workId = useAppStore.getState().activeDocumentId;
+    expect(workId).not.toBe(source.id);
+    expect(clipWorkTargetId('effect')).toBe(workId);
+
+    // The drift: some OTHER writer moves the active document away from the
+    // working copy while the card is still mounted and idle (not running —
+    // M1 never fires here).
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    // The card is gone — a stale Apply is unreachable.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(clipWorkTargetId('effect')).toBeNull();
+
+    // And the source document itself was never written.
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+    // The orphaned working copy does not leak either.
+    expect(useAppStore.getState().documents.some((d) => d.id === workId)).toBe(false);
+  });
+
+  it('does not fire for an ordinary single-document effect card outside multitrack', () => {
+    const doc = createDocument({ name: 'a.wav', sampleRate: 44100, channels: [new Float32Array(100)] });
+    act(() => {
+      useAppStore.getState().addDocument(doc);
+    });
+
+    render(<App />);
+    act(() => {
+      // Synchronous — `effect.amplify`'s run() is `openEffectDialog`, no await needed.
+      void runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+
+    const other = createDocument({ name: 'b.wav', sampleRate: 44100, channels: [new Float32Array(100)] });
+    act(() => {
+      useAppStore.getState().addDocument(other); // an ordinary document switch
+    });
+
+    // No clip-work slot was ever opened (not multitrack) — the watcher must
+    // not close a perfectly ordinary card just because the active document
+    // changed, which is the whole reason EffectDialog stays open across a
+    // Files-panel switch today.
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
   });
 });

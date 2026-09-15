@@ -253,8 +253,16 @@ function pipelineReason(s: AppState): string | undefined {
  * never clip-aware before this lot, and D2-a did not ask them to start
  * refusing on a selection they cannot act on anyway). Outside multitrack,
  * identical to today: the active document, D1's arm unchanged.
+ *
+ * Fix round 1 (finding 5) — also `tempo.detect`'s own document resolution
+ * (folded into this shared function rather than a duplicate inline copy) and
+ * `TempoCard.tsx`'s: that card used to show the ACTIVE document's tempo entry
+ * unconditionally, which drifted from what a multitrack `tempo.detect` click
+ * would actually analyse the moment R16 wiring landed — a stale-parallel-
+ * variable defect (the exact class lot M spent a round removing). Exported so
+ * both can read the same answer to "which document does tempo.detect mean".
  */
-function multitrackToolDoc(s: AppState): AudioDocument | null {
+export function multitrackToolDoc(s: AppState): AudioDocument | null {
   if (s.view === 'multitrack') {
     const target = clipPassTarget();
     if (typeof target !== 'string') return target.doc;
@@ -271,8 +279,17 @@ function multitrackToolDoc(s: AppState): AudioDocument | null {
  * the user selected rather than whatever was active before. A no-op outside
  * multitrack or with no resolvable clip target — see `multitrackToolDoc`'s
  * docblock for when that is.
+ *
+ * Fix round 1 (finding 6) — exported so `TranscriptPanel.tsx`'s two
+ * "Transcribe again…" buttons can call it too. Those bypass the command
+ * registry entirely (`openTranscribeDialog()` directly — lot M's own report
+ * names this "the one surviving registry bypass", kept deliberately for
+ * `App.tsx`'s `refuseWhileRunning` defence in depth), so without this they
+ * never got R16's wiring: in multitrack they would open the dialog against
+ * whatever was merely active, the exact wrong-document defect R16 exists to
+ * close for the other five doors.
  */
-function primeMultitrackDocTarget(): void {
+export function primeMultitrackDocTarget(): void {
   const target = clipPassTarget();
   if (typeof target === 'string') return;
   const app = useAppStore.getState();
@@ -1690,8 +1707,7 @@ function registerTempoCommands(): void {
         // keyed by doc id): it needs the right document and no working copy.
         // Multitrack reads the selected clip's own SOURCE document, not a
         // copy — analysing the source is exactly what should be cached.
-        const t = clipPassTarget();
-        const d = typeof t === 'string' ? activeDoc(useAppStore.getState()) : t.doc;
+        const d = multitrackToolDoc(useAppStore.getState());
         if (!d) return;
         // Lot M: `tempo.detect` runs with no hosted card behind it (no
         // dialog, no `moduleLock`), so it is one of the three bodies that

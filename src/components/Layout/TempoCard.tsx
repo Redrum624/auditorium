@@ -8,8 +8,9 @@ import {
   regridTempo,
   useTempoVersion,
 } from '../../services/tempoAnalysis';
-import { commandReason, isCommandEnabled, runCommand } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, multitrackToolDoc, runCommand } from '../../services/menuActions';
 import { usePassLock } from '../../services/passLock';
+import { useSessionStore } from '../../multitrack/sessionStore';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { clusterColor, meterLabel, structureRuns } from '../../utils/structureStrip';
 import { GlassCard } from '../UI/glass';
@@ -77,7 +78,17 @@ export default function TempoCard() {
   // Lot M: same reason, for the app-wide pass lock — called unconditionally,
   // ahead of the early `return null` below, like every other hook here.
   usePassLock();
-  const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
+  // Fix round 1 (finding 5) — this card must show the SAME document
+  // `tempo.detect` would actually analyse, or "Re-detect"/"this document" is
+  // a stale-parallel-variable lie the moment a clip is selected in
+  // multitrack. `multitrackToolDoc` is the shared resolver `tempo.detect`'s
+  // own run body reads; its multitrack arm reads the session store
+  // (`clipPassTarget()`), which the `useAppStore` selector below cannot see
+  // on its own — the same freshness gap `PipelinePanel.tsx`/`EffectsPanel.tsx`
+  // close with these same two selectors.
+  useSessionStore((s) => s.session);
+  useSessionStore((s) => s.selectedClipIds);
+  const doc = useAppStore((s) => multitrackToolDoc(s));
   const [correctionFailed, setCorrectionFailed] = useState(false);
 
   // A different document is a different grid — a failure note must not carry

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { X } from 'lucide-react';
 import WaveformView from './components/Editor/WaveformView';
 import SpectrogramView from './components/Editor/SpectrogramView';
@@ -74,7 +74,7 @@ import { installTestHooks } from './services/testHooks';
 // `openEffect` open a slot (only when the command actually qualifies —
 // `beginClipWork` is itself the no-op gate); `closeTool`/`closeEffect` and the
 // App-unmount safety net below release it. See `clipPass.ts`'s own docblock.
-import { beginClipWork, endClipWork, EFFECT_CARD_WORK_ID } from './services/clipPass';
+import { beginClipWork, clipWorkTargetId, endClipWork, EFFECT_CARD_WORK_ID } from './services/clipPass';
 // ---- /lot D ----
 import { multitrackRecorder } from './multitrack/multitrackRecord';
 import { stopAll } from './services/transportService';
@@ -382,10 +382,12 @@ export default function App() {
     setHostedTool(null);
     // Lot C: only clear the column when THIS host owned it.
     setColumnHost((c) => (c === 'tool' ? null : c));
-    // Lot D (item 4) — the tool's own dismissal releases its clip-work slot,
+    // Lot D (item 4, fix round 1) — the tool's own dismissal releases its
+    // OWN clip-work slot only ('tool' — never 'effect'; the cross-kind
+    // discard this used to do was the CRITICAL bug fix round 1 closed),
     // discarding an uncommitted working copy and restoring the view state it
     // captured (a no-op when this tool never opened one).
-    endClipWork();
+    endClipWork('tool');
   }, []);
 
   /**
@@ -579,8 +581,9 @@ export default function App() {
     // Lot C: only clear the column when THIS host owned it — `openTool` may
     // already have taken over by the time this runs.
     setColumnHost((c) => (c === 'effect' ? null : c));
-    // Lot D (item 4) — see `closeTool`'s identical comment.
-    endClipWork();
+    // Lot D (item 4, fix round 1) — see `closeTool`'s identical comment;
+    // 'effect' only.
+    endClipWork('effect');
   }, []);
   // ---- lot C ----
   // Item 3 (C-i, fix round 1) — the orphan rule, now covering BOTH retained
@@ -589,12 +592,57 @@ export default function App() {
   // `columnHost` resets. One document closing while another becomes active
   // keeps them — the dialogs resolve the live active document at Apply,
   // exactly as the modal era did.
+  //
+  // Lot D fix round 1 (Risk 1 / review finding 7) — routed through
+  // `closeEffect()`/`closeTool()` rather than the raw `setHostedEffect(null)`/
+  // `setHostedTool(null)` this used to call: those are the ONLY functions
+  // that also release a clip-work slot (`endClipWork`), and this is a real,
+  // reachable release seam — the last open document closing while a
+  // multitrack clip-work slot sits uncommitted strands its working document
+  // (and its store subscription) forever otherwise. Safe against the
+  // existing mid-Apply orphan tests: `stillLive` is false here in every case
+  // that matters (there is no active document at all, `null` can never equal
+  // a slot's `workDocId`), so `endClipWork` never attempts a restore that
+  // would fight this effect's own `setColumnHost(null)` below, and the pass
+  // lock release these two functions also perform is idempotent with
+  // `DialogShell`'s own unmount cleanup (`onModuleLockChange(false)`) — same
+  // tick, same target, calling it twice is exactly what `acquirePass`'s
+  // release closure is documented to tolerate.
   useEffect(() => {
     if (activeDocumentId !== null) return;
-    if (hostedEffect !== null) setHostedEffect(null);
-    if (hostedTool !== null) setHostedTool(null);
+    if (hostedEffect !== null) closeEffect();
+    if (hostedTool !== null) closeTool();
     setColumnHost(null);
-  }, [hostedEffect, hostedTool, activeDocumentId]);
+  }, [hostedEffect, hostedTool, activeDocumentId, closeEffect, closeTool]);
+
+  // Lot D fix round 1 (CRITICAL/HIGH) — the drift watcher. A clip-work slot
+  // names the ONE document its host may safely Apply to; `activeDocumentId`
+  // has many writers besides this module's own mint/restore (enumerated in
+  // `lot-d-report.md`'s "Fix round 1" section: `FilesPanel.tsx`'s row click,
+  // `primeMultitrackDocTarget` priming a DIFFERENT command's target,
+  // `showEditorView`, every landing, every computed-document mint, the cover
+  // chain's own re-activation, the test hooks). None of them knows or should
+  // have to know that a retained host's Apply depends on which document is
+  // live. `useLayoutEffect` (not `useEffect`): the close must land before the
+  // browser paints a frame where the stale card is still visibly clickable —
+  // this runs synchronously after the SAME commit that changed
+  // `activeDocumentId`, closing the door before a user could ever reach it.
+  //
+  // `clipWorkTargetId(kind)` is `null` whenever this kind has no open slot at
+  // all (the ordinary case: most commands never mint one), so this is a
+  // true no-op for every ordinary single-document edit — it only fires once
+  // a slot exists AND the live active document no longer matches it.
+  useLayoutEffect(() => {
+    if (hostedEffect === null) return;
+    const targetId = clipWorkTargetId('effect');
+    if (targetId !== null && targetId !== activeDocumentId) closeEffect();
+  }, [hostedEffect, activeDocumentId, closeEffect]);
+
+  useLayoutEffect(() => {
+    if (hostedTool === null) return;
+    const targetId = clipWorkTargetId('tool');
+    if (targetId !== null && targetId !== activeDocumentId) closeTool();
+  }, [hostedTool, activeDocumentId, closeTool]);
   // ---- /lot C ----
   // ---- /lot B ----
 
