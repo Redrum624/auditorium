@@ -2409,10 +2409,16 @@ starting at or after the gap's end moves left by the gap's length, in one
   single `{ trackId, startSample, endSample }`. There is no way to select the
   same stretch of time across several tracks and close it everywhere, and
   closing one lane's gap moves nothing in any other lane — "localized" is the
-  feature, not a shortfall of it. The multi-track version of this verb is
-  `Edit → Ripple Delete Time Selection`, which is greyed everywhere because
-  this app has no gesture for selecting a stretch of *time* in the multitrack
-  view (see the note in `menuActions.ts`).
+  feature, not a shortfall of it. This is unrelated to the multitrack time
+  range added since (`Shift`+drag a lane, see `USER_GUIDE.md`'s *Selecting a
+  stretch of time*) — that range drives Trim/Silence, not Close Gap, and does
+  not touch this per-gap model at all. The multi-track version of the
+  *ripple* verb, `Edit → Ripple Delete Time Selection`, is still greyed
+  everywhere, but no longer for lack of a gesture: the range now exists, and
+  what is still missing is the ripple's own scope and shift rules (which
+  tracks shift when clips are removed from all of them, and whether a track
+  the range never touches should shift too — see the note in
+  `menuActions.ts`).
 - **No keyboard shortcut selects a gap.** The pointer is the only way in. A key
   would have to guess which gap the user meant — there is no "current" gap the
   way there is a current clip — so none is bound, and `KEYBOARD_SHORTCUTS.md`
@@ -2437,9 +2443,13 @@ starting at or after the gap's end moves left by the gap's length, in one
   clip selection, and one selection on screen at a time outranks leaving the
   band where it was.
 
-**Intended behavior:** unchanged for all five in v1. A time-range selection
-spanning tracks is the feature that would subsume the first two, and it is not
-in this version.
+**Intended behavior:** unchanged for all five — the multitrack time-range
+selection shipped since this was written (`Shift`+drag a lane), but it is a
+*different* band from `selectedGap` and does not subsume Close Gap or either
+of the first two boundaries above. It does carry the non-rippling equivalent
+of the second boundary's absent verb (Trim/Silence act on the range with no
+keyboard gesture needed to place it), and it is what unblocks — without yet
+specifying — `Edit → Ripple Delete Time Selection`, which stays disabled.
 
 ## Voice + Backing reconstruct the source within float32 rounding, not bit-for-bit
 
@@ -2615,3 +2625,59 @@ above and its follow-up.
 **Intended behavior:** an oversampled true-peak limiter and the surround weights
 are both real features and neither is in this version. Until they are, the
 numbers are named for what they actually measure.
+
+## A mixed-rate clip's right edge drifts slightly on a range that crosses it twice
+
+**Area:** multitrack Trim/Silence on a mixed-rate clip
+(`src/multitrack/sessionStore.ts` `trimClip`/`splitClip`/`silenceClipsInRange`,
+item 10 / lot J)
+
+**Current behavior:** `offsetSample` indexes a clip's SOURCE document, at that
+document's own sample rate. `splitClip` knows this and converts a split point
+through `docRateOf`'s ratio before advancing it (its own comment names the
+reason: `readClipSlice` would otherwise read the wrong source samples).
+`trimClip`'s own edge-adjustment does not: it advances `offsetSample` by a raw
+SESSION-sample delta, correct only when the clip's source document shares the
+session's sample rate. This is pre-existing and was byte-identical at this
+batch's merge base — no one had reached it on a mixed-rate clip before. Lot J's
+multitrack Trim and Silence now can, on a clip whose swept range crosses BOTH
+its start and its end (Silence: split at the range's start, then
+`trimClip('start', …)` carves the surviving piece back to the range's end).
+The split step converts correctly; the follow-up `trimClip` step does not, so
+the final `offsetSample` is off by the un-converted remainder of that second
+step's delta. `menuActions.mtTrim.test.ts`'s "converts a mixed-rate spanning
+clip's right half" test pins the CURRENT (partially inconsistent) output
+rather than a value verified correct against the source document — see that
+test's own comment.
+
+**Intended behavior:** `trimClip` should convert its own edge delta through the
+same `docRateOf` ratio `splitClip` already uses, on both edges. Not fixed in
+this batch: it is a real behaviour change to a function four other call sites
+share (`ClipView.tsx`'s drag-trim, `mergeClips`/`clipEdges` sizing, and the
+range-crossing paths above), and none of those call sites currently have a
+`docRate` to pass it — plumbing one through is more than a documentation pass.
+
+## The quit guard does not consult the app-wide pass lock
+
+**Area:** the native close/quit guard (`src/App.tsx`'s `onCloseRequested`
+handler, `src/services/passLock.ts`)
+
+**Current behavior:** quitting the app asks each of several PER-SERVICE busy
+counters — `getInFlightSaveCount`, `isProjectSaveInFlight`,
+`getStemBusyCount`, `getTranscribeBusyCount`, `getDiarizeBusyCount`,
+`getVoiceBusyCount`, `getAlignBusyCount` — and only warns about work in
+flight if one of THOSE says so. Item 13's app-wide pass lock
+(`src/services/passLock.ts`, `isPassRunning()`) is the one place that can
+actually answer "is anything running" for every pass kind — an effect Apply,
+a hosted pipeline tool, a Mix Down, `tempo.detect` — but the quit guard was
+never wired to it, so it is exactly the "five parallel flags" shape
+`passLock.ts`'s own docblock was written to replace, still standing at the
+one remaining door. An effect Apply or a tempo/regrid worker running when the
+window closes reports a busy count of 0 to the native Quit/Cancel prompt, so
+the app can quit silently while that work is discarded mid-flight.
+
+**Intended behavior:** the busy count passed to `respondCloseRequest` should
+OR in `isPassRunning()`. Not fixed in this batch: recorded here rather than
+folded into the lock-sweep fixes above because it changes the native
+close-guard contract (`electron/closeGuard.cjs`) rather than a single UI
+control, and deserves its own verification pass across a real quit.

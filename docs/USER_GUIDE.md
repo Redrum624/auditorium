@@ -84,7 +84,27 @@ versus merely sitting there idle, so you always know where the work went.
 Clicking that icon again brings the tool back exactly as you left it, or as
 far as it has progressed. A first click on the tool's own already-active
 strip entry backgrounds it and reveals the chooser list underneath (the
-Pipeline card, or the Effects rack); a second click closes the card outright.
+Pipeline card, or the Effects rack); a second click hides that sidebar panel
+entirely — nothing is shown in that column. It does **not** discard whatever
+was retained: a backgrounded tool or effect keeps its dot and its state
+exactly as before, and clicking the module's icon again reopens the panel,
+either back at the chooser list or straight to the retained card, whichever
+was showing.
+
+**In the multitrack view, this dual retention has one exception.** A tool
+card and an effect card opened **on a selected clip** both work from a copy
+of that clip's source, mint fresh each time they open. Opening the second
+kind while the first is still retained — an effect card while a tool is
+backgrounded, or a tool while an effect card is backgrounded — silently
+**discards** the backgrounded one instead of keeping it beside the new one:
+its dot disappears, and anything you had typed into it is gone, not merely
+hidden. This happens in both orders and is deliberate, not a bug: neither
+card re-checks which clip it was opened for before running, so keeping a
+stale one around and reachable would risk it writing to the wrong place the
+moment a pipeline tool or effect that does not touch a clip at all made
+some other document active. Outside the multitrack view, backgrounding
+still works exactly as described above — a tool and an effect card left
+open in the waveform or spectral view both stay retained, independently.
 
 **A running pass no longer blocks anything except starting a second one.**
 Switching module, switching view, editing the waveform, and every keyboard
@@ -274,6 +294,18 @@ the whole point of the rule above.
 
 The position line is not part of the undo history: moving it is a view change,
 not an edit, and `Ctrl+Z` will not bring it back.
+
+**The viewport follows the playhead during playback.** Zoomed in, the moving
+playhead used to run off the right edge of the screen; now, the moment it
+would leave the visible window, the view scrolls so the playhead lands back
+at the **left edge** and playback keeps going without a stutter — the same
+thing happens in reverse if playback starts (or a loop wraps to) a point left
+of the visible window. Scrolling or zooming yourself while it plays
+**suspends** the follow until the playhead is back inside the window, so you
+can still look around during playback; it resumes on its own once the
+playhead catches up. This works the same way in the waveform, spectral and
+multitrack views, is always on, and only ever moves the viewport — it never
+moves the position line or the multitrack cursor itself.
 
 ### Split / Cut / Copy / Paste / Delete
 
@@ -1413,9 +1445,13 @@ To split a song into drums, bass, vocals and everything else:
      named `<name> — Stems`, one document per track: `<name> — Drums`,
      `— Bass`, `— Vocals`, `— Other`, `— Residual`.
    - **The file you separated is already on a track in your open session** —
-     the five tracks land **in its place**: the original track is removed
-     and the five take over its exact position on the timeline. Everything
-     else in the session is untouched.
+     the five tracks land **in its place**: at the position of the first clip
+     that plays this file, taking over its track. **Every clip anywhere in
+     the session that plays this same file is removed**, not only the one
+     you started from — and any track left with no clips at all once those
+     are gone is removed too. A second placement of the same file elsewhere
+     in the session does not survive the separation; tracks and clips that
+     play a *different* file are the only ones left untouched.
    - **It isn't on any track** — the five tracks are **appended** to the end
      of your open session instead. Nothing already there is removed.
 
@@ -1852,6 +1888,14 @@ otherwise.
   its source, is refused too** — *"This clip's source file is closed. Reopen
   it to run this."* / *"This clip reads nothing from its source file."* —
   rather than silently running on the wrong document.
+- **Capture Noise Print and Detect Tempo join this same clip-scoped target
+  in the multitrack view** — neither opens a card, so neither mints a
+  working copy, but both need exactly one clip selected there, same as
+  everything else on this list. In waveform/spectral the two still differ
+  from each other exactly as before this rule existed: Capture Noise Print
+  needs an actual **selection** (a snippet of pure noise to learn from), and
+  Detect Tempo needs only an **open document** — no selection required,
+  since it always analyses the file's whole length.
 
 <!-- K1: clip selection, edge navigation, ripple delete -->
 ### Selecting clips, walking the edges, and ripple delete
@@ -1875,11 +1919,16 @@ entirely (see *Selecting a stretch of time*, below).
 
 **The current track.** Every track has a *current* one, marked with a
 lighter lane background, and it is where the next **Paste** lands (see
-*Copying and pasting clips*, below). A **click** — a press that never
-becomes a drag — on any visible part of a track's background, on its header,
-or on one of its clips makes that track current, whichever track the press
-actually landed on. There is deliberately no hover highlight: only a genuine
-press sets it, never just passing the pointer over a lane.
+*Copying and pasting clips*, below). It is set on **press** — the instant a
+button-0 pointer goes down, unconditionally, on any visible part of a
+track's background, on its header (outside the header's own buttons and
+fields — pressing Mute, Solo, the volume slider or the name box does not
+change it), or on one of its clips — whichever track the press landed on.
+This fires **before** any drag threshold, so **a marquee drag also sets the
+current track**, to wherever it started, not only a press that stays a
+click: rubber-banding across several tracks still leaves Paste targeting the
+lane you first pressed on. There is deliberately no hover highlight: only a
+genuine press sets it, never just passing the pointer over a lane.
 
 **`Shift+Click`** extends the selection from the primary (below) to the clip you
 click, taking **every clip between them on that track**, in timeline order. It
@@ -1983,11 +2032,16 @@ the same result.
 
 `Ctrl+C` copies the selected clip(s); `Ctrl+V` pastes them **to the right of
 the bar** (`mtCursorSample`), on the **current track** — see *the current
-track*, above — preserving their relative track and start offsets, so a
-group copied across three tracks pastes as the same three-track shape.
-Copied fades come along with the clips.
+track*, above — preserving their relative track and start offsets **when
+there is room**: a group copied across three tracks keeps its three-track
+shape only if the current track has at least two tracks below it. Paste
+never creates a track or refuses for lack of one — it **clamps** each
+entry to the last track instead, so pasting a three-track group with the
+current track set to the last one stacks all three clips onto that single
+lane, overlapping, which arms crossfades between them exactly as dragging
+them there would. Copied fades come along with the clips.
 
-- **No current track:** Paste is disabled — *"click a track's background to
+- **No current track:** Paste is disabled — *"click a track’s background to
   choose where the clips land"* — and the clipboard keeps its contents; a
   click on any track's background sets one (see above).
 - **One clipboard, two shapes.** Copying clips in the multitrack view and
@@ -2032,7 +2086,11 @@ A sliver left over from a boundary crossing — under 32 samples, the same
 floor Split uses — is dropped rather than kept at that floor.
 
 Both are scoped to **the selected clips' tracks**, or to every track when
-nothing is selected — the same scope rule Split uses. A standing time range
+nothing is selected. That is deliberately **not** the same rule Split uses,
+which greys out instead of widening when nothing is selected (see *Splitting
+clips*, below) — two rules that differ on purpose do not share one resolver.
+With nothing selected, `T` or `S` acts on **every track**, so trimming or
+silencing with no clip selected is not a no-op the way Split is. A standing time range
 and a standing clip selection are **not** mutually exclusive (the range says
 *which time*, the selection says *which tracks*): sweeping a range does not
 clear a clip selection, and selecting a clip does not clear a standing

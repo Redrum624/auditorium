@@ -59,10 +59,11 @@ pipeline pass runs at a time, app-wide.
   `src/components/Layout/EditToolbar.tsx`.
 - **Rubber-band multi-select and a marked current track in the multitrack
   view.** Press-and-drag on a track's background selects every clip the
-  rectangle touches (`Ctrl` unions with the standing selection); a click
-  that never becomes a drag, on any visible part of a track's background
-  or on one of its clips, makes that track the **current track**, marked
-  with a lighter lane background — where the next paste lands. Affects:
+  rectangle touches (`Ctrl` unions with the standing selection); any
+  press — on any visible part of a track's background, its header, or one
+  of its clips, including the press that starts a marquee drag — makes
+  that track the **current track**, marked with a lighter lane
+  background — where the next paste lands. Affects:
   `src/components/Multitrack/marqueeSelect.ts` (new),
   `src/components/Multitrack/MultitrackView.tsx`,
   `src/components/Multitrack/TrackLane.tsx`,

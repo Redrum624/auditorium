@@ -191,7 +191,7 @@ here.
 | Convert Sample Rate… / Convert Channels… | Edit menu |
 | Insert Active File at Cursor / Add Track | Edit menu, multitrack-only |
 | Next Marker / Previous Marker | Edit menu |
-| Capture Noise Print | Effects menu, top row (needs a selection) |
+| Capture Noise Print | Effects menu, top row (needs a selection in waveform/spectral, or one selected clip in multitrack) |
 | Every effect in the rack | Effects menu — one row per registered effect under its category heading, each opening that effect's card in the module column; no effect has a key |
 | Spatial Positioner | Effects menu, the closing Mix group |
 | Detect Tempo / Match Tempo / Align Vocal Timing / Auto-Remix | Pipeline menu, Tempo & Timing group |
