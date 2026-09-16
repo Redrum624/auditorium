@@ -84,12 +84,16 @@ versus merely sitting there idle, so you always know where the work went.
 Clicking that icon again brings the tool back exactly as you left it, or as
 far as it has progressed. A first click on the tool's own already-active
 strip entry backgrounds it and reveals the chooser list underneath (the
-Pipeline card, or the Effects rack); a second click hides that sidebar panel
-entirely — nothing is shown in that column. It does **not** discard whatever
-was retained: a backgrounded tool or effect keeps its dot and its state
-exactly as before, and clicking the module's icon again reopens the panel,
-either back at the chooser list or straight to the retained card, whichever
-was showing.
+Pipeline card, or the Effects rack); a second click hides that module
+card — the chooser list, or whichever tool/effect card was showing. It does
+**not** discard whatever was retained: a backgrounded tool or effect keeps
+its dot and its state exactly as before, and clicking the module's icon
+again reopens the panel, either back at the chooser list or straight to the
+retained card, whichever was showing. **The TEMPO card above it is a
+separate strip and is unaffected** — when a tempo entry exists for the
+current document it keeps showing there regardless of which module, if any,
+is selected below it, so a second click never leaves that whole column
+empty the way "nothing is shown" would suggest.
 
 **In the multitrack view, this dual retention has one exception.** A tool
 card and an effect card opened **on a selected clip** both work from a copy
