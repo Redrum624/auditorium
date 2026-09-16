@@ -79,7 +79,7 @@ export interface EditToolbarItem {
    * Drives the explanatory tooltip ONLY; enablement comes from the command. */
   multitrackReason?: string;
   /** The tooltip in the Multitrack view for a button whose command means
-   * something ELSE there (Split), rather than nothing. */
+   * something ELSE there (Split, Join, Trim, Silence), rather than nothing. */
   multitrackTitle?: string;
   title: string;
 }
