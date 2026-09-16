@@ -2282,7 +2282,34 @@ async function main() {
         // THE ROW could tell the two-track voice split from the speaker split
         // that replaced it. The first sentence the hosted tool shows is what
         // can: it now promises one track per speaker.
+        //
+        // Navigate sweep fix (lot E invalidated this): lot E (item 5) split
+        // that ONE sentence into THREE arms (in-place / appended / replaced,
+        // `SeparateDialog.tsx`'s `landingMode`), and this pin predates lot E
+        // (added in `0c7c947`) with the pre-split wording. A weakened
+        // assertion accepting any of the three arms would let a genuinely
+        // WRONG arm through — exactly what this pin exists to catch — so the
+        // fix establishes which arm applies rather than loosening the check.
+        //
+        // The arm here is IN-PLACE, established explicitly rather than
+        // assumed: the active document at this point in the walk is the one
+        // P0-2 dropped onto the multitrack lane (`droppedDocName`), which is
+        // therefore already a clip ON the session's timeline — exactly
+        // `planLanding`'s in-place condition (`hasAnyClip` true + the active
+        // document `locate`d on a track). Asserted below, not inferred, so a
+        // future change to the walk's own document/session sequencing fails
+        // LOUDLY at the precondition instead of producing a confusing text
+        // diff two lines later.
         if (commandId === 'voice.separate') {
+          const activeForSeparate = await page.evaluate(
+            () => window.__test.getStateSummary().activeName
+          );
+          assert(
+            activeForSeparate === droppedDocName,
+            `precondition for the IN-PLACE arm: the active document is still the one P0-2 dropped ` +
+              `onto the multitrack timeline (active "${activeForSeparate}", dropped "${droppedDocName}") — ` +
+              `if this no longer holds, the arm below needs re-establishing, not the assertion loosening`
+          );
           const produces = await page.evaluate(() => {
             const e = document.querySelector('[data-testid="separate-produces"]');
             // JSX wraps the paragraph across source lines; the pin is the
@@ -2291,10 +2318,13 @@ async function main() {
           });
           assert(
             produces !== null &&
-              produces.startsWith('One track per speaker plus Backing.') &&
+              produces.startsWith(
+                `One track per speaker plus Backing, in place of ${activeForSeparate} on your timeline.`
+              ) &&
               produces.includes('each speaker'),
-            `“${title}” opens the SPEAKER split — its own copy names one track per speaker, not ` +
-              `the two-track voice split it replaced (${JSON.stringify(produces)})`
+            `“${title}” opens the SPEAKER split in its IN-PLACE arm — its own copy names one track ` +
+              `per speaker landing where "${activeForSeparate}" sits on the timeline, not the ` +
+              `two-track voice split it replaced nor either of the other two arms (${JSON.stringify(produces)})`
           );
         }
         await closeHostedTool(page);
