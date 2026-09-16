@@ -23,7 +23,16 @@ import type { TimeRange } from '../multitrack/timeRange';
 const store = () => useSessionStore.getState();
 const R: TimeRange = { startSample: 40_000, endSample: 130_000 };
 
-function seed(): { session: Session; t1: string; t2: string; t3: string; c1: string; c4: string } {
+function seed(): {
+  session: Session;
+  t1: string;
+  t2: string;
+  t3: string;
+  c1: string;
+  c2: string;
+  c3: string;
+  c4: string;
+} {
   const t1 = createTrack('T1');
   const t2 = createTrack('T2');
   const t3 = createTrack('T3');
@@ -49,7 +58,7 @@ function seed(): { session: Session; t1: string; t2: string; t3: string; c1: str
     mtPlayheadSample: 0,
     mtEnvelope: null,
   });
-  return { session, t1: t1.id, t2: t2.id, t3: t3.id, c1: c1.id, c4: c4.id };
+  return { session, t1: t1.id, t2: t2.id, t3: t3.id, c1: c1.id, c2: c2.id, c3: c3.id, c4: c4.id };
 }
 
 beforeEach(() => {
@@ -158,5 +167,76 @@ describe('edit.rippleDeleteTime stays disabled with a range standing', () => {
     useAppStore.getState().setView('multitrack');
     store().setMtTimeRange(R);
     expect(isCommandEnabled('edit.rippleDeleteTime')).toBe(false);
+  });
+});
+
+// F4 fix round 1 — no test anywhere ran `edit.silence` in the multitrack
+// view before this (every prior hit was `isCommandEnabled` only), so
+// `silenceMtRange` (`menuActions.ts`) had ZERO run-path coverage.
+describe('edit.silence run-path (F4 fix round 1)', () => {
+  it('runCommand("edit.silence") reaches the session exactly as silenceTargets classifies it', async () => {
+    const { t1, t2, t3, c1, c2, c3, c4 } = seed();
+    useAppStore.getState().setView('multitrack');
+    store().setMtTimeRange(R);
+    expect(store().selectedClipIds).toEqual([]); // falls back to every track
+
+    await runCommand('edit.silence');
+
+    const byId = (id: string) => store().session.tracks.flatMap((t) => t.clips).find((c) => c.id === id);
+    expect(byId(c1)).toMatchObject({ startSample: 20_000, lengthSample: 20_000 }); // trimmed endTo 40_000
+    expect(byId(c2)).toBeUndefined(); // wholly inside: removed
+    expect(byId(c3)).toMatchObject({ startSample: 130_000, lengthSample: 15_000 }); // trimmed startTo 130_000
+    const t3Clips = store()
+      .session.tracks.find((t) => t.id === t3)!
+      .clips.slice()
+      .sort((a, b) => a.startSample - b.startSample);
+    expect(t3Clips).toHaveLength(2); // c4 split into two surviving pieces
+    expect(t3Clips[0]).toMatchObject({ startSample: 10_000, lengthSample: 30_000 });
+    expect(t3Clips[1]).toMatchObject({ startSample: 130_000, lengthSample: 80_000 });
+    void t1;
+    void t2;
+  });
+
+  // The `rates` map / `docRateOf` path into `splitClip` — the one place a
+  // mixed-rate spanning clip's right half is converted (N3) — had no
+  // coverage at all. A document at 44_100 Hz under a 48_000 Hz session: if
+  // `docRateOf` were silently ignored (ratio treated as 1), the right half's
+  // `offsetSample` would land at 120_000; converted correctly it lands at
+  // 117_563 — a non-identity, falsifiable difference.
+  it('converts a mixed-rate spanning clip’s right half through docRateOf, not the session rate', async () => {
+    seed();
+    const mixedDoc = createDocument({
+      name: 'mixed.wav',
+      sampleRate: 44_100,
+      channels: [new Float32Array(1)],
+    });
+    useAppStore.getState().addDocument(mixedDoc);
+    useAppStore.getState().setView('multitrack');
+
+    // Its OWN track — T3 already carries c4 spanning the identical span, and
+    // an overlap there would make `isLegalSplitPoint` refuse the cut for an
+    // unrelated reason (illegal point inside a raw overlap), masking exactly
+    // the path this test means to exercise.
+    useSessionStore.getState().addTrack();
+    const t4 = store().session.tracks[store().session.tracks.length - 1].id;
+    const mixedClip = createClip({
+      documentId: mixedDoc.id,
+      startSample: 10_000,
+      offsetSample: 0,
+      lengthSample: 200_000,
+    });
+    useSessionStore.getState().addClip(t4, mixedClip);
+    useSessionStore.getState().setSelectedClip(mixedClip.id); // scope to T4 alone
+    store().setMtTimeRange(R);
+
+    await runCommand('edit.silence');
+
+    const clips = store()
+      .session.tracks.find((t) => t.id === t4)!
+      .clips.sort((a, b) => a.startSample - b.startSample);
+    expect(clips).toHaveLength(2);
+    const right = clips.find((c) => c.startSample === 130_000);
+    expect(right).toBeDefined();
+    expect(right).toMatchObject({ startSample: 130_000, lengthSample: 80_000, offsetSample: 117_563 });
   });
 });

@@ -2749,9 +2749,13 @@ async function main() {
             `Split is lit in the ${view} view — it needs only an open file`
           );
         }
-        // The per-view greying rule: the region verbs are the multitrack view's
-        // greyed set, because they act on a waveform selection that view has no
-        // notion of.
+        // The per-view greying rule: Copy (and Paste, not checked here) are
+        // the multitrack view's greyed set, because they act on a waveform
+        // selection that view has no notion of. Trim/Silence are NOT part of
+        // this set any more (lot J, item 10): they are view-routed onto a
+        // multitrack TIME RANGE instead, so they grey or light on that
+        // command's own predicate — not asserted here, see
+        // `menuActions.mtTrim.test.ts` for that suite.
         const copy = state.editButtons.find((b) => b.label === 'Copy');
         if (view === 'multitrack') {
           assert(

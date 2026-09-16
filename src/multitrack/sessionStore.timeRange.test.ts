@@ -15,6 +15,7 @@ import { serializeSession } from './sessionFile';
 import { createClip, createTrack, type Session } from './session';
 import { silenceClipsInRange, trimClipsToRange, useSessionStore } from './sessionStore';
 import { SESSION_UNDO_KEY, _resetSessionUndo, undoSession } from './sessionUndo';
+import { fitSessionSamplesPerPixel } from './sessionZoom';
 import { getHistory } from '../services/undoHistory';
 import type { TimeRange } from './timeRange';
 
@@ -217,5 +218,32 @@ describe('mtTimeRange is ruling-3 view state', () => {
     store().setMtTimeRange(R);
     const withRange = serializeSession(store().session, []).json;
     expect(withRange).toBe(withoutRange);
+  });
+});
+
+// Brief risk 8, pinned in fix round 1 — Trim shortening the timeline (c4's
+// own end moves from 210_000 to 130_000, the session's longest reach) fires
+// the I2 shrink subscriber, which re-resolves `mtZoom` through
+// `applySessionZoom`. Expected, not a bug — this pins it so it reads as
+// intentional rather than getting "fixed" into a stale zoom later.
+describe('Trim visibly re-resolves mtZoom via the shrink subscriber (risk 8)', () => {
+  it('a zoom legal before the trim is clamped down once the fit ceiling drops', () => {
+    const { session, t1, t2, t3 } = seed();
+    const fitBefore = fitSessionSamplesPerPixel(session); // session ends at c4's 210_000
+    // Comfortably inside the BEFORE ceiling (90%), so the raw setter accepts
+    // it verbatim with no clamp of its own.
+    const zoomBeforeTrim = fitBefore * 0.9;
+    store().setMtZoom({ samplesPerPixel: zoomBeforeTrim, scrollSample: 0 });
+    expect(store().mtZoom.samplesPerPixel).toBe(zoomBeforeTrim);
+
+    trimClipsToRange([t1, t2, t3], R); // the session's longest reach shrinks to 130_000
+
+    const fitAfter = fitSessionSamplesPerPixel(store().session);
+    expect(fitAfter).toBeLessThan(fitBefore); // the ceiling actually moved down
+    // The chosen zoom (90% of the OLD ceiling) sits above the NEW one — 130_000
+    // vs. 210_000 is a bigger drop than the 10% margin — so it is now illegal
+    // and the subscriber re-clamps it, visibly, to the new fit.
+    expect(store().mtZoom.samplesPerPixel).toBeCloseTo(fitAfter);
+    expect(store().mtZoom.samplesPerPixel).toBeLessThan(zoomBeforeTrim);
   });
 });

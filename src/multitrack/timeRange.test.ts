@@ -109,6 +109,22 @@ describe('silenceTargets (J4)', () => {
     ]);
   });
 
+  // F2 fix round 1 — a FALSE COVERAGE CLAIM: no prior `silenceTargets` fixture
+  // included a clip with NO overlap at all, so the `:140` no-overlap `continue`
+  // could be deleted with the whole suite staying green while the code
+  // corrupted data — a disjoint clip fell through to the `hasRight`-only arm
+  // and was TRIMMED (moved) onto the range's edge, tens of thousands of
+  // samples from where it actually sits. Both sides, per X3.
+  it('leaves clips with NO overlap at all untouched — neither side of the range', () => {
+    const { session, ids } = soloTrack([
+      { startSample: 5_000, lengthSample: 15_000 }, // [5_000, 20_000) — wholly LEFT of R
+      { startSample: 200_000, lengthSample: 9_000 }, // [200_000, 209_000) — wholly RIGHT of R
+    ]);
+    const targets = silenceTargets(session, [session.tracks[0].id], R);
+    expect(targets).toEqual([]);
+    expect(targets.some((t) => t.clipId === ids[0] || t.clipId === ids[1])).toBe(false);
+  });
+
   it('omits a spanning clip whose split point falls inside an overlap with a track-mate', () => {
     const { session, ids } = soloTrack([
       { startSample: 10_000, lengthSample: 200_000 }, // spans R, same as c4
@@ -139,6 +155,43 @@ describe('silenceTargets (J4)', () => {
       const { session, ids } = soloTrack([{ startSample: 10_000, lengthSample: 120_032 }]); // end 130_032
       const targets = silenceTargets(session, [session.tracks[0].id], R);
       expect(targets).toEqual([{ kind: 'split', clipId: ids[0], atSample: 40_000, rightStartTo: 130_000 }]);
+    });
+
+    // F3 fix round 1 — the MIRROR of the first test above: a sub-floor LEFT
+    // remainder (not the right one) degrades to keeping the right piece only.
+    it('a sub-floor LEFT remainder is dropped: the whole clip trims to the right piece only', () => {
+      // startSample 10 samples before R.startSample (40_000): leftLen 10 < 32.
+      const { session, ids } = soloTrack([{ startSample: 39_990, lengthSample: 160_010 }]); // end 200_000
+      const targets = silenceTargets(session, [session.tracks[0].id], R);
+      expect(targets).toEqual([{ kind: 'trim', clipId: ids[0], startTo: 130_000 }]);
+    });
+
+    // F3 fix round 1 — BOTH remainders sub-floor: the whole clip is removed,
+    // never a `split` with two pieces the store would refuse to keep.
+    it('both remainders sub-floor: the whole clip is removed, not split', () => {
+      // 10 samples on each side: leftLen 10 < 32, rightLen 10 < 32.
+      const { session, ids } = soloTrack([{ startSample: 39_990, lengthSample: 90_020 }]); // end 130_010
+      const targets = silenceTargets(session, [session.tracks[0].id], R);
+      expect(targets).toEqual([{ kind: 'remove', clipId: ids[0] }]);
+    });
+  });
+
+  // F3 fix round 1 — the single-boundary-crosser sub-floor removes
+  // (`timeRange.ts:166` and `:169`), distinct from the SPANNING pair above:
+  // here the clip touches only ONE edge of the range at all.
+  describe('J8 on a single-boundary crosser — a sub-floor remainder removes the whole clip', () => {
+    it('crosses the LEFT boundary only, remainder under the floor: removed', () => {
+      // [39_990, 100_000): leftLen 10 < 32; clipEnd (100_000) stays inside R.
+      const { session, ids } = soloTrack([{ startSample: 39_990, lengthSample: 60_010 }]);
+      const targets = silenceTargets(session, [session.tracks[0].id], R);
+      expect(targets).toEqual([{ kind: 'remove', clipId: ids[0] }]);
+    });
+
+    it('crosses the RIGHT boundary only, remainder under the floor: removed', () => {
+      // [50_000, 130_010): rightLen 10 < 32; clip.startSample stays inside R.
+      const { session, ids } = soloTrack([{ startSample: 50_000, lengthSample: 80_010 }]);
+      const targets = silenceTargets(session, [session.tracks[0].id], R);
+      expect(targets).toEqual([{ kind: 'remove', clipId: ids[0] }]);
     });
   });
 });

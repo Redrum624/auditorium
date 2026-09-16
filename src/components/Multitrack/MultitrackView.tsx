@@ -429,10 +429,21 @@ export default function MultitrackView() {
    * still happens, and the drawn rectangle must track it: `anchorContentY` and
    * the live content-Y are both scroll-invariant, so re-deriving the ON-SCREEN
    * rectangle against the CURRENT `scrollTop` is the entire fix. A React prop,
-   * so there is no listener to remove. */
+   * so there is no listener to remove.
+   *
+   * F1 fix round 1 — `rec.mode === 'range'` is EXCLUDED too, the sibling of
+   * `onOverlayPointerMove`'s own gate: lot J's sweep never calls
+   * `setMarqueeRect` at all (contract row 9 — Shift draws no rubber-band),
+   * but this handler used to skip only the threshold check, so a plain-wheel
+   * vertical scroll mid-sweep (the sweep's own `Shift` never claims the
+   * wheel — `useMultitrackZoom.ts` only intercepts `Ctrl`/`Shift`+wheel, so a
+   * released-Shift plain scroll reaches the native scroller) repainted K's
+   * rectangle from `rec.anchorSample` and left it standing until pointerup,
+   * since the `'range'` arm of `onOverlayPointerMove` returns before ever
+   * calling `setMarqueeRect` again to clear it. */
   const onScrollerScroll = () => {
     const rec = marqueeRef.current;
-    if (!rec || !rec.exceeded) return;
+    if (!rec || !rec.exceeded || rec.mode === 'range') return;
     setMarqueeRect(marqueeRectFor(rec, rec.lastClientX, rec.lastClientY));
   };
 

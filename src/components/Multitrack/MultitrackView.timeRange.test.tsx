@@ -61,12 +61,17 @@ const atLaneX = (x: number): number => MT_HEADER_W + x;
 let tId: string, uId: string;
 let u1: string, u2: string;
 
-function renderView(): { container: HTMLElement; lanes: HTMLElement[]; overlay: HTMLElement } {
+function renderView(): {
+  container: HTMLElement;
+  lanes: HTMLElement[];
+  overlay: HTMLElement;
+  scroller: HTMLElement;
+} {
   const { container } = render(<MultitrackView />);
   const lanes = Array.from(container.querySelectorAll('[data-testid="track-lane"]')) as HTMLElement[];
   const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
   const overlay = scroller.parentElement as HTMLElement;
-  return { container, lanes, overlay };
+  return { container, lanes, overlay, scroller };
 }
 
 beforeEach(() => {
@@ -213,5 +218,28 @@ describe('pointercancel mid-drag', () => {
     expect(store().mtTimeRange).toEqual({ startSample: 40_000, endSample: 140_000 }); // unchanged by the cancel
     expect(screen.queryByTestId('mt-marquee')).toBeNull();
     expect(screen.getByTestId('mt-time-range')).not.toBeNull(); // the band stays painted
+  });
+});
+
+// F1 fix round 1 — CONFIRMED BUG: `onScrollerScroll` was not gated on
+// `rec.mode`, so a plain-wheel vertical scroll mid-sweep (past the threshold)
+// repainted lot K's own rubber-band rectangle from `rec.anchorSample` and left
+// it standing until pointerup, violating contract row 9's "Shift draws no
+// rubber-band" rule.
+describe('a plain scroll mid-sweep (F1 fix round 1)', () => {
+  it('does not paint the marquee rectangle', () => {
+    const { overlay, lanes, scroller } = renderView();
+
+    firePointer(lanes[0], 'pointerdown', { clientX: atLaneX(200), clientY: 50, shiftKey: true });
+    firePointer(overlay, 'pointermove', { clientX: atLaneX(700), clientY: 50, shiftKey: true });
+    expect(store().mtTimeRange).toEqual({ startSample: 40_000, endSample: 140_000 });
+    expect(screen.queryByTestId('mt-marquee')).toBeNull();
+
+    act(() => {
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+
+    expect(screen.queryByTestId('mt-marquee')).toBeNull(); // still no rubber-band
+    expect(screen.getByTestId('mt-time-range')).not.toBeNull(); // the band is unaffected
   });
 });
