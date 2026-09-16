@@ -6,6 +6,7 @@ import { getTempo, regridTempo, runTempoAnalysis } from '../../services/tempoAna
 import { applyTempoChange, detectRegionTempo } from '../../services/tempoService';
 import type { TempoEntry } from '../../services/tempoAnalysis';
 import type { TempoChangeOutcome } from '../../services/tempoService';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // Real tempoAnalysis/tempoService (checkTempoChange, tempoRatio, tempoQualityBand,
 // the exported ratio constants, MAX_BEAT_MARKERS) stay REAL via requireActual so
@@ -70,6 +71,9 @@ beforeEach(() => {
   mockRunTempoAnalysis.mockResolvedValue(null);
   mockDetectRegionTempo.mockReturnValue(null);
   mockApplyTempoChange.mockResolvedValue({ ok: true });
+  // Final fix wave: module-level state, like the app store above — a test
+  // that leaves the lock held would wedge every test after it.
+  _resetPassLock();
 });
 
 describe('TempoDialog', () => {
@@ -875,5 +879,60 @@ describe('TempoDialog — a walk-away commits nothing (T6-3)', () => {
     // of React 19 a setState after unmount is a silent no-op, so deleting it
     // changes nothing observable. It is stated here rather than pinned, because
     // a test that cannot fail is worse than a sentence that is true.
+  });
+});
+
+// Final fix wave (item 13) — Detect and the x2/÷2 controls spawn the same
+// Worker `tempo.detect` runs behind `runExclusivePass` at the menu; this
+// dialog had no gate on either door before this wave. Same shape as
+// `AlignLyricsDialog.test.tsx`'s "the pass lock gates Record and Download
+// Model": disabled while a FOREIGN pass holds the lock, re-enabled once it
+// releases, and a click while disabled starts nothing.
+describe('the pass lock gates Detect and x2/÷2 (final fix wave)', () => {
+  it('disables Detect while a foreign pass holds the lock, and a click on it starts nothing', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(null);
+    render(<TempoDialog onClose={jest.fn()} />);
+    expect(screen.getByTestId('tempo-detect-button')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(screen.getByTestId('tempo-detect-button')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('tempo-detect-button'));
+    expect(mockRunTempoAnalysis).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('tempo-detect-button')).not.toBeDisabled();
+  });
+
+  it('disables x2/÷2 while a foreign pass holds the lock, and a click on either starts nothing', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(makeEntry({ bpm: 120, confidence: 0.8 }));
+    render(<TempoDialog onClose={jest.fn()} />);
+    expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
+    expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(screen.getByTestId('tempo-double-button')).toBeDisabled();
+    expect(screen.getByTestId('tempo-halve-button')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('tempo-double-button'));
+    fireEvent.click(screen.getByTestId('tempo-halve-button'));
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
+    expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
   });
 });

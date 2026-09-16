@@ -23,6 +23,7 @@ import {
   _getTempoWorkerTerminateCount,
   _resetTempoWorkerTestState,
 } from '../../__mocks__/createTempoWorkerMock';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // The ConvertDialog.test.tsx / TempoDialog.test.tsx pattern: everything pure
 // (formatting, the option assembly, the cluster-run grouping) stays REAL via
@@ -187,6 +188,8 @@ beforeEach(() => {
   mockCreateRemix.mockResolvedValue({ ok: true, remixDocId: 'remix-1', plan: {} as never });
   mockRegridTempo.mockResolvedValue(null);
   mockDeriveRemixFeatures.mockImplementation(() => makeAnalysis());
+  // Final fix wave: module-level state, like the app store above.
+  _resetPassLock();
 });
 
 describe('RemixDialog', () => {
@@ -462,6 +465,39 @@ describe('RemixDialog', () => {
     // The re-tracked grid is published to the shared cache, so the row a
     // `regridTempo` write left without remix descriptors is repaired.
     expect(mockSetRemixAnalysis).toHaveBeenCalledTimes(1);
+  });
+
+  // Final fix wave (item 13) — Re-detect/x2/÷2 all funnel through
+  // `regridAndDerive`, which spawns the same Worker `tempo.detect` runs
+  // behind `runExclusivePass`; none of the three had a gate before this
+  // wave. Same shape as `AlignLyricsDialog.test.tsx`'s "the pass lock gates
+  // Record and Download Model".
+  it('disables Re-detect/x2/÷2 while a foreign pass holds the lock, and a click on any starts nothing', async () => {
+    seedDoc();
+    await renderReady();
+    expect(screen.getByTestId('remix-redetect')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-double')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-halve')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(screen.getByTestId('remix-redetect')).toBeDisabled();
+    expect(screen.getByTestId('remix-double')).toBeDisabled();
+    expect(screen.getByTestId('remix-halve')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('remix-redetect'));
+    fireEvent.click(screen.getByTestId('remix-double'));
+    fireEvent.click(screen.getByTestId('remix-halve'));
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('remix-redetect')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-double')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-halve')).not.toBeDisabled();
   });
 
   it('12. Create stays disabled until the tempo is confirmed', async () => {

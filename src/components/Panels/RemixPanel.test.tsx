@@ -21,6 +21,7 @@ import { DEFAULT_REMIX_WEIGHTS, type JoinCostTerms } from '../../dsp/remixCost';
 import { MAX_REQUIRED_JOINS, type RemixJoin } from '../../dsp/remixPlan';
 import type { RemixPlan } from '../../dsp/remixRender';
 import type { RemixAnalysis } from '../../services/tempoAnalysis';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // The MarkersPanel.test.tsx / RemixDialog.test.tsx pattern: everything pure
 // stays REAL via requireActual — crucially `useRemixVersion` and the module's
@@ -178,6 +179,8 @@ beforeEach(() => {
   mockReset.mockResolvedValue(null);
   mockUpdate.mockResolvedValue(null);
   mockToggleLock.mockReturnValue({ ok: true, locked: true, lockedJoins: [] });
+  // Final fix wave: module-level state, like the app store above.
+  _resetPassLock();
 });
 
 afterEach(() => {
@@ -1109,6 +1112,58 @@ describe('RemixPanel — staleness (acceptance 10)', () => {
     render(<RemixPanel />);
     expect(screen.queryByTestId('remix-stale')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /reject edit 1/i })).toBeEnabled();
+  });
+});
+
+// Final fix wave (item 13) — re-roll/reset/nudge±/reject/crossfade all route
+// through `runAdjustment`, which previously gated only on its own local
+// `busyRef`/`busy` and said nothing about a pass running elsewhere (a Save,
+// an export, a mixdown, another pipeline tool). Same broad-selector shape as
+// the staleness describe above ("disables every ADJUSTMENT control"), driven
+// by the pass lock instead of `stale`.
+describe('RemixPanel — the pass lock gates every adjustment (final fix wave)', () => {
+  it('disables every ADJUSTMENT control while a foreign pass holds the lock, fires nothing while disabled, and re-enables once released', async () => {
+    const doc = addRemixDoc();
+    mockGetSession.mockReturnValue(makeSession(doc.id, SIX_JOINS));
+
+    render(<RemixPanel />);
+    // Excludes Go To (never gated, mutates nothing) AND Pin/Unpin: `toggleLockJoin`
+    // is a synchronous array splice, deliberately outside `runAdjustment`'s
+    // gating (unlike the staleness describe above, where `stale` disables Pin
+    // through its OWN separate condition, not through `adjustDisabled`).
+    const adjustments = () =>
+      screen
+        .getAllByRole('button')
+        .filter((b) => !/^(go to edit|(un)?pin edit)/i.test(b.getAttribute('aria-label') ?? ''));
+    expect(adjustments()).toHaveLength(6 * 3 + 2); // 3 gated row controls x 6 joins, + Re-roll and Revert
+    for (const button of adjustments()) expect(button).not.toBeDisabled();
+    expect(screen.getByTestId('remix-crossfade')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    for (const button of adjustments()) expect(button).toBeDisabled();
+    expect(screen.getByTestId('remix-crossfade')).toBeDisabled();
+    // Pin/Unpin is UNAFFECTED — recorded positively so a future change cannot
+    // quietly widen the lock onto a synchronous, non-pass-worthy control.
+    expect(screen.getByRole('button', { name: 'Pin edit 1' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /reject edit 1/i }));
+    fireEvent.click(screen.getByRole('button', { name: /re-roll/i }));
+    fireEvent.click(screen.getByRole('button', { name: /revert to auto/i }));
+    fireEvent.click(screen.getByRole('button', { name: /nudge edit 2 earlier/i }));
+    expect(mockRejectJoin).not.toHaveBeenCalled();
+    expect(mockReRoll).not.toHaveBeenCalled();
+    expect(mockReset).not.toHaveBeenCalled();
+    expect(mockNudgeJoin).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    for (const button of adjustments()) expect(button).not.toBeDisabled();
+    expect(screen.getByTestId('remix-crossfade')).not.toBeDisabled();
   });
 });
 

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import PropertiesPanel from './PropertiesPanel';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { useSessionStore } from '../../multitrack/sessionStore';
@@ -16,6 +16,7 @@ import {
   useTempoVersion,
 } from '../../services/tempoAnalysis';
 import type { TempoEntry } from '../../services/tempoAnalysis';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 jest.mock('../../services/tempoAnalysis', () => ({
   getTempo: jest.fn(() => null),
@@ -78,6 +79,8 @@ beforeEach(() => {
   mockGetTempoProgress.mockReset().mockReturnValue(null);
   mockRunTempoAnalysis.mockReset().mockResolvedValue(null);
   mockRegridTempo.mockReset().mockResolvedValue(null);
+  // Final fix wave: module-level state, like the app store above.
+  _resetPassLock();
 });
 
 /** The value shown in a Properties Row identified by its unique label — used
@@ -671,6 +674,79 @@ describe('PropertiesPanel — Tempo section (Task T5)', () => {
       // The previous, still-good grid keeps showing — never blanked or relabeled.
       expect(screen.getByText('642')).toBeInTheDocument();
       expect(screen.getByText('128.4 BPM')).toBeInTheDocument();
+    });
+  });
+
+  // Final fix wave (item 13) — this file never imported `passLock` at all:
+  // Detect Tempo / Re-analyze and the x2/÷2 buttons spawn the same Worker
+  // `tempo.detect` runs behind `runExclusivePass` at the menu, with nothing
+  // gating this door before this wave. Same shape as
+  // `AlignLyricsDialog.test.tsx`'s "the pass lock gates Record and Download
+  // Model": disabled while a FOREIGN pass holds the lock, re-enabled once it
+  // releases, and a click while disabled starts nothing.
+  describe('the pass lock gates Detect/Re-analyze and x2/÷2 (final fix wave)', () => {
+    it('disables Detect Tempo while a foreign pass holds the lock, and a click on it starts nothing', () => {
+      const doc = addDoc();
+      render(<PropertiesPanel />);
+      expect(screen.getByTestId('tempo-analyze-button')).not.toBeDisabled();
+
+      let release: (() => void) | null = null;
+      act(() => {
+        release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+      });
+      expect(release).not.toBeNull();
+      expect(screen.getByTestId('tempo-analyze-button')).toBeDisabled();
+
+      fireEvent.click(screen.getByTestId('tempo-analyze-button'));
+      expect(mockRunTempoAnalysis).not.toHaveBeenCalledWith(doc);
+
+      act(() => {
+        release!();
+      });
+      expect(screen.getByTestId('tempo-analyze-button')).not.toBeDisabled();
+    });
+
+    it('disables Re-analyze (stale entry) while a foreign pass holds the lock', () => {
+      addDoc();
+      mockGetTempo.mockReturnValue(makeTempoEntry({ stale: true }));
+      render(<PropertiesPanel />);
+      expect(screen.getByTestId('tempo-reanalyze-button')).not.toBeDisabled();
+
+      let release: (() => void) | null = null;
+      act(() => {
+        release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+      });
+      expect(screen.getByTestId('tempo-reanalyze-button')).toBeDisabled();
+
+      act(() => {
+        release!();
+      });
+      expect(screen.getByTestId('tempo-reanalyze-button')).not.toBeDisabled();
+    });
+
+    it('disables x2/÷2 while a foreign pass holds the lock, and a click on either starts nothing', () => {
+      const doc = addDoc();
+      mockGetTempo.mockReturnValue(makeTempoEntry({ periodFrames: 200 }));
+      render(<PropertiesPanel />);
+      expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
+      expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
+
+      let release: (() => void) | null = null;
+      act(() => {
+        release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+      });
+      expect(screen.getByTestId('tempo-double-button')).toBeDisabled();
+      expect(screen.getByTestId('tempo-halve-button')).toBeDisabled();
+
+      fireEvent.click(screen.getByTestId('tempo-double-button'));
+      fireEvent.click(screen.getByTestId('tempo-halve-button'));
+      expect(mockRegridTempo).not.toHaveBeenCalledWith(doc.id, expect.anything());
+
+      act(() => {
+        release!();
+      });
+      expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
+      expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
     });
   });
 });

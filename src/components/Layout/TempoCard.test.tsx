@@ -13,6 +13,7 @@ import {
   type RemixAnalysis,
 } from '../../services/tempoAnalysis';
 import { multitrackToolDoc, runCommand } from '../../services/menuActions';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 jest.mock('../../services/tempoAnalysis', () => ({
   getTempo: jest.fn(() => null),
@@ -104,6 +105,8 @@ beforeEach(() => {
   mockIsTempoRunning.mockReset().mockReturnValue(false);
   mockRunTempoAnalysis.mockReset().mockResolvedValue(null);
   mockRunCommand.mockReset().mockResolvedValue(undefined);
+  // Final fix wave: module-level state, like the app store above.
+  _resetPassLock();
 });
 
 describe('TempoCard — visibility', () => {
@@ -265,6 +268,40 @@ describe('TempoCard — chips', () => {
     expect(screen.getByRole('button', { name: 'Double tempo' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Halve tempo' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Re-detect tempo' })).toBeDisabled();
+  });
+
+  // Final fix wave (item 13) — `usePassLock()`'s return value used to be
+  // discarded (called only for its re-render side effect); ×2/÷2 gated on
+  // `running` alone (THIS document's own tempo flag), a stale-parallel-
+  // variable exactly like the one this card's own doc comment (Fix round 1,
+  // finding 5) already corrected for "which document". This is the sharpest
+  // case in the whole sweep: Re-detect beside these two already reads the
+  // real app-wide lock through `isCommandEnabled('tempo.detect')`.
+  it('disables ×2/÷2 while a FOREIGN pass holds the app-wide lock, distinct from this document’s own `running` flag', () => {
+    addDoc();
+    mockGetTempo.mockReturnValue(makeTempoEntry({ periodFrames: 200 }));
+    mockIsTempoRunning.mockReturnValue(false); // this document's own tempo flag stays false
+    render(<TempoCard />);
+    expect(screen.getByRole('button', { name: 'Double tempo' })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Halve tempo' })).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Double tempo' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Halve tempo' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Double tempo' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Halve tempo' }));
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByRole('button', { name: 'Double tempo' })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Halve tempo' })).not.toBeDisabled();
   });
 });
 
