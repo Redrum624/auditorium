@@ -225,6 +225,12 @@ export default function AlignLyricsDialog({
   }
 
   async function handleDownload(): Promise<void> {
+    // Fix round 4 (finding 1's audit) — the same real start seam as
+    // `handleRecord`/`handleAlign`: `downloading` already joins `busy` once
+    // this starts (which then holds the app-wide lock via `moduleLock`), but
+    // nothing stopped STARTING it while a foreign pass already held that
+    // lock — the same gap the Record button had, for the same reason.
+    if (isPassRunning()) return;
     setDownloading(true);
     setError(null);
     setReceived(0);
@@ -296,6 +302,14 @@ export default function AlignLyricsDialog({
   }
 
   async function handleRecord(): Promise<void> {
+    // Fix round 4 (finding 1) — the real start seam, defence in depth beside
+    // the Record button's own `runningPass !== null` gate below. `busy`
+    // alone (this dialog's own local flag) said nothing about a FOREIGN
+    // pass already holding `passLock.ts`'s app-wide lock — M1's "at most one
+    // pipeline or process at a time" applies to the microphone exactly as it
+    // does to `handleAlign`'s own analysis, which already carries this same
+    // check.
+    if (isPassRunning()) return;
     const target = liveDoc();
     if (!target) return;
     setError(null);
@@ -510,7 +524,11 @@ export default function AlignLyricsDialog({
               </div>
             ) : (
               <div>
-                <GlassButton variant="primary" onClick={() => void handleDownload()}>
+                <GlassButton
+                  variant="primary"
+                  onClick={() => void handleDownload()}
+                  disabled={runningPass !== null}
+                >
                   Download Model
                 </GlassButton>
               </div>
@@ -639,7 +657,13 @@ export default function AlignLyricsDialog({
               ) : (
                 <GlassButton
                   data-testid="align-lyrics-record"
-                  disabled={busy || word === null}
+                  // Fix round 4 (finding 1) — M1: a foreign pass already
+                  // holding the app-wide lock (a Save, an export, a mixdown,
+                  // `tempo.detect`, another pipeline tool) must refuse this
+                  // exactly as it refuses every other pass-start door;
+                  // `busy` alone is this dialog's OWN local flag and says
+                  // nothing about a lock held elsewhere.
+                  disabled={busy || word === null || runningPass !== null}
                   onClick={() => void handleRecord()}
                 >
                   <Mic size={13} />

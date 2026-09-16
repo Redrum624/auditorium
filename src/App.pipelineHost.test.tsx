@@ -8,6 +8,11 @@ import { hasOpenDialog } from './services/dialogBus';
 import { isCommandEnabled, runCommand } from './services/menuActions';
 import { _resetPassLock, acquirePass, getRunningPass, isPassRunning } from './services/passLock';
 import { makeInitialState, useAppStore } from './stores/appStore';
+// Lot D fix round 4 (finding 2) — the `hostPassRef` accounting test needs a
+// real clip-work slot to observe the drift watcher's deferral through.
+import { useSessionStore } from './multitrack/sessionStore';
+import { createClip } from './multitrack/session';
+import { clipWorkTargetId, _resetClipWork } from './services/clipPass';
 
 /**
  * U2-3 — pipelines open IN the module column, from every door, with the stage
@@ -635,6 +640,86 @@ describe('the App-level refusal when a hosted pass loses the acquire race (fix r
 
     // If the false-branch release had wrongly freed the foreign pass (the
     // exact defect this test exists to catch), this would now read `null`.
+    expect(getRunningPass()?.label).toBe('Cover Chain');
+
+    act(() => {
+      release!();
+    });
+    expect(isPassRunning()).toBe(false);
+  });
+});
+
+/**
+ * Lot D fix round 4 (finding 2) — the `hostPassRef` accounting bug the
+ * CRITICAL fix's drift watcher (lot D) turned load-bearing. `handleToolLock`
+ * used to set `hostPassRef.current.tool = running` UNCONDITIONALLY, before
+ * even attempting the acquire — so a FAILED acquire (this exact "loses the
+ * acquire race" scenario, reused from the describe block above) still left
+ * the ref reporting "true", and the drift watcher's `if
+ * (hostPassRef.current.tool) return;` guard would defer a close that had
+ * nothing left to protect. Fixed by setting the ref ONLY on a genuine
+ * success (immediately, on the failure branch itself, not waiting for
+ * "finish") — verified here through the watcher's own OBSERVABLE behaviour,
+ * not by reading the private ref directly.
+ */
+describe('the drift watcher is not fooled by a lost acquire race (lot D fix round 4, finding 2)', () => {
+  afterEach(() => {
+    _resetPassLock();
+    _resetClipWork();
+  });
+
+  function setupMultitrackClip() {
+    const source = addDoc();
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+      useSessionStore.getState().addTrack();
+    });
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: source.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    act(() => {
+      useSessionStore.getState().addClip(trackId, clip);
+      useSessionStore.getState().setSelectedClips([clip.id]);
+    });
+    return source;
+  }
+
+  it('closes a drifted host right away when its own acquire had failed, instead of deferring forever', async () => {
+    const source = setupMultitrackClip();
+
+    render(<App />);
+    await openTool('tempo.match'); // mints a real clip-work slot (StubTempoDialog is registered for it)
+    const workId = clipWorkTargetId('tool');
+    expect(workId).not.toBeNull();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+    });
+    expect(release).not.toBeNull();
+
+    // The stub has no gate of its own: this reaches `handleToolLock(true)`
+    // with the acquire guaranteed to fail — the foreign pass already holds
+    // the lock.
+    fireEvent.click(screen.getByRole('button', { name: 'start pass' }));
+    expect(showMessageBox).toHaveBeenCalledTimes(1);
+
+    // The drift — this is what the watcher's `hostPassRef.current.tool`
+    // check gates. With the bug, this would defer (the ref wrongly says a
+    // pass is running for THIS slot); fixed, the ref is `false` (the
+    // acquire never actually succeeded), so the watcher closes it right
+    // here, without waiting for "finish pass" or for any lock-version bump.
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+    expect(clipWorkTargetId('tool')).toBeNull();
+    // The foreign pass is completely unaffected throughout.
     expect(getRunningPass()?.label).toBe('Cover Chain');
 
     act(() => {

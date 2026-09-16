@@ -458,24 +458,46 @@ export default function App() {
    * lock) names the pass that actually holds it (`blockedByPassReason()`,
    * never `describeHostedPass()` — that would name the dialog ABOUT to run,
    * not the one blocking it).
+   *
+   * Fix round 4 (finding 2) — `hostPassRef.current.tool` is now set ONLY when
+   * this slot actually holds the app-wide lock: `true` after a successful
+   * (or already-held) acquire, `false` both on `running === false` and on a
+   * FAILED acquire. It used to be set to `running` unconditionally, BEFORE
+   * the acquire attempt even ran — so a failed acquire (a foreign pass beat
+   * this one to it) still left the ref reporting "true". That was harmless
+   * while nothing else read the ref for anything but the busy-label message
+   * box, but it is load-bearing now: `App.tsx`'s clip-work drift watcher
+   * reads this SAME ref to decide whether to DEFER closing a host, and a
+   * ref that says "running" for a slot that does NOT hold the lock would
+   * defer a close that has nothing left to protect, indefinitely (the
+   * matching `false` call frees nothing and bumps nothing, so the watcher
+   * never gets a second chance to re-evaluate). Chose "set on success only"
+   * over "bump the version on every `false` call regardless": that second
+   * option would paper over the misreporting (the ref would still claim a
+   * fictitious pass while waiting for the next bump) rather than fix it, and
+   * would fire a spurious lock-version bump — read by every OTHER pass-gated
+   * surface in the app — on every ordinary release, not just the rare
+   * failed-acquire case.
    */
   const handleToolLock = useCallback(
     (running: boolean) => {
-      hostPassRef.current.tool = running;
       if (running) {
         if (passReleaseToolRef.current === null) {
           const release = acquirePass(describeHostedPass('tool'));
           if (release === null) {
+            hostPassRef.current.tool = false; // the acquire failed — this slot does not hold the lock
             void window.electronAPI?.showMessageBox({
               type: 'info',
               title: 'A pass is running',
               message: blockedByPassReason() ?? 'A pass is running.',
             });
-          } else {
-            passReleaseToolRef.current = release;
+            return;
           }
+          passReleaseToolRef.current = release;
         }
+        hostPassRef.current.tool = true;
       } else {
+        hostPassRef.current.tool = false;
         passReleaseToolRef.current?.();
         passReleaseToolRef.current = null;
       }
@@ -485,24 +507,27 @@ export default function App() {
 
   /** Lot C fix round 1 — the effect card's own copy of `handleToolLock`,
    * publishing to `passReleaseEffectRef`/`hostPassRef.current.effect`
-   * instead. See that callback's docblock for the full mechanism. */
+   * instead. See that callback's docblock for the full mechanism, including
+   * fix round 4's accounting correction. */
   const handleEffectLock = useCallback(
     (running: boolean) => {
-      hostPassRef.current.effect = running;
       if (running) {
         if (passReleaseEffectRef.current === null) {
           const release = acquirePass(describeHostedPass('effect'));
           if (release === null) {
+            hostPassRef.current.effect = false; // the acquire failed — this slot does not hold the lock
             void window.electronAPI?.showMessageBox({
               type: 'info',
               title: 'A pass is running',
               message: blockedByPassReason() ?? 'A pass is running.',
             });
-          } else {
-            passReleaseEffectRef.current = release;
+            return;
           }
+          passReleaseEffectRef.current = release;
         }
+        hostPassRef.current.effect = true;
       } else {
+        hostPassRef.current.effect = false;
         passReleaseEffectRef.current?.();
         passReleaseEffectRef.current = null;
       }

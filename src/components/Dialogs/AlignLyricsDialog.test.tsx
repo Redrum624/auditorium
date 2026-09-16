@@ -22,6 +22,8 @@ import { stageById } from '../../services/vocalChain';
 import { useSessionStore } from '../../multitrack/sessionStore';
 import { createClip } from '../../multitrack/session';
 import { beginClipWork, clipWorkTargetId, _resetClipWork } from '../../services/clipPass';
+// Fix round 4 (finding 1) — the Record/Download-Model pass-lock gate.
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // ---------------------------------------------------------------------------
 // Fixture — the same construction the service test uses, kept small: three
@@ -321,6 +323,7 @@ afterEach(() => {
   jest.restoreAllMocks();
   _resetAlignmentsForTest();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  _resetPassLock();
 });
 
 // ---------------------------------------------------------------------------
@@ -897,6 +900,90 @@ describe('target re-assertion at Run (lot D fix round 3, findings 2/3)', () => {
     fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
 
     expect(screen.getByTestId('align-lyrics-run')).not.toBeDisabled();
+  });
+});
+
+// Lot D fix round 4 (finding 1) — M1: a foreign pass already holding
+// `passLock.ts`'s app-wide lock must refuse the Record and Download-Model
+// doors exactly as it refuses every other pass-start door in the app.
+// `busy` (this dialog's own local flag) said nothing about a lock held
+// elsewhere — the same "real start seam" `handleAlign` already had.
+describe('the pass lock gates Record and Download Model (fix round 4, finding 1)', () => {
+  it('disables Record replacement while a foreign pass holds the lock, even with a word selected', async () => {
+    seedDoc();
+    open(new FakeEngine());
+    await settle();
+    await alignIn();
+    fireEvent.click(screen.getByTestId('align-lyrics-word-1'));
+    expect((screen.getByTestId('align-lyrics-record') as HTMLButtonElement).disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+
+    expect((screen.getByTestId('align-lyrics-record') as HTMLButtonElement).disabled).toBe(true);
+
+    act(() => {
+      release!();
+    });
+    expect((screen.getByTestId('align-lyrics-record') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a click on a disabled Record button starts nothing — the microphone is never acquired', async () => {
+    seedDoc();
+    const engine = new FakeEngine();
+    open(engine);
+    await settle();
+    await alignIn();
+    fireEvent.click(screen.getByTestId('align-lyrics-word-1'));
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    fireEvent.click(screen.getByTestId('align-lyrics-record'));
+
+    // A disabled button swallows the click natively; the defence-in-depth
+    // check inside `handleRecord` covers a direct call bypassing the button.
+    // Either way, the visible outcome is the same: no Stop button appeared.
+    expect(screen.queryByTestId('align-lyrics-stop-record')).toBeNull();
+    expect(engine.started).toHaveLength(0);
+
+    act(() => {
+      release!();
+    });
+  });
+
+  it('disables Download Model while a foreign pass holds the lock', async () => {
+    const docId = seedDoc();
+    bridge.alignModelState.mockResolvedValue({
+      downloaded: false,
+      bytes: null,
+      expectedBytes: ALIGN_MODEL_BYTES,
+    });
+    open();
+    await settle();
+    expect(screen.getByTestId('align-lyrics-model-missing')).toBeInTheDocument();
+    const download = () => screen.getByRole('button', { name: 'Download Model' }) as HTMLButtonElement;
+    expect(download().disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(download().disabled).toBe(true);
+
+    fireEvent.click(download());
+    // Nothing started — the download-progress UI never appears.
+    expect(screen.queryByTestId('align-lyrics-download-status')).toBeNull();
+
+    act(() => {
+      release!();
+    });
+    expect(download().disabled).toBe(false);
+    void docId;
   });
 });
 
