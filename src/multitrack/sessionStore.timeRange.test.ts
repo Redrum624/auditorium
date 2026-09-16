@@ -147,6 +147,19 @@ describe('trimClipsToRange (J1)', () => {
     trimClipsToRange([t1], { startSample: 0, endSample: 1_000_000 });
     expect(doneLabels().length).toBe(before);
   });
+
+  // R26 — the group verb's OWN `remove` branch (line "if (t.kind === 'remove')
+  // ... removeClip(...)"), never exercised by the fixture above (none of
+  // c1/c3/c4 land wholly outside R): a clip entirely to the LEFT of a range
+  // is the plain J1 case ("clips wholly outside are removed").
+  it('removes a clip entirely outside the range (the group verb’s own remove branch)', () => {
+    const { t1, c1 } = seed();
+    trimClipsToRange([t1], { startSample: 100_000, endSample: 200_000 }); // clear of c1 [20_000, 50_000)
+    const t1Clips = store().session.tracks.find((t) => t.id === t1)!.clips;
+    expect(t1Clips).toHaveLength(0);
+    expect(t1Clips.find((c) => c.id === c1)).toBeUndefined();
+    expect(doneLabels()[doneLabels().length - 1]).toBe('Trim to range');
+  });
 });
 
 describe('silenceClipsInRange (J4)', () => {
@@ -166,6 +179,17 @@ describe('silenceClipsInRange (J4)', () => {
 
     expect(doneLabels().length).toBe(before + 1);
     expect(doneLabels()[doneLabels().length - 1]).toBe('Silence range');
+  });
+
+  // R26 — over ALL three tracks, exercising the group verb's `remove` branch
+  // too (c2, wholly inside R, per `silenceTargets`'s own pure-function pin in
+  // `timeRange.test.ts`) — untouched by the T3-only test above.
+  it('removes the wholly-inside clip on T2 (the group verb’s own remove branch)', () => {
+    const { t1, t2, t3, c2 } = seed();
+    silenceClipsInRange([t1, t2, t3], R);
+    const t2Clips = store().session.tracks.find((t) => t.id === t2)!.clips;
+    expect(t2Clips.find((c) => c.id === c2)).toBeUndefined();
+    expect(t2Clips).toHaveLength(1); // c3, trimmed — c2 is gone
   });
 });
 
