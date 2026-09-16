@@ -223,14 +223,28 @@ describe('edit.trim / edit.silence (U1)', () => {
 // multitrack — `canTrimMtRange`/`canSilenceMtRange` answer there instead. That
 // they still read `false` in every test below is COINCIDENCE, not the F1
 // gate: this fixture never sweeps a multitrack time range, so the NEW
-// predicate also refuses, for an entirely different reason. `REGION_VERBS`
-// narrows to the three F1 still actually governs; Trim/Silence get their own
-// enablement suite in `menuActions.mtTrim.test.ts`, and the invariant this
-// file's `armedInMultitrack` trap exists to protect — a hidden document must
-// never be edited from the multitrack view — is re-proven below for the case
-// F1 can no longer cover: a STANDING RANGE, where Trim/Silence really do run.
+// predicate also refuses, for an entirely different reason. Trim/Silence get
+// their own enablement suite in `menuActions.mtTrim.test.ts`.
+//
+// Lot L (items 11/12) OVERTURNS this for Copy/Paste too, named per R25: they
+// are now VIEW-ROUTED (`canCopyClips`/`pasteBlockReason`,
+// `multitrack/clipClipboard.ts`), not gated on `isDocumentEditView`/
+// `canEditRegion` at all in multitrack. `REGION_VERBS` narrows to the ONE verb
+// F1 still actually governs — `edit.cut` (L1 names Copy and Paste only, so
+// Cut's own M7 gate is untouched). Copy/Paste still read `false` in
+// `armedInMultitrack` below too, but again by COINCIDENCE: no clip is ever
+// selected in that fixture (`canCopyClips` refuses) and the standing
+// clipboard holds AUDIO, not clips (`pasteBlockReason` refuses with
+// `PASTE_HOLDS_AUDIO_REASON`) — not because a hidden document is protected.
+// `menuActions.mtClipboard.test.ts` is where the NEW gate is actually proven,
+// including the case (a clip selected) where it now differs from F1 by
+// enabling the row this file's own trap would once have kept dark; the
+// invariant `armedInMultitrack` exists to protect — a hidden document must
+// never be edited from the multitrack view — is unaffected by either
+// carve-out, since neither Copy nor Paste written through the new gate ever
+// touches `s.selection`/`activeDocumentId` at all.
 describe('the region verbs are disabled in the Multitrack view (F1)', () => {
-  const REGION_VERBS = ['edit.cut', 'edit.copy', 'edit.paste'];
+  const REGION_VERBS = ['edit.cut'];
 
   /** The exact trap: a live document selection AND a full clipboard, carried
    * into the multitrack view the way switching views really does.
@@ -251,12 +265,12 @@ describe('the region verbs are disabled in the Multitrack view (F1)', () => {
     return doc;
   }
 
-  it('reports all three disabled in Multitrack even with a selection and a full clipboard', () => {
+  it('reports edit.cut disabled in Multitrack even with a selection and a full clipboard', () => {
     armedInMultitrack();
     for (const id of REGION_VERBS) expect(isCommandEnabled(id)).toBe(false);
   });
 
-  it('and all three live again in the waveform and spectral views', () => {
+  it('and edit.cut lives again in the waveform and spectral views', () => {
     armedInMultitrack();
     for (const view of ['waveform', 'spectral'] as const) {
       useAppStore.getState().setView(view);
@@ -264,7 +278,7 @@ describe('the region verbs are disabled in the Multitrack view (F1)', () => {
     }
   });
 
-  it('greys all three rows in the Edit MENU there too — one predicate, every surface', () => {
+  it('greys the edit.cut row in the Edit MENU there too — one predicate, every surface', () => {
     armedInMultitrack();
     const edit = getMenuSections().find((s) => s.title === 'Edit')!;
     for (const id of REGION_VERBS) {

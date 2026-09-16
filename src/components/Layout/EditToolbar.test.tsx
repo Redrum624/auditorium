@@ -3,6 +3,7 @@ import EditToolbar, { EDIT_TOOLBAR_ITEMS } from './EditToolbar';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { useSessionStore } from '../../multitrack/sessionStore';
 import { createClip } from '../../multitrack/session';
+import { copySelectedClips } from '../../multitrack/clipClipboard';
 import { createDocument, type AudioDocument } from '../../audio/AudioDocument';
 import { runCommand } from '../../services/menuActions';
 import { setClipboard, clearClipboard } from '../../services/clipboard';
@@ -173,34 +174,25 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
   // while the Undo button one divider away routed to the session's history and
   // could not undo it. All five region verbs are now gated on the COMMAND, so
   // this pill inherits the rule instead of restating a subset of it.
-  // Item 8: Cut left the pill (the Scissors button is Split now), so the
-  // region verbs it draws are the four below. Item 10 (M7): each of the four
-  // now says its OWN reason instead of sharing one paragraph, because the two
-  // pairs are blocked for different reasons and only one of them could ever be
-  // lifted by selecting something.
+  // Item 8: Cut left the pill (the Scissors button is Split now).
   // Lot J (item 10) — Trim/Silence DROP OUT of the blocked set here: they are
   // now view-routed (`edit.trim`/`edit.silence`), not gated on
   // `multitrackReason` at all, so their title is `multitrackTitle` in this
-  // view regardless of whether the command is currently enabled. Copy/Paste
-  // stay blocked (lot L's clip clipboard has not landed).
-  it('4a greys Copy / Paste in Multitrack, each with its own reason, and re-titles Trim / Silence', () => {
+  // view regardless of whether the command is currently enabled.
+  // Lot L (items 11/12, R25) — Copy/Paste ALSO drop out, for the identical
+  // reason: `multitrackReason: 'needs a clip clipboard'` is gone from both
+  // (L5), so this test's own premise for asserting them here is obsoleted.
+  // What it protected — a truthful, non-generic tooltip on every button this
+  // view still legitimately blocks — is re-pinned below for Trim/Silence
+  // only; Copy/Paste's OWN enabled-in-multitrack behaviour is pinned by the
+  // dedicated case further down (L1/L2/L5).
+  it('4a re-titles Trim / Silence in Multitrack, each naming the sweep gesture', () => {
     lastDocId = addDoc().id;
     act(() => {
       useAppStore.getState().setSelection({ start: 0, end: 1000 });
       useAppStore.getState().setView('multitrack');
     });
-    setClipboard({ channels: [new Float32Array(100)], sampleRate: 44100 });
     render(<EditToolbar />);
-
-    for (const label of ['Copy', 'Paste']) {
-      expect(btn(label)).toBeDisabled();
-      const title = btn(label).title.toLowerCase();
-      expect(title).toContain('multitrack');
-      // Honest about the remedy, not just the refusal.
-      expect(title).toContain('waveform or spectral');
-    }
-    expect(btn('Copy').title).toContain('needs a clip clipboard');
-    expect(btn('Paste').title).toContain('needs a clip clipboard');
 
     // No multitrack time range is standing, so the command is still refused —
     // but for the NEW reason, and the title names the GESTURE rather than a
@@ -224,6 +216,48 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     }
   });
 
+  // Lot L (items 11/12, L1/L2/L5) — the case 4a used to cover generically for
+  // Copy/Paste ("greyed, unconditionally") no longer exists; this is what
+  // replaced it. With a clip selected, Copy is live and its title names the
+  // verb; with clips copied and a current track, Paste is live and its title
+  // names the bar-relative drop (L2). Neither title reads as a refusal.
+  it('4a-l Copy lights up in Multitrack with a clip selected; Paste once clips are copied with a current track', () => {
+    const doc = addDoc();
+    lastDocId = doc.id;
+    act(() => useAppStore.getState().setView('multitrack'));
+    let trackId = '';
+    let clipId = '';
+    act(() => {
+      useSessionStore.getState().addTrack();
+      trackId = useSessionStore.getState().session.tracks[0].id;
+      // A REAL document id — `pasteBlockReason` refuses a clip whose source
+      // document has closed (L4a/Risk 4), so a placeholder id like the
+      // Split-only fixtures elsewhere in this file use would keep Paste dark
+      // for the wrong reason.
+      const clip = createClip({ documentId: doc.id, startSample: 1000, offsetSample: 0, lengthSample: 3000 });
+      useSessionStore.getState().addClip(trackId, clip);
+      clipId = clip.id;
+      useSessionStore.getState().setSelectedClip(clipId);
+    });
+    render(<EditToolbar />);
+
+    expect(btn('Copy')).toBeEnabled();
+    expect(btn('Copy').title).toContain('copies the selected clips');
+    expect(btn('Copy').title.toLowerCase()).not.toContain('not available');
+
+    // Nothing copied yet, and no current track either — Paste stays dark.
+    expect(btn('Paste')).toBeDisabled();
+
+    act(() => {
+      copySelectedClips();
+      useSessionStore.getState().setCurrentTrack(trackId);
+    });
+
+    expect(btn('Paste')).toBeEnabled();
+    expect(btn('Paste').title).toContain('right of the bar');
+    expect(btn('Paste').title.toLowerCase()).not.toContain('not available');
+  });
+
   it('4a-j Trim/Silence LIGHT UP in Multitrack once a time range is swept', () => {
     lastDocId = addDoc().id;
     act(() => useAppStore.getState().setView('multitrack'));
@@ -243,19 +277,23 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     expect(btn('Silence')).toBeEnabled();
   });
 
-  it('4b lights Copy / Paste / Trim / Silence again on the way back to Waveform, so the gate is the VIEW', () => {
+  // Lot L (R25) — narrowed to Trim/Silence, the same premise-obsoletion as
+  // 4a's rename: Copy/Paste no longer share a view-wide "blocked in
+  // Multitrack" fate with them (L5), so this is no longer the right place to
+  // assert their waveform-view liveness (that belongs to
+  // `menuActions.mtClipboard.test.ts`'s own "editor arm, both directions").
+  it('4b lights Trim / Silence again on the way back to Waveform, so the gate is the VIEW', () => {
     lastDocId = addDoc().id;
     act(() => {
       useAppStore.getState().setSelection({ start: 0, end: 1000 });
       useAppStore.getState().setView('multitrack');
     });
-    setClipboard({ channels: [new Float32Array(100)], sampleRate: 44100 });
     render(<EditToolbar />);
     expect(btn('Trim')).toBeDisabled();
 
     act(() => useAppStore.getState().setView('waveform'));
 
-    for (const label of ['Copy', 'Paste', 'Trim', 'Silence']) {
+    for (const label of ['Trim', 'Silence']) {
       expect(btn(label)).toBeEnabled();
     }
   });

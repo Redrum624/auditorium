@@ -39,7 +39,15 @@ import {
 import { cursorSegment } from './segments';
 import { canRedo, canUndo, redo, undo } from './undoHistory';
 import { canRedoSession, canUndoSession, redoSession, undoSession } from '../multitrack/sessionUndo';
-import { getClipboard } from './clipboard';
+import { getClipboard, getClipboardKind } from './clipboard';
+// Lot L (items 11/12) — the multitrack clip clipboard's verbs (the slot
+// itself lives in `./clipboard`).
+import {
+  copySelectedClips,
+  pasteBlockReason,
+  pasteClipsAtCursor,
+  PASTE_HOLDS_CLIPS_REASON,
+} from '../multitrack/clipClipboard';
 import { closeDocumentFlow, openFilesViaDialog, projectHasUnsavedWork } from './fileService';
 import { openSessionViaDialog, saveProject } from '../multitrack/sessionFile';
 import {
@@ -873,19 +881,51 @@ function registerEditCommands(): void {
         (s.selection !== null || cursorSegment(s) !== null),
       run: async () => cutSelection(),
     },
+    // Lot L (items 11/12) — narrows the M7/F1 gate for these two verbs ONLY.
+    // F1's argument was that all five region verbs edit a region of the
+    // ACTIVE DOCUMENT, which the multitrack view does not show, and whose
+    // Undo (routed to the session) cannot reverse. That argument no longer
+    // applies to Copy/Paste once a clip clipboard exists (L1-L5): the
+    // multitrack arm addresses the SESSION — the surface on screen, whose
+    // history the neighbouring Undo already routes to — exactly the same
+    // narrowing lot J made for Trim/Silence just above. Cut stays on
+    // `isDocumentEditView` (M7, unchanged) — L1 names Copy and Paste only.
     {
       id: 'edit.copy',
       label: 'Copy',
       shortcut: 'Ctrl+C',
-      enabled: canEditRegion,
-      run: async () => copySelection(),
+      enabled: (s) => (s.view === 'multitrack' ? canCopyClips() : canEditRegion(s)),
+      reason: (s) =>
+        s.view === 'multitrack' && !canCopyClips() ? 'select a clip first' : undefined,
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          copySelectedClips();
+          return;
+        }
+        copySelection();
+      },
     },
     {
       id: 'edit.paste',
       label: 'Paste',
       shortcut: 'Ctrl+V',
-      enabled: (s) => isDocumentEditView(s) && activeDoc(s) !== null && getClipboard() !== null,
-      run: async () => pasteAtCursor(),
+      enabled: (s) =>
+        s.view === 'multitrack'
+          ? pasteBlockReason() === undefined
+          : isDocumentEditView(s) && activeDoc(s) !== null && getClipboard() !== null,
+      reason: (s) =>
+        s.view === 'multitrack'
+          ? pasteBlockReason()
+          : getClipboardKind() === 'clips'
+            ? PASTE_HOLDS_CLIPS_REASON
+            : undefined,
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          pasteClipsAtCursor();
+          return;
+        }
+        pasteAtCursor();
+      },
     },
     {
       // In the multitrack view, Delete removes the selected clip; elsewhere it
@@ -1493,6 +1533,13 @@ function selectedTrackIds(): string[] {
   const { session, selectedClipIds } = useSessionStore.getState();
   const member = new Set(selectedClipIds);
   return session.tracks.filter((t) => t.clips.some((c) => member.has(c.id))).map((t) => t.id);
+}
+
+/** L1 — `edit.copy`'s multitrack predicate: at least one clip is selected.
+ * Reads the session store directly, as `canSplitAtMtCursor` below and
+ * `edit.delete` do. */
+export function canCopyClips(): boolean {
+  return useSessionStore.getState().selectedClipIds.length > 0;
 }
 
 /** `edit.split`'s multitrack predicate: some clip on a selected track would be

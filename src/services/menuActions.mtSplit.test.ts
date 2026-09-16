@@ -191,14 +191,23 @@ describe('edit.split in the Multitrack view — what it must NOT touch (M1/M7)',
     expect(clipsOn(0)).toHaveLength(2);
   });
 
-  it('3f keeps Cut / Copy / Paste refused in that same armed state', () => {
+  // Lot L (items 11/12, R25) — Copy's premise here is obsoleted: a clip IS
+  // selected in this fixture (`setSelectedClip` below), and `canCopyClips`
+  // now answers `true` for exactly that state, so Copy is no longer part of
+  // the refused set. What this test protects — that a hidden-document verb
+  // never silently reaches the armed document from the multitrack view — is
+  // unaffected and re-pinned for Cut and Paste; Copy's own new behaviour
+  // (it now edits the SESSION's clipboard, not the hidden document) is the
+  // whole subject of `menuActions.mtClipboard.test.ts`.
+  it('3f keeps Cut / Paste refused in that same armed state; Copy is live once a clip is selected (L1)', () => {
     armedInMultitrack();
     const { ids } = seed([[[1000, 3000]]], 'doc-1');
     store().setSelectedClip(ids[0][0]);
     store().setMtCursor(2000);
 
     expect(isCommandEnabled('edit.split')).toBe(true);
-    for (const id of ['edit.cut', 'edit.copy', 'edit.paste']) {
+    expect(isCommandEnabled('edit.copy')).toBe(true); // L1: a clip is selected
+    for (const id of ['edit.cut', 'edit.paste']) {
       expect(isCommandEnabled(id)).toBe(false);
     }
   });

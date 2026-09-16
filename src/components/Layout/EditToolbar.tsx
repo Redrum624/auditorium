@@ -51,10 +51,14 @@ import { ChromePill } from '../UI/glass';
  *    one — and `multitrackTitle` describes the verb. No new field: `title`
  *    already serves that side.
  *  - Delete is routed too, and always was: it removes the selected clips there.
- *  - Copy and Paste stay greyed there, because their COMMANDS are disabled and
- *    not because this pill says so: each edits a region of the active
- *    document, which that view does not show, and wants a clip clipboard the
- *    app does not yet have (lot L).
+ *  - Copy and Paste (lot L, items 11/12) are ROUTED too, like Split and
+ *    Delete: a clip selection and the multitrack clip clipboard in that
+ *    view, a document region in the editors. They used to stay
+ *    unconditionally greyed with `multitrackReason: 'needs a clip
+ *    clipboard'` — true until lot L built that clipboard. Each now carries a
+ *    `multitrackTitle` naming what it does there, and greys or lights
+ *    exactly as `edit.split`'s own button does, on the command's OWN
+ *    predicate (`canCopyClips`/`pasteBlockReason`, `menuActions.ts`).
  *  - Trim and Silence (lot J, item 10) are ROUTED too, like Split and Delete:
  *    a swept multitrack time range in that view, a document region in the
  *    editors. They used to stay unconditionally greyed with `multitrackReason:
@@ -127,18 +131,23 @@ export const EDIT_TOOLBAR_ITEMS: EditToolbarItem[] = [
       'Join Clips (J) — joins the selected clips on each track into one clip, silence in the gaps',
   },
   {
+    // Lot L (item 12) — routed, not blocked: copies the selected clips.
     label: 'Copy',
     commandId: 'edit.copy',
     Icon: Copy,
-    multitrackReason: 'needs a clip clipboard',
     title: 'Copy (Ctrl+C)',
+    multitrackTitle: 'Copy (Ctrl+C) — copies the selected clips',
   },
   {
+    // Lot L (item 12) — routed, not blocked: drops the copied clips to the
+    // right of the bar, on the current track (click a track's background to
+    // choose it — K2/K3).
     label: 'Paste',
     commandId: 'edit.paste',
     Icon: ClipboardPaste,
-    multitrackReason: 'needs a clip clipboard',
     title: 'Paste (Ctrl+V)',
+    multitrackTitle:
+      'Paste (Ctrl+V) — drops the copied clips to the right of the bar, on the current track (click a track’s background to choose it)',
   },
   {
     label: 'Delete',
@@ -238,6 +247,12 @@ export default function EditToolbar() {
   // without this fifth selector the Trim/Silence rows would grey and un-grey
   // one unrelated render late too.
   useSessionStore((s) => s.mtTimeRange);
+  // Lot L: `pasteBlockReason` reads `currentTrackId` (K2/K3), whose three
+  // writers (`ClipView`/`TrackHeader`/`TrackLane`'s own `setCurrentTrack`
+  // calls) touch no appStore field either — without this sixth selector,
+  // clicking a track's background would grey/un-grey Paste one unrelated
+  // render late, same as the five above.
+  useSessionStore((s) => s.currentTrackId);
   const documentCount = useAppStore((s) => s.documents.length);
   const isMultitrack = useAppStore((s) => s.view) === 'multitrack';
 

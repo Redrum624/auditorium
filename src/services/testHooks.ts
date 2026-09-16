@@ -44,7 +44,7 @@ import {
   splitAtCursor,
   trimToSelection,
 } from './editOps';
-import { getClipboard } from './clipboard';
+import { getClipboard, getClipboardKind } from './clipboard';
 import { mergeSelectedClips as runMergeClips } from './menuActions';
 import { getSpectralScale, toggleSpectralScale, type SpectralScale } from './spectralScale';
 import { getBeatGrid, isDownbeat } from './beatGrid';
@@ -308,6 +308,12 @@ export interface TestApi {
    * harness (no marquee hook exists either; Playwright drags the real lane,
    * see the brief's own "no marquee hook" ruling). */
   getCurrentTrack(): string | null;
+  /** Lot L (items 11/12): which shape the clipboard holds, or `null` when
+   * empty — a scalar, no store handle. The smoke presses the real
+   * `Control+c`/`Control+v` and reads the placed clip back through
+   * `getClipFadeState()`; this hook is what lets it assert Ctrl+C actually
+   * landed on the CLIP slot rather than silently doing nothing. */
+  getClipboardKind(): 'audio' | 'clips' | null;
   /** Join Clips (`multitrack.joinClips`; H1 lot H — renamed from Merge Clips,
    * this hook and `mergeSelectedClips`/`canMergeSelectedClips` keep their
    * names) on the current clip selection, through the menu action itself —
@@ -2015,6 +2021,8 @@ export function installTestHooks(): void {
     },
 
     getCurrentTrack: () => useSessionStore.getState().currentTrackId,
+
+    getClipboardKind: () => getClipboardKind(),
 
     // The menu action verbatim (not a re-implementation): one `Join N`
     // document per merged track plus one undo entry, so the smoke asserts the

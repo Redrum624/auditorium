@@ -2749,19 +2749,39 @@ async function main() {
             `Split is lit in the ${view} view — it needs only an open file`
           );
         }
-        // The per-view greying rule: Copy (and Paste, not checked here) are
-        // the multitrack view's greyed set, because they act on a waveform
-        // selection that view has no notion of. Trim/Silence are NOT part of
-        // this set any more (lot J, item 10): they are view-routed onto a
-        // multitrack TIME RANGE instead, so they grey or light on that
-        // command's own predicate — not asserted here, see
-        // `menuActions.mtTrim.test.ts` for that suite.
         const copy = state.editButtons.find((b) => b.label === 'Copy');
+        // Lot L (items 11/12) OVERTURNS the old per-view greying rule for
+        // Copy/Paste (named per R25): they no longer share Trim/Silence's
+        // pre-lot-J fate of being unconditionally greyed in Multitrack — each
+        // is now routed onto the CLIP selection / clip clipboard
+        // (`canCopyClips`/`pasteBlockReason`, `menuActions.ts`), like
+        // Trim/Silence are onto the time range. A clip selection SURVIVES a
+        // view switch (it lives in the session store, not the app store), and
+        // the earlier "Module: Properties — a selected clip mounts the
+        // pickers" step left one selected via a REAL click — so this is not a
+        // synthetic state, it is what the walk's own session actually holds
+        // here. Both arms of the new predicate are proven against it, through
+        // the same `selectClips` hook the Split check below already uses,
+        // rather than trusting whichever selection happened to survive.
         if (view === 'multitrack') {
+          await page.evaluate(() => window.__test.selectClips([]));
+          const copyNoSelection = await pillDisabledReaches(page, 'Copy', true);
           assert(
-            copy !== undefined && copy.disabled === true,
-            'Copy is greyed in the multitrack view — it acts on a selection this view does not have'
+            copyNoSelection === true,
+            'Copy greys in the multitrack view with no clip selected (L1)'
           );
+          const seededClips = await page.evaluate(() => window.__test.getClipFadeState().clips);
+          assert(
+            seededClips.length > 0,
+            `the seeded multitrack session still has a clip to select (${JSON.stringify(seededClips)})`
+          );
+          await page.evaluate((id) => window.__test.selectClips([id]), seededClips[0].clipId);
+          const copyWithSelection = await pillDisabledReaches(page, 'Copy', false);
+          assert(
+            copyWithSelection === true,
+            'Copy lights up in the multitrack view once a clip is selected (L1)'
+          );
+
           // Item 10: Split is the one first-group button that is LIVE here, and
           // its liveness follows the SESSION store (the clip selection and the
           // edit cursor), which no app-store change touches. The pill therefore

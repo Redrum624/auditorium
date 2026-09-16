@@ -5319,6 +5319,106 @@ async function main() {
       '  gaps: the band covered the empty stretch; Delete and Shift+Del each closed it in one undo step'
     );
 
+    // Lot L (items 11/12) — Copy/Paste for multitrack CLIPS.
+    //
+    // Clicking a track's BACKGROUND to make it the CURRENT track (K2/K3) has
+    // no test hook by design (the brief's own ruling: a hook would be a
+    // second, untested definition of a gesture Playwright can drive for
+    // real) — a real `page.mouse` press-and-release is the same argument the
+    // gap block's own double-click makes, run in the other direction. Ctrl+C/
+    // Ctrl+V are the real keys, exactly as the brief's Outputs section asks.
+    //
+    // The session found here is the gap block's own restore: ONE clip over
+    // [0, 88200) on track 1 (index 0). Track 2 (index 1) is EMPTY — its
+    // background is exactly what item 12's "click anywhere on a visible part
+    // of the background" is about.
+    console.log(
+      "Copy/Paste (items 11/12): click track 2's background, Ctrl+C, Ctrl+V lands right of the bar..."
+    );
+    const clipboardBefore = await page.evaluate(() => window.__test.getClipFadeState());
+    const clipboardSource = clipboardBefore.clips[0];
+    assert(
+      clipboardBefore.clips.length === 1 &&
+        clipboardSource.startSample === 0 &&
+        clipboardSource.lengthSample === 88200,
+      `found the session where the gap block left it (${JSON.stringify(clipboardBefore.clips)})`
+    );
+    // The gap block's own restore left no selection standing — captured
+    // rather than assumed, so this sub-step's own restore below puts back
+    // whatever was ACTUALLY there rather than a guess.
+    const clipSelectionBefore = clipboardBefore.selectedClipId;
+    const trackBefore = await page.evaluate(() => window.__test.getCurrentTrack());
+    assert(trackBefore === null, `no track had been clicked current yet (${trackBefore})`);
+    await page.evaluate((id) => window.__test.selectClips([id]), clipboardSource.clipId);
+
+    const lane2Box = await page.evaluate(() => {
+      const lane = document.querySelectorAll('[data-testid="track-lane"]')[1];
+      const r = lane.getBoundingClientRect();
+      return { x: r.x + r.width * 0.9, y: r.y + r.height / 2 };
+    });
+    await page.mouse.move(lane2Box.x, lane2Box.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForFunction(() => window.__test.getCurrentTrack() !== null, null, {
+      timeout: 5000,
+    });
+    const currentAfterClick = await page.evaluate(() => window.__test.getCurrentTrack());
+    console.log(`  clicked track 2's background; current track is now ${currentAfterClick}`);
+
+    await page.keyboard.press('Control+c');
+    const clipboardKind = await page.evaluate(() => window.__test.getClipboardKind());
+    assert(clipboardKind === 'clips', `Ctrl+C landed on the CLIP clipboard slot (${clipboardKind})`);
+
+    // Right of the bar (L2), past the source clip's own end — a NON-identity
+    // cursor, not sample 0.
+    const pasteCursor = clipboardSource.startSample + clipboardSource.lengthSample + 5000;
+    await page.evaluate((s) => window.__test.setMtCursor(s), pasteCursor);
+    await page.keyboard.press('Control+v');
+    await page.waitForFunction(
+      (n) => window.__test.getClipFadeState().clips.length === n,
+      2,
+      { timeout: 10000 }
+    );
+    const afterPaste = await page.evaluate(() => window.__test.getClipFadeState());
+    const pastedClip = afterPaste.clips.find((c) => c.clipId !== clipboardSource.clipId);
+    assert(
+      pastedClip !== undefined && afterPaste.clips.length === 2,
+      `paste minted exactly one new clip (${JSON.stringify(afterPaste.clips)})`
+    );
+    assert(
+      pastedClip.startSample === pasteCursor && pastedClip.lengthSample === clipboardSource.lengthSample,
+      `the pasted clip lands exactly at the bar (${JSON.stringify(pastedClip)} vs cursor ${pasteCursor})`
+    );
+    assert(
+      pastedClip.trackIndex === 1,
+      `the pasted clip landed on the CLICKED track (index 1), not the source's own ` +
+        `(${JSON.stringify(pastedClip)})`
+    );
+
+    await page.keyboard.press('Control+z');
+    const afterPasteUndo = await page.evaluate(() => window.__test.getClipFadeState());
+    assert(
+      afterPasteUndo.clips.length === 1 && afterPasteUndo.clips[0].clipId === clipboardSource.clipId,
+      `Ctrl+Z removed exactly the pasted clip — the session is where the gap block left it ` +
+        `(${JSON.stringify(afterPasteUndo.clips)})`
+    );
+    const clipboardAfterUndo = await page.evaluate(() => window.__test.getClipboardKind());
+    assert(
+      clipboardAfterUndo === 'clips',
+      'undoing the paste does not un-copy — the clipboard still holds the clip (L3)'
+    );
+    // Restore the clip selection this sub-step found (K2/K3's `currentTrackId`
+    // has no setter hook by the same "no untested second definition" ruling
+    // that keeps the CLICK itself real — it is left naming track 2, which
+    // nothing later in this walk reads or depends on).
+    await page.evaluate(
+      (id) => window.__test.selectClips(id === null ? [] : [id]),
+      clipSelectionBefore
+    );
+    console.log(
+      "  copy/paste: a real click made track 2 current, Ctrl+C copied the clip, Ctrl+V dropped it right of the bar there"
+    );
+
     // Lot J (item 10) — the multitrack TIME RANGE and Trim, wired.
     //
     // The sweep gesture itself (`Shift`+drag) is a real pointer drag over a
