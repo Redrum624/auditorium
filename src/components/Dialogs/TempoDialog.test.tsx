@@ -109,6 +109,39 @@ describe('TempoDialog', () => {
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
   });
 
+  // X-1 (final fix wave) — evidence for the branch decision on the C5/
+  // multitrack ruling: `canApply` has no target-liveness re-check of its own
+  // (no `clipWorkTargetId`/frozen-id comparison anywhere in this file, unlike
+  // `EffectDialog.canApply` / `AlignLyricsDialog.canAlign`'s `targetStillLive`).
+  // Rendered directly (bypassing `App.tsx`'s clip-work drift watcher, which is
+  // the thing that actually protects this dialog in the real app today) to
+  // isolate the dialog's OWN gate. Proves that relaxing the watcher so it no
+  // longer closes a host on a sibling clip-work mint would NOT be safe for
+  // `tempo.match` — Apply would stay enabled and silently target whatever
+  // document is now active.
+  it('X-1: Apply stays enabled against a NEW active document with no re-check — this dialog alone cannot police the multitrack target', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(makeEntry({ bpm: null, confidence: 0, beatSamples: Int32Array.from([]) }));
+    render(<TempoDialog onClose={jest.fn()} />);
+
+    fireEvent.change(screen.getByTestId('tempo-target'), { target: { value: '110' } });
+    fireEvent.change(screen.getByTestId('tempo-source'), { target: { value: '100' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+
+    // The drift: a second document becomes active while this dialog stays
+    // mounted, exactly what a sibling effect-card/tool mint does in
+    // multitrack before the App-level watcher would unmount this dialog.
+    const docB = createDocument({ name: 'other.wav', sampleRate: 44100, channels: [new Float32Array(44100)] });
+    act(() => {
+      useAppStore.getState().addDocument(docB); // also makes it active
+    });
+    expect(useAppStore.getState().activeDocumentId).toBe(docB.id);
+
+    // No refusal: this dialog has nothing that would catch the drift on its
+    // own, which is exactly why `App.tsx` still closes it instead.
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+  });
+
   it('4. x2 doubles the Source field via regridTempo; /2 halves it back', async () => {
     const doc = seedDoc();
     const base = makeEntry({ bpm: 100, periodFrames: 40, confidence: 0.9 });

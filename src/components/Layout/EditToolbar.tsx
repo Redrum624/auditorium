@@ -79,11 +79,18 @@ export interface EditToolbarItem {
   Icon: LucideIcon;
   /** Starts a new group in the pill (renders a divider before it). */
   startsGroup?: boolean;
-  /** Why this button is greyed in the Multitrack view — see the note above.
-   * Drives the explanatory tooltip ONLY; enablement comes from the command. */
-  multitrackReason?: string;
   /** The tooltip in the Multitrack view for a button whose command means
-   * something ELSE there (Split, Join, Trim, Silence), rather than nothing. */
+   * something ELSE there (Split, Join, Trim, Silence), rather than nothing.
+   *
+   * X-3 (final fix wave) — this used to pair with a `multitrackReason` field
+   * that named why a button was unconditionally greyed in Multitrack (Copy/
+   * Paste's old 'needs a clip clipboard', Trim/Silence's old 'needs a time
+   * selection'). Lots J and L built the gestures those reasons were waiting
+   * on, so every row that ever set `multitrackReason` dropped it, and no row
+   * has set it since — the field and its `blockedTitle()` renderer branch
+   * were deleted rather than left standing unreachable. If a future button
+   * IS unconditionally blocked in Multitrack again, reintroduce both
+   * deliberately rather than resurrecting dead code by habit. */
   multitrackTitle?: string;
   title: string;
 }
@@ -189,13 +196,6 @@ export const EDIT_TOOLBAR_ITEMS: EditToolbarItem[] = [
   { label: 'Redo', commandId: 'edit.redo', Icon: Redo2, title: 'Redo (R or Ctrl+Y)' },
 ];
 
-/** M7 — one blocked tooltip, with this button's own reason inside it. The
- * words "Multitrack" and "Waveform or Spectral" stay in every one of them: the
- * refusal is only half the message, and naming the view that CAN do it is the
- * other half. */
-const blockedTitle = (label: string, reason: string) =>
-  `${label} — not available in the Multitrack view: ${reason}. Switch to Waveform or Spectral to edit the document.`;
-
 // Toolbar.tsx `pillIconBtn`, verbatim: the interactive hover/press/disabled
 // states come from .glass-pill-btn in index.css, which inline styles cannot
 // express.
@@ -277,19 +277,15 @@ export default function EditToolbar() {
       style={{ borderRadius: 14, padding: '6px 8px', gap: 3 }}
     >
       {EDIT_TOOLBAR_ITEMS.map((item) => {
-        const { label, commandId, Icon, startsGroup, multitrackReason, multitrackTitle, title } =
-          item;
+        const { label, commandId, Icon, startsGroup, multitrackTitle, title } = item;
         // F1: enablement is the COMMAND's, with nothing added here — the view
         // gate lives in the registry so this pill, the Edit menu and the
-        // keyboard cannot disagree. The two multitrack fields only choose the
-        // tooltip: why this button is dark (`multitrackReason`), or what it
-        // does INSTEAD in that view (`multitrackTitle`).
+        // keyboard cannot disagree. `multitrackTitle` only chooses the
+        // tooltip for a button whose command means something else in
+        // Multitrack; every button here is view-routed now (X-3), so there is
+        // no "unconditionally blocked" tooltip left to choose.
         const disabled = !isCommandEnabled(commandId);
-        const multitrackHint = isMultitrack
-          ? multitrackReason !== undefined
-            ? blockedTitle(label, multitrackReason)
-            : (multitrackTitle ?? title)
-          : title;
+        const multitrackHint = isMultitrack ? (multitrackTitle ?? title) : title;
         return (
           <span key={commandId} className="flex items-center">
             {startsGroup && <span aria-hidden="true" style={divider} />}

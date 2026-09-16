@@ -15,7 +15,7 @@ import {
 import { regridTempo, runRemixAnalysis, setRemixAnalysis } from '../../services/tempoAnalysis';
 import { createRemixDocument } from '../../services/remixService';
 import { focusRemixPanel } from '../../services/dialogBus';
-import { usePassLock } from '../../services/passLock';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 // Structure-strip derivation + meter labels are shared with the persistent
 // TEMPO card (G4) — one colour cycle, one run derivation, one meter label.
 import { clusterColor, meterLabel, METERS, structureRuns } from '../../utils/structureStrip';
@@ -298,6 +298,10 @@ export default function RemixDialog({ onClose }: { onClose: () => void }) {
    * onset pass), which is what keeps the descriptors and clusters real.
    */
   async function regridAndDerive(newPeriodFrames: number): Promise<void> {
+    // Final fix wave (item 13) — `regridTempo` spawns the same Worker
+    // `tempo.detect` runs behind `runExclusivePass`; this shared handler (Re-
+    // detect, x2, /2) had no gate at all. One check covers all three callers.
+    if (isPassRunning()) return;
     const live = liveDoc();
     if (!analysis || !live || live.id !== docId) return;
     setCorrecting(true);
@@ -475,7 +479,7 @@ export default function RemixDialog({ onClose }: { onClose: () => void }) {
                 <GlassButton
                   data-testid="remix-redetect"
                   onClick={() => void applyTypedBpm()}
-                  disabled={busy}
+                  disabled={busy || runningPass !== null}
                   style={CHIP}
                 >
                   Re-detect
@@ -484,7 +488,7 @@ export default function RemixDialog({ onClose }: { onClose: () => void }) {
                   data-testid="remix-double"
                   title="Double tempo (x2) — re-tracks the beat grid"
                   onClick={() => void regridAndDerive(analysis.periodFrames / 2)}
-                  disabled={busy}
+                  disabled={busy || runningPass !== null}
                   style={CHIP}
                 >
                   x2
@@ -493,7 +497,7 @@ export default function RemixDialog({ onClose }: { onClose: () => void }) {
                   data-testid="remix-halve"
                   title="Halve tempo (/2) — re-tracks the beat grid"
                   onClick={() => void regridAndDerive(analysis.periodFrames * 2)}
-                  disabled={busy}
+                  disabled={busy || runningPass !== null}
                   style={CHIP}
                 >
                   /2

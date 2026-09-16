@@ -969,6 +969,46 @@ describe('the clip-work drift watcher closes a stale host before Apply can reach
     expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
   });
 
+  // X-1 (final fix wave) — the missing symmetric order: effect card FIRST,
+  // a `CLIP_WORK_COMMANDS` TOOL second (the two prior tests cover tool-first
+  // and effect-first-with-a-NON-minting-second-actor; this is effect-first
+  // with a second actor that mints its own working copy, same as the card
+  // did). C5 says "at most one effect card AND one hosted tool are retained
+  // ... opening one does not disturb the other" and is pinned exactly that
+  // way in the WAVEFORM view (`App.effectHost.test.tsx`, "an effect
+  // foregrounds over an idle retained tool — both retained"). In MULTITRACK
+  // it does not hold, symmetrically in both orders: this pins the behaviour
+  // deliberately being KEPT (not relaxed) — see those dialogs' own
+  // `canApply`/run gates, none of which re-checks the target document the
+  // way `EffectDialog`/`AlignLyricsDialog` do, which is why the watcher
+  // still has to do this job here.
+  it('X-1: effect card, then Match Tempo (both minting) — the retained effect is closed, not backgrounded, in multitrack (C5 does not hold here)', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+    const effectWorkId = clipWorkTargetId('effect');
+    expect(effectWorkId).not.toBeNull();
+
+    await act(async () => {
+      await runCommand('tempo.match');
+    });
+
+    // The effect card is gone — closed by the same drift watcher, not
+    // backgrounded the way C5 promises outside multitrack.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(clipWorkTargetId('effect')).toBeNull();
+    expect(useAppStore.getState().documents.some((d) => d.id === effectWorkId)).toBe(false);
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+  });
+
   // Fix round 3 (review finding 1) — the drift watcher used to close a host
   // UNCONDITIONALLY, including mid-Apply: the unmount discards the in-flight
   // pass safely (no wrong-document write — confirmed separately), but

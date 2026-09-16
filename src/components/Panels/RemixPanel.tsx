@@ -21,6 +21,7 @@ import {
 } from '../../services/remixService';
 import { effectiveCrossfadeMs } from '../../dsp/remixRender';
 import type { JoinCostTerms } from '../../dsp/remixCost';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 
 /**
  * The Auto-Remix adjustment surface (Task T15) for the ACTIVE document's remix
@@ -235,6 +236,11 @@ export default function RemixPanel() {
   // FIRST — the session store is module state, not zustand (see the doc
   // comment). Nothing below re-renders without this.
   useRemixVersion();
+  // Final fix wave (item 13) — re-roll/reset/nudge/reject/crossfade all route
+  // through `runAdjustment` below, which previously gated only on its own
+  // local `busyRef`/`busy` and said nothing about a pass running elsewhere
+  // (a Save, an export, a mixdown, another pipeline tool).
+  const runningPass = usePassLock();
 
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
   const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
@@ -274,13 +280,15 @@ export default function RemixPanel() {
   const { plan, options, analysis, stale } = session;
   const joins = plan.joins;
   const remixDocId = session.remixDocId;
-  const adjustDisabled = stale || busy;
+  const adjustDisabled = stale || busy || runningPass !== null;
 
   /** One adjustment at a time: they are async (the DP may be in the session's
    * plan worker) and they rewrite the same document, so a second press while
-   * one is outstanding would race two `applyEdit`s onto the same remix. */
+   * one is outstanding would race two `applyEdit`s onto the same remix.
+   * Final fix wave (item 13): also refuses while a FOREIGN pass holds the
+   * app-wide lock — `busyRef` only ever knew about this panel's own runs. */
   const runAdjustment = async (op: () => Promise<unknown>): Promise<void> => {
-    if (busyRef.current || stale) return;
+    if (busyRef.current || stale || isPassRunning()) return;
     busyRef.current = true;
     setBusy(true);
     try {

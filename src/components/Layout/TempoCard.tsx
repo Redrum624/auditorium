@@ -9,7 +9,7 @@ import {
   useTempoVersion,
 } from '../../services/tempoAnalysis';
 import { commandReason, isCommandEnabled, multitrackToolDoc, runCommand } from '../../services/menuActions';
-import { usePassLock } from '../../services/passLock';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { useSessionStore } from '../../multitrack/sessionStore';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { clusterColor, meterLabel, structureRuns } from '../../utils/structureStrip';
@@ -77,7 +77,12 @@ export default function TempoCard() {
   useTempoVersion();
   // Lot M: same reason, for the app-wide pass lock — called unconditionally,
   // ahead of the early `return null` below, like every other hook here.
-  usePassLock();
+  // Final fix wave (item 13): the return value is now READ — the x2/÷2 chips
+  // below used to gate on `running` alone (this document's OWN tempo flag),
+  // a stale-parallel-variable exactly like the one this card's own doc
+  // comment (Fix round 1, finding 5) already corrected for "which document".
+  // `regridTempo` spawns the same Worker `tempo.detect` already locks.
+  const runningPass = usePassLock();
   // Fix round 1 (finding 5) — this card must show the SAME document
   // `tempo.detect` would actually analyse, or "Re-detect"/"this document" is
   // a stale-parallel-variable lie the moment a clip is selected in
@@ -118,7 +123,7 @@ export default function TempoCard() {
           .join(' · ');
 
   async function correct(newPeriodFrames: number): Promise<void> {
-    if (!doc) return;
+    if (!doc || isPassRunning()) return;
     setCorrectionFailed(false);
     const result = await regridTempo(doc.id, newPeriodFrames);
     setCorrectionFailed(result === null);
@@ -178,7 +183,7 @@ export default function TempoCard() {
               type="button"
               aria-label="Double tempo"
               title="Double tempo (×2) — re-tracks the beat grid"
-              disabled={running}
+              disabled={running || runningPass !== null}
               onClick={() => void correct(entry.periodFrames / 2)}
               className="glass-pill-btn"
               style={chipStyle}
@@ -189,7 +194,7 @@ export default function TempoCard() {
               type="button"
               aria-label="Halve tempo"
               title="Halve tempo (÷2) — re-tracks the beat grid"
-              disabled={running}
+              disabled={running || runningPass !== null}
               onClick={() => void correct(entry.periodFrames * 2)}
               className="glass-pill-btn"
               style={chipStyle}

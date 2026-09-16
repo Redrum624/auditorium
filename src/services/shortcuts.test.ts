@@ -238,6 +238,27 @@ describe('installShortcuts', () => {
     expect(runCommandSpy).toHaveBeenCalledWith('transport.playPause');
   });
 
+  // H-1 (final fix wave) — the SHORTCUT_TABLE assertion above only checks the
+  // declarative combo -> command mapping; nothing dispatched a real Ctrl+C /
+  // Ctrl+V / Ctrl+X keydown before. This is exactly the row a future edit
+  // gets wrong: bare `c` is Split (H3/H5), sitting right beside `Ctrl+C`, and
+  // lot L made `edit.copy` VIEW-ROUTED (waveform audio vs. multitrack clips),
+  // so a typo here would silently break Copy/Paste/Cut while leaving Split
+  // untouched — three assertions, one per accelerator.
+  it.each([
+    ['c', { ctrlKey: true }, 'edit.copy'],
+    ['v', { ctrlKey: true }, 'edit.paste'],
+    ['x', { ctrlKey: true }, 'edit.cut'],
+  ])('dispatches Ctrl+%s to %s, distinct from the bare-letter Split row', (key, mods, commandId) => {
+    const runCommandSpy = jest.spyOn(menuActionsModule, 'runCommand').mockResolvedValue(undefined);
+    uninstall = installShortcuts(window);
+
+    window.dispatchEvent(keydown({ key, ...mods }));
+
+    expect(runCommandSpy).toHaveBeenCalledTimes(1);
+    expect(runCommandSpy).toHaveBeenCalledWith(commandId);
+  });
+
   // K1 — the three new bindings, driven from a REAL keydown rather than from
   // the table. The table rows encode what `comboFromEvent` produces, and for
   // the arrows that is a claim about the DOM (`e.key` is 'ArrowLeft', not

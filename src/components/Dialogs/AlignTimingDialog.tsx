@@ -13,7 +13,7 @@ import {
   type AlignPlan,
   type AlignRefusal,
 } from '../../services/timingAlignService';
-import { usePassLock } from '../../services/passLock';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { FieldLabel, GlassButton, GlassSelect, GlassSlider, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -180,7 +180,9 @@ export default function AlignTimingDialog({ onClose }: { onClose: () => void }) 
   const canApply = !busy && plan !== null && confirmed && strengthPct > 0 && runningPass === null;
 
   async function correctOctave(periodMultiplier: 2 | 0.5) {
-    if (!doc || !canRegrid) return;
+    // Final fix wave (item 13) — `regridTempo` spawns the same Worker
+    // `tempo.detect` runs behind `runExclusivePass`; this door had no gate.
+    if (!doc || !canRegrid || isPassRunning()) return;
     const entry = getTempo(doc);
     if (!entry || entry.bpm === null) return;
     setError(null);
@@ -288,7 +290,7 @@ export default function AlignTimingDialog({ onClose }: { onClose: () => void }) 
                 <GlassButton
                   data-testid="align-octave-double"
                   style={CHIP}
-                  disabled={!canRegrid || busy}
+                  disabled={!canRegrid || busy || runningPass !== null}
                   onClick={() => void correctOctave(2)}
                 >
                   ×2
@@ -296,7 +298,7 @@ export default function AlignTimingDialog({ onClose }: { onClose: () => void }) 
                 <GlassButton
                   data-testid="align-octave-half"
                   style={CHIP}
-                  disabled={!canRegrid || busy}
+                  disabled={!canRegrid || busy || runningPass !== null}
                   onClick={() => void correctOctave(0.5)}
                 >
                   ÷2

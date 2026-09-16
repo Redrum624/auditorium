@@ -37,6 +37,15 @@ import { invalidateLyricsAlignment } from './alignLyricsService';
 import { hasAnyClip, useSessionStore } from '../multitrack/sessionStore'; // lot E: hasAnyClip
 import { isSessionDirty } from '../multitrack/sessionUndo';
 import { saveProject } from '../multitrack/sessionFile';
+// Final fix wave (item 13 / M1): the close-confirmation dialog's own "Save
+// Project" button cannot be reactively disabled — it is a native message box,
+// already showing before any lock state can reach it — so the gate has to be
+// imperative, taken here with the SAME descriptor `file.save`'s own
+// `runProjectSave` (menuActions.ts) uses. Without it, `closeFree()` (below)
+// deliberately permitting a close during an EFFECT pass would let "Save
+// Project" run the full project encode concurrently with that pass — exactly
+// the concurrency `passFree()` on `file.save` exists to prevent.
+import { runExclusivePass, blockedByPassReason, PASS_REFUSED } from './passLock';
 // Lot A (M5): Export in the multitrack view renders the session — the offline
 // mixdown is playback ground truth and is never diverged from here.
 import { mixdownSession } from '../multitrack/mixdown';
@@ -871,11 +880,31 @@ export async function closeDocumentFlow(docId: string): Promise<void> {
     });
     if (choice === 2) return; // Cancel
     if (choice === 0) {
+      // Final fix wave (item 13): acquire the SAME 'file.save' pass lock
+      // `runProjectSave` takes for the menu's own Save, rather than calling
+      // `saveProject` unguarded. `closeFree()` below allows this whole flow to
+      // run while an EFFECT pass is still going (proven safe for the close
+      // itself); the encode this triggers is not that proven-safe case, so it
+      // gets refused exactly like every other project save would be. A refusal
+      // here reads as "the save didn't land" to the logic right below, which
+      // already aborts the close rather than discarding unsaved work.
+      const result = await runExclusivePass(
+        { id: 'file.save', label: 'Save Project', kind: 'save' },
+        () => saveProject({ as: false })
+      );
+      if (result === PASS_REFUSED) {
+        await api().showMessageBox({
+          type: 'warning',
+          title: 'Cannot save yet',
+          message: `${blockedByPassReason() ?? 'Another pass is running.'} The document was not closed — try again once it finishes.`,
+          buttons: ['OK'],
+        });
+        return;
+      }
       // Save the project, then close — but abort the close if the save didn't
       // actually land (a cancelled Save As dialog, a failed write): a
       // successful project save clears this document's flags; anything else
       // leaves them set.
-      await saveProject({ as: false });
       const afterSave = findDoc(docId);
       if (afterSave && closeNeedsPrompt(afterSave)) return;
     }

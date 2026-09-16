@@ -1195,6 +1195,17 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
           const earliest = clip.startSample - clip.offsetSample; // offsetSample can't go below 0
           const latest = end - MIN_CLIP_SAMPLES; // lengthSample can't go below MIN_CLIP_SAMPLES
           const newStart = Math.min(Math.max(newBoundarySample, earliest), latest);
+          // RECORDED, NOT FIXED (final fix wave) — `offsetSample` indexes the
+          // SOURCE document, at the document's rate, but `(newStart -
+          // clip.startSample)` is a SESSION-sample delta: correct only when
+          // the clip's source document shares the session's sample rate.
+          // `splitClip` two functions below applies `docRateOf`'s ratio for
+          // exactly this reason and says so in its own comment; this arm
+          // does not, and is deliberately not being changed here — see
+          // `menuActions.mtTrim.test.ts`'s "converts a mixed-rate spanning
+          // clip's right half" test (its pinned `117_563` is this
+          // inconsistency's actual output, not a verified-correct one) and
+          // `KNOWN_LIMITATIONS.md`'s matching entry.
           updated = {
             ...clip,
             startSample: newStart,

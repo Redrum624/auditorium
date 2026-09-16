@@ -38,6 +38,7 @@ import { captureNoiseProfile, clearNoiseProfile, getNoiseProfile } from './noise
 import * as tempoAnalysis from './tempoAnalysis';
 import { runTempoAnalysis, getTempo, clearAllTempo } from './tempoAnalysis';
 import { createRemixDocument, getRemixSession, clearAllRemix as clearAllRemixSessions } from './remixService';
+import { acquirePass, _resetPassLock } from './passLock';
 
 // Decode is mocked so file-service tests never touch OfflineAudioContext/lamejs.
 // The MP3/FLAC encoders are mocked to spy on the format-faithful save routing
@@ -144,6 +145,9 @@ function buildFakeOggWithMarkers(markers: { positionSample: number; name: string
 beforeEach(() => {
   useAppStore.setState(makeInitialState());
   jest.clearAllMocks();
+  // Final fix wave (item 13): module-level state, like the session store
+  // below — a test that leaves the lock held would wedge every test after it.
+  _resetPassLock();
   // Lot A: the project (session store + its history + its path) is module-
   // global too; Save is a project save now, so every test starts from an
   // empty, never-written, clean project.
@@ -2127,6 +2131,36 @@ describe('closeDocumentFlow', () => {
     expect(path).toBe('D:\\out\\p.audm'); // the .audm, never the source audio file
     expect(new TextDecoder().decode(new Uint8Array(data as ArrayBuffer).subarray(0, 6))).toBe('AUDM4\n');
     expect(useAppStore.getState().documents).toHaveLength(0);
+  });
+
+  // BLOCKER 1 (final fix wave, item 13) — `closeFree()` deliberately permits
+  // this whole close-confirmation flow to run while an EFFECT pass holds the
+  // lock (proven safe for the CLOSE itself). The encode "Save Project" would
+  // trigger is not that proven-safe case: unguarded, it ran a full project
+  // save CONCURRENTLY with the running pass — exactly the concurrency
+  // `passFree()` on the menu's own `file.save` exists to prevent. Refused via
+  // the SAME `runExclusivePass('file.save', …)` seam `file.save` uses, so it
+  // is impossible for this door and the menu door to disagree about what
+  // "running" means.
+  it('BLOCKER 1: refuses to save (and does not close) when a pass is already running, instead of saving concurrently with it', async () => {
+    const api = installApi({ showMessageBox: jest.fn(async () => 0) }); // Save Project
+    const doc = seedDoc({ filePath: 'D:\\a.wav', dirty: true, name: 'a.wav' });
+
+    const release = acquirePass({ id: 'effect.amplify', label: 'Amplify', kind: 'effect' });
+    expect(release).not.toBeNull();
+
+    await closeDocumentFlow(doc.id);
+
+    // No encode ran, and the document was NOT closed — the same "abort the
+    // close" branch a failed/cancelled Save already takes.
+    expect(api.writeFile).not.toHaveBeenCalled();
+    expect(useAppStore.getState().documents).toHaveLength(1);
+    // M3: a refusal is surfaced, never a silent no-op.
+    expect(api.showMessageBox).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: 'Cannot save yet' })
+    );
+
+    release!();
   });
 
   it('prompts to save for a marker-only edit, no audio change (Task M1)', async () => {

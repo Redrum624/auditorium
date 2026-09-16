@@ -10,8 +10,13 @@ import type { TimeRange } from '../multitrack/timeRange';
  * Lot J (item 10) — `edit.trim`/`edit.silence`'s MULTITRACK arm: view-routed
  * enablement, the `mtRangeScopeTrackIds` scope rule (J2/J2-a), `edit.deselect`
  * clearing the range, J9 (Ctrl+A does not also set one), and the editor arm
- * left intact (F1's argument still applies to Cut/Copy/Paste and still
- * applies to Trim/Silence in the DOCUMENT views).
+ * left intact (F1's argument still applies to Trim/Silence in the DOCUMENT
+ * views, i.e. `canEditRegion` is still their non-multitrack predicate).
+ *
+ * X-4 (final fix wave): this used to lump Cut/Copy/Paste in with that same
+ * "F1 still applies" claim. Lot L since gave Copy/Paste their own multitrack
+ * arm (`canCopyClips`/`pasteBlockReason`, `clipClipboard.ts`), so F1
+ * unconditionally applies to `edit.cut` alone now.
  *
  * Shared fixture (X3 — non-identity): session rate 48 000; `T1` = `c1
  * {start: 20_000, len: 30_000, offsetSample: 5_000}`; `T2` = `c2 {start:
@@ -200,9 +205,22 @@ describe('edit.silence run-path (F4 fix round 1)', () => {
   // The `rates` map / `docRateOf` path into `splitClip` — the one place a
   // mixed-rate spanning clip's right half is converted (N3) — had no
   // coverage at all. A document at 44_100 Hz under a 48_000 Hz session: if
-  // `docRateOf` were silently ignored (ratio treated as 1), the right half's
-  // `offsetSample` would land at 120_000; converted correctly it lands at
-  // 117_563 — a non-identity, falsifiable difference.
+  // `docRateOf` were silently ignored (ratio treated as 1) at the SPLIT step,
+  // the right half's `offsetSample` would land at 120_000; with that one step
+  // converted it lands at 117_563 — a non-identity, falsifiable difference.
+  //
+  // RECORDED, NOT FIXED (final fix wave): 117_563 is NOT fully rate-correct
+  // end to end — it is only the split step (`splitClip`, via `docRateOf`)
+  // that is converted here. `silenceClipsInRange` (sessionStore.ts) follows
+  // that split with `trimClip(rightId, 'start', rightStartTo)` to carve the
+  // right edge back to the range's end, and `trimClip`'s own 'start' arm
+  // advances `offsetSample` by a SESSION-sample delta unconditionally (see
+  // its comment, sessionStore.ts) — it takes no `docRate` at all. A fully
+  // rate-correct value here would be lower (roughly 110_251: 27_563 from the
+  // converted split, plus the converted second-step delta rather than the
+  // raw 90_000 session samples this pin actually contains). This test pins
+  // CURRENT behaviour, inconsistent with `splitClip`'s own conversion one
+  // call earlier — not a value verified correct against the source document.
   it('converts a mixed-rate spanning clip’s right half through docRateOf, not the session rate', async () => {
     seed();
     const mixedDoc = createDocument({

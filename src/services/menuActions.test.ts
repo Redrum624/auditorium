@@ -872,6 +872,33 @@ describe('edit.selectAll (H4/H8, new — lot H)', () => {
     // where the standing fixture put it.
     expect(useAppStore.getState().selection).toEqual({ start: 12000, end: 71000 });
   });
+
+  // X-5 (final fix wave) — the PRIMARY clip, not just the set. `setSelectedClips`
+  // seats the LAST id in the array it is given as primary (last-id-wins,
+  // sessionStore.ts). The marquee (MultitrackView.tsx's `reversedHits`) and
+  // Paste (clipClipboard.ts's `pasteClipsAtCursor`) both reverse their
+  // reading-order id lists before calling it, so the topmost-track,
+  // earliest-start clip wins. `edit.selectAll` used to hand `setSelectedClips`
+  // reading order UNREVERSED, seating the bottom-most, latest clip instead —
+  // inconsistent with those other two entry points, and consequential because
+  // the primary drives the Properties panel, the Spatial panel and the
+  // clip-scoped pass target.
+  it('X-5: seats the topmost-track, earliest clip as primary — consistent with the marquee and Paste', async () => {
+    openLongDoc();
+    const [track1, track2] = useSessionStore.getState().session.tracks;
+    const clip1 = createClip({ documentId: 'x', startSample: 22050, offsetSample: 0, lengthSample: 2000 });
+    const clip2 = createClip({ documentId: 'x', startSample: 50000, offsetSample: 0, lengthSample: 1500 });
+    const clip3 = createClip({ documentId: 'x', startSample: 88200, offsetSample: 0, lengthSample: 1000 });
+    useSessionStore.getState().addClip(track1.id, clip1);
+    useSessionStore.getState().addClip(track1.id, clip2);
+    useSessionStore.getState().addClip(track2.id, clip3);
+    useAppStore.getState().setView('multitrack');
+
+    await runCommand('edit.selectAll');
+
+    // track1 (topmost) before track2, clip1 (earliest start) before clip2.
+    expect(useSessionStore.getState().selectedClipId).toBe(clip1.id);
+  });
 });
 
 describe('marker.add undo (Task M2 / F5)', () => {

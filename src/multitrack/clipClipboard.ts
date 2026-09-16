@@ -15,10 +15,13 @@ import {
   type ClipboardClipEntry,
 } from '../services/clipboard';
 
-// The five reasons a Paste can be refused (or, read by `EditToolbar`, why
-// Copy has nothing to copy). Exported as constants so the tooltip and the
-// tests read the exact same strings — `pasteBlockReason` is the only place
-// that composes one.
+// The five reasons a Paste can be refused. Exported as constants so the
+// tooltip and the tests read the exact same strings — `pasteBlockReason` is
+// the only place that composes one. X-4 (final fix wave): these are Paste's
+// own reasons only — Copy's "nothing to copy" reason in the multitrack view
+// is the separate literal `'select a clip first'` in `menuActions.ts`'s
+// `edit.copy` row, not one of these five (only `PASTE_HOLDS_CLIPS_REASON` is
+// shared, and only with `edit.paste`'s own waveform-view arm).
 export const PASTE_EMPTY_REASON = 'nothing has been copied yet';
 export const PASTE_HOLDS_AUDIO_REASON =
   'the clipboard holds a region of audio — copy a clip first';

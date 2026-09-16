@@ -13,8 +13,14 @@ import * as snapPreference from './snapPreference';
  * the command's registration are item 8's and are not re-tested here; what
  * this file pins is the routing: in the multitrack view the command reads the
  * SESSION (the clip selection, the clips, `mtCursorSample`) and writes clips,
- * and the four region verbs beside it stay refused (M7) while the hidden
- * active document is not touched at all.
+ * while the hidden active document is not touched at all.
+ *
+ * X-4 (final fix wave): this used to say "the four region verbs beside it
+ * stay refused (M7)" — true at the time (Cut/Copy/Paste/Trim/Silence were all
+ * unconditionally disabled in multitrack), but lots J and L since gave
+ * Trim/Silence and Copy/Paste their own multitrack arms (see
+ * `menuActions.mtTrim.test.ts`, `clipClipboard.test.ts`). Only `edit.cut`
+ * (M7) still stays refused outright in this view.
  */
 
 const store = () => useSessionStore.getState();

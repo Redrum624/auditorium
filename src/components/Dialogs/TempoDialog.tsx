@@ -20,7 +20,7 @@ import {
   type TempoRefusal,
 } from '../../services/tempoService';
 import { resolveRegion } from '../../services/selectionRegion';
-import { usePassLock } from '../../services/passLock';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { MIN_RATIO, MAX_RATIO } from '../../dsp/wsola';
 import { Gauge } from 'lucide-react';
@@ -301,7 +301,12 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
       : validSource && validTarget && !busy && ((check !== null && check.ok) || noOpWithMarkers));
 
   async function handleDetect() {
-    if (!doc || detecting) return;
+    // Final fix wave (item 13) — `runTempoAnalysis` spawns a real Worker
+    // (tempoAnalysis.ts) exactly like `tempo.detect` does at the menu, which
+    // IS wrapped in `runExclusivePass`; this door was the same computation
+    // with no gate at all. Defence in depth beside the button's own
+    // `runningPass !== null` below.
+    if (!doc || detecting || isPassRunning()) return;
     setDetecting(true);
     try {
       const result = await runTempoAnalysis(doc);
@@ -368,7 +373,9 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   // doubles it -- the exact convention PropertiesPanel's TempoSection (T5)
   // already established.
   async function correctOctave(periodMultiplier: 2 | 0.5) {
-    if (!doc || !docEntry || docEntry.bpm === null) return;
+    // Final fix wave (item 13) — `regridTempo` spawns the same Worker
+    // `handleDetect` does; see that gate's comment.
+    if (!doc || !docEntry || docEntry.bpm === null || isPassRunning()) return;
     setCorrectionFailed(false);
     // A ×2 / ÷2 re-track replaces the beat positions themselves, so any earlier
     // confirmation described a grid that no longer exists (RULING 1).
@@ -550,7 +557,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
             <GlassButton
               data-testid="tempo-detect-button"
               onClick={() => void handleDetect()}
-              disabled={detecting}
+              disabled={detecting || runningPass !== null}
               className="mt-1"
               style={CHIP}
             >
@@ -565,6 +572,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
                   data-testid="tempo-double-button"
                   title="Double tempo (x2) — re-tracks the beat grid"
                   onClick={() => void correctOctave(2)}
+                  disabled={runningPass !== null}
                   style={CHIP}
                 >
                   x2
@@ -573,6 +581,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
                   data-testid="tempo-halve-button"
                   title="Halve tempo (/2) — re-tracks the beat grid"
                   onClick={() => void correctOctave(0.5)}
+                  disabled={runningPass !== null}
                   style={CHIP}
                 >
                   /2

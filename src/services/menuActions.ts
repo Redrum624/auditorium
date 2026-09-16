@@ -374,9 +374,10 @@ const LAYOUT: { title: MenuSection['title']; itemIds: (string | 'separator')[] }
       // rather than behind a separator of their own. Until now the floating
       // edit toolbar was their only surface — mouse-reachable and nowhere
       // else, so anyone who looked for them where every other edit verb lives
-      // found nothing. Neither carries a shortcut label: neither has a combo
-      // in SHORTCUT_TABLE, and this repo has just paid for two labels that
-      // named keys doing nothing.
+      // found nothing. X-4 (final fix wave): this comment used to say
+      // "Neither carries a shortcut label" — stale since lot H bound `T`
+      // (`edit.trim`) and `S` (`edit.silence`) in SHORTCUT_TABLE; both rows
+      // do carry a label now, correctly.
       'edit.trim',
       'edit.silence',
       'separator',
@@ -607,7 +608,16 @@ function registerSelectionAndTransportCommands(): void {
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           const { session, setSelectedClips } = useSessionStore.getState();
-          setSelectedClips(session.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+          // X-5 (final fix wave): `flatMap` here reads in reading order —
+          // topmost track first, earliest start first within a track — but
+          // `setSelectedClips` seats the LAST id in the array as primary
+          // (`sessionStore.ts`'s last-id-wins rule), so passing reading order
+          // straight through seated the BOTTOM-most, LATEST clip as primary,
+          // unlike the marquee (`MultitrackView.tsx`'s `reversedHits`) and
+          // Paste (`clipClipboard.ts`'s `pasteClipsAtCursor`), which both
+          // reverse first so the topmost/earliest clip wins instead. Reversed
+          // here too, for the same primary the other two entry points pick.
+          setSelectedClips(session.tracks.flatMap((t) => t.clips.map((c) => c.id)).reverse());
           return;
         }
         const { documents, activeDocumentId, setSelection } = useAppStore.getState();
@@ -809,6 +819,14 @@ function registerEditCommands(): void {
    *
    * `edit.delete` is deliberately NOT in this set — it already routes to clip
    * removal in the multitrack view, so it is view-aware by design.
+   *
+   * X-4 (final fix wave): read this as F1's ORIGINAL five-verb rule, not as
+   * a live description of all five today. Lots J (Trim/Silence) and L
+   * (Copy/Paste) each added their own multitrack arm since, on their OWN
+   * predicates (`canTrimMtRange`/`canSilenceMtRange`,
+   * `canCopyClips`/`pasteBlockReason` — see those four commands below), not
+   * on `canEditRegion`. Only `edit.cut` is still gated on `canEditRegion`
+   * unconditionally, in every view.
    */
   const isDocumentEditView = (s: AppState) => s.view !== 'multitrack';
   const canEditRegion = (s: AppState) => isDocumentEditView(s) && hasSelection(s);
@@ -1073,16 +1091,23 @@ function registerEditCommands(): void {
     //
     // Lot J (item 10) — VIEW-ROUTED, in `edit.split`'s own shape above. This
     // OVERTURNS F1's five-verb set (`isDocumentEditView`/`canEditRegion`,
-    // this file's own note just above them) for these two members ONLY:
+    // this file's own note just above them) for these two members:
     // F1's argument was that Cut/Copy/Paste/Trim/Silence all edit a REGION OF
     // THE ACTIVE DOCUMENT, which the multitrack view does not show and whose
     // Undo (routed to the session) cannot reverse. That argument no longer
     // applies to Trim/Silence once a multitrack time range exists (J1-J9):
     // the multitrack arm edits the SESSION, not the hidden document, and the
     // adjacent Undo already addresses exactly that history
-    // (`edit.undo` above routes to `undoSession()` in this view). Cut/Copy/
-    // Paste stay on `canEditRegion` — a clip clipboard is lot L's, not this
-    // one's — so F1 still governs three of the five.
+    // (`edit.undo` above routes to `undoSession()` in this view).
+    //
+    // X-4 (final fix wave): this comment used to say Cut/Copy/Paste all
+    // "stay on `canEditRegion`... so F1 still governs three of the five" —
+    // true only until lot L (item 12) shipped the multitrack clip clipboard
+    // and view-routed `edit.copy`/`edit.paste` the same way (see those two
+    // commands below: `s.view === 'multitrack' ? canCopyClips() /
+    // pasteBlockReason() : canEditRegion(s)`). Only `edit.cut` still stays on
+    // `canEditRegion` unconditionally ("Still never in multitrack (M7)", its
+    // own comment below) — F1 now governs exactly ONE of the five.
     {
       id: 'edit.trim',
       label: 'Trim to Selection',
