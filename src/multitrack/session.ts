@@ -2,6 +2,20 @@ import { docLength, nextId, type AudioDocument } from '../audio/AudioDocument';
 import type { FadeCurve } from '../dsp/fades';
 import type { AutomationLane } from './automation';
 
+/** J8 (X3) — the minimum a clip may ever be shrunk to, in session samples:
+ * enforced by `sessionStore.trimClip` on BOTH edges (a clip asked to go
+ * shorter keeps this many samples instead) and by `isLegalSplitPoint` on both
+ * sides of a cut (a split point closer than this to either of the clip's own
+ * edges is illegal). Lot J's `trimTargets`/`silenceTargets`
+ * (`multitrack/timeRange.ts`) apply the SAME floor to a range boundary: a
+ * clip whose intersection with the swept range is under this many samples is
+ * removed rather than trimmed to an overhang (J8's ruling — held-at-the-floor
+ * would leave audio outside the range). Replaces five identical `32` literals
+ * that had drifted into their own copies (`sessionStore.ts`, `ClipView.tsx`).
+ * 32 samples is 0.67 ms at 48 kHz — inaudible, and exactly the store's own
+ * definition of "not a piece". */
+export const MIN_CLIP_SAMPLES = 32;
+
 export interface Clip {
   id: string; // 'clip-N'
   documentId: string; // source AudioDocument id

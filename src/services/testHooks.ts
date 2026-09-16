@@ -16,6 +16,7 @@ import {
   DEFAULT_FADE_CURVE,
 } from '../multitrack/session';
 import { gapAt, type TrackGap } from '../multitrack/gaps'; // D3
+import { orderTimeRange, type TimeRange } from '../multitrack/timeRange'; // lot J
 import { placeDocumentsOnTrack } from '../multitrack/sessionInsert';
 import { useSessionStore } from '../multitrack/sessionStore';
 import { withSessionGesture } from '../multitrack/sessionUndo';
@@ -293,6 +294,15 @@ export interface TestApi {
   /** D3: reads the selected gap back (`getStateSummary` carries no session
    * selection). */
   getSelectedGap(): TrackGap | null;
+  /** Lot J: sweeps the multitrack time range through the SAME resolver and
+   * setter the `Shift`+drag gesture uses (`orderTimeRange` + `setMtTimeRange`)
+   * — the harness cannot drag a real pointer, so this is the one production
+   * path both share. Returns the range it stored (a COPY, trap T16), or
+   * `null` for two raw samples that collapse to the same point. */
+  sweepMtRange(a: number, b: number): TimeRange | null;
+  /** Lot J: reads the range back (`getStateSummary` carries no session
+   * selection) — a COPY, for `getSelectedGap`'s own reason. */
+  getMtTimeRange(): TimeRange | null;
   /** K2/K3: reads the CURRENT track id back — `getStateSummary` carries no
    * session selection, and lot L's paste target has no other way in for the
    * harness (no marquee hook exists either; Playwright drags the real lane,
@@ -1987,6 +1997,21 @@ export function installTestHooks(): void {
       // handing out the store's own object would let a harness-side mutation
       // reach into the store (trap T16's argument, one object at a time).
       return gap === null ? null : { ...gap };
+    },
+
+    // Lot J. `orderTimeRange` is the SAME resolver `MultitrackView`'s sweep
+    // calls (through `snappedMt`, which this hook has no pointer to drive);
+    // `setMtTimeRange` is the SAME raw setter. One production path, two ways
+    // in.
+    sweepMtRange: (a, b) => {
+      const range = orderTimeRange(a, b);
+      useSessionStore.getState().setMtTimeRange(range);
+      return range === null ? null : { ...range };
+    },
+
+    getMtTimeRange: () => {
+      const range = useSessionStore.getState().mtTimeRange;
+      return range === null ? null : { ...range };
     },
 
     getCurrentTrack: () => useSessionStore.getState().currentTrackId,

@@ -5319,6 +5319,74 @@ async function main() {
       '  gaps: the band covered the empty stretch; Delete and Shift+Del each closed it in one undo step'
     );
 
+    // Lot J (item 10) — the multitrack TIME RANGE and Trim, wired.
+    //
+    // The sweep gesture itself (`Shift`+drag) is a real pointer drag over a
+    // real lane, unreachable from Playwright the way the gap's own
+    // double-click already is not (see (f)'s own header above) — same
+    // argument, same fix: `sweepMtRange` states the same OUTCOME through the
+    // resolver and setter the gesture itself calls (`orderTimeRange` +
+    // `setMtTimeRange`). What is left under test here is everything the hook
+    // does not do: the BAND the app paints, the pill's Trim button actually
+    // reaching the session, and the single undo entry it leaves.
+    //
+    // The session found here is (f)'s own restore: ONE clip over [0, 88200)
+    // on track 1.
+    console.log('Time range (item 10): sweep a range, Trim keeps it, Ctrl+Z restores...');
+    const rangeBefore = await page.evaluate(() => window.__test.getClipFadeState()).then((s) => s.clips[0]);
+    assert(
+      rangeBefore.startSample === 0 && rangeBefore.lengthSample === 88200,
+      `found the session where (f) left it (${JSON.stringify(rangeBefore)})`
+    );
+    const sweptRange = await page.evaluate(() => window.__test.sweepMtRange(20000, 50000));
+    assert(
+      sweptRange !== null && sweptRange.startSample === 20000 && sweptRange.endSample === 50000,
+      `the hook stored the range it was asked for (${JSON.stringify(sweptRange)})`
+    );
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-testid="mt-time-range"]').length === 1,
+      null,
+      { timeout: 5000 }
+    );
+    const bandPainted = await page.evaluate(
+      () => document.querySelectorAll('[data-testid="mt-time-range"]').length
+    );
+    assert(bandPainted === 1, `the time-range band is painted once the range is set (${bandPainted})`);
+
+    const trimBtn = '[data-testid="edit-pill"] button[aria-label="Trim"]';
+    const trimState = await page.evaluate((sel) => {
+      const b = document.querySelector(sel);
+      return { present: b !== null, disabled: b !== null && b.disabled === true };
+    }, trimBtn);
+    assert(
+      trimState.present && trimState.disabled === false,
+      `the pill's Trim button is present and LIVE once a time range is standing (${JSON.stringify(trimState)})`
+    );
+    await page.click(trimBtn);
+    await page.waitForFunction(
+      () => window.__test.getClipFadeState().clips[0].lengthSample === 30000,
+      null,
+      { timeout: 10000 }
+    );
+    const afterTrim = await page.evaluate(() => window.__test.getClipFadeState());
+    assert(
+      afterTrim.clips.length === 1 &&
+        afterTrim.clips[0].startSample === 20000 &&
+        afterTrim.clips[0].lengthSample === 30000,
+      `Trim kept exactly the swept range — the surviving clip's span equals what the hook returned ` +
+        `(${JSON.stringify(afterTrim.clips)} vs range ${JSON.stringify(sweptRange)})`
+    );
+
+    await page.keyboard.press('Control+z');
+    const afterRangeZ = await page.evaluate(() => window.__test.getClipFadeState());
+    assert(
+      afterRangeZ.clips.length === 1 &&
+        afterRangeZ.clips[0].startSample === 0 &&
+        afterRangeZ.clips[0].lengthSample === 88200,
+      `ONE Ctrl+Z restored the whole trim (${JSON.stringify(afterRangeZ.clips)})`
+    );
+    console.log('  time range: swept, Trim kept exactly it, one Ctrl+Z restored the session');
+
     // (g) D1 — Ctrl+wheel zooms toward the BAR, never toward the pointer.
     //
     // The whole of D1 is a relation between three numbers the store holds and

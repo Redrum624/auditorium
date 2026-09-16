@@ -51,18 +51,22 @@ import { ChromePill } from '../UI/glass';
  *    one — and `multitrackTitle` describes the verb. No new field: `title`
  *    already serves that side.
  *  - Delete is routed too, and always was: it removes the selected clips there.
- *  - Copy, Paste, Trim and Silence stay greyed, because their COMMANDS are
- *    disabled there and not because this pill says so. Each edits a region of
- *    the active document, which that view does not show; Trim and Silence used
- *    to stay lit and would destroy the hidden document with the neighbouring
- *    Undo unable to reverse it (that Undo routes to the SESSION's history
- *    there). The prerequisites they lack are DIFFERENT — Copy and Paste want a
- *    clip clipboard the app does not have, Trim and Silence a time selection
- *    the view has no gesture for — so each says its own reason (M7) rather
- *    than sharing one paragraph that fits neither pair exactly.
+ *  - Copy and Paste stay greyed there, because their COMMANDS are disabled and
+ *    not because this pill says so: each edits a region of the active
+ *    document, which that view does not show, and wants a clip clipboard the
+ *    app does not yet have (lot L).
+ *  - Trim and Silence (lot J, item 10) are ROUTED too, like Split and Delete:
+ *    a swept multitrack time range in that view, a document region in the
+ *    editors. They used to stay unconditionally greyed with `multitrackReason:
+ *    'needs a time selection'` — true until lot J built the `Shift`+drag
+ *    sweep that IS one. Each now carries a `multitrackTitle` naming the
+ *    gesture (J9's compensation for not also wiring Ctrl+A/Select All to it),
+ *    and greys or lights exactly as `edit.split`'s own button does, on the
+ *    command's OWN predicate.
  * The gate itself lives in the registry so the menu and the keyboard obey it
- * too; this component only chooses the tooltip that explains a greying the
- * predicate has already decided, because a missing button teaches nothing.
+ * too; this component only chooses the tooltip that explains a greying (or a
+ * different meaning) the predicate has already decided, because a missing
+ * button teaches nothing.
  */
 
 export interface EditToolbarItem {
@@ -149,19 +153,28 @@ export const EDIT_TOOLBAR_ITEMS: EditToolbarItem[] = [
       'Delete (D or Del) — removes the selected clips, or closes the selected gap: the clips after it on that track move up',
   },
   {
+    // Lot J (item 10) — Trim now WORKS in Multitrack (a swept time range,
+    // not a document region), so it drops `multitrackReason` — the button is
+    // no longer unconditionally blocked there — and gains `multitrackTitle`,
+    // the `edit.split`/`multitrack.joinClips` shape: what the SAME command
+    // does in this OTHER view. J9's compensation for the discoverability
+    // ruling (Ctrl+A does not also set the range): the tooltip names the
+    // gesture rather than only the greyed reason.
     label: 'Trim',
     commandId: 'edit.trim',
     Icon: Crop,
     startsGroup: true,
-    multitrackReason: 'needs a time selection',
     title: 'Trim to Selection (T) — keeps the selected region, drops the rest',
+    multitrackTitle:
+      'Trim to Selection — keeps only the swept time range on the selected clips’ tracks (all tracks with nothing selected). Shift+drag a lane to sweep a range.',
   },
   {
     label: 'Silence',
     commandId: 'edit.silence',
     Icon: VolumeX,
-    multitrackReason: 'needs a time selection',
     title: 'Silence Selection (S) — zeroes the selected region in place',
+    multitrackTitle:
+      'Silence Selection — clears the swept time range on those tracks and leaves the hole; nothing else moves. Shift+drag a lane to sweep a range.',
   },
   { label: 'Undo', commandId: 'edit.undo', Icon: Undo2, startsGroup: true, title: 'Undo (U or Ctrl+Z)' },
   { label: 'Redo', commandId: 'edit.redo', Icon: Redo2, title: 'Redo (R or Ctrl+Y)' },
@@ -221,6 +234,10 @@ export default function EditToolbar() {
   // else, so without this the Delete/Ripple Delete predicates would light one
   // unrelated render late — the same argument as the three above.
   useSessionStore((s) => s.selectedGap);
+  // Lot J: a Shift-drag sweep writes `mtTimeRange` and nothing else, so
+  // without this fifth selector the Trim/Silence rows would grey and un-grey
+  // one unrelated render late too.
+  useSessionStore((s) => s.mtTimeRange);
   const documentCount = useAppStore((s) => s.documents.length);
   const isMultitrack = useAppStore((s) => s.view) === 'multitrack';
 

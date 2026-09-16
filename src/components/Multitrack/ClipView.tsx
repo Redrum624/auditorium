@@ -4,7 +4,7 @@ import type { AudioDocument } from '../../audio/AudioDocument';
 import { docLength } from '../../audio/AudioDocument';
 import { getPyramids } from '../../services/peaksCache';
 import { crossfadeGains, fadeInShape, fadeOutShape } from '../../dsp/fades';
-import type { Clip } from '../../multitrack/session';
+import { MIN_CLIP_SAMPLES, type Clip } from '../../multitrack/session';
 import { CROSSFADE_RHO, resolveClipFadeSpecs } from '../../multitrack/mixdown';
 import { moveClipsBy, useSessionStore } from '../../multitrack/sessionStore'; // K1
 import { clampGroupDelta, resolveGroupTrackDelta } from '../../multitrack/groupDrag'; // T5
@@ -25,7 +25,6 @@ import { sessionSnapTiers, type SessionSnapTiers } from './sessionSnapTargets';
 
 const HANDLE_PX = 6;
 const DRAG_THRESHOLD = 4;
-const MIN_LENGTH = 32;
 
 /** X4 — side of the square corner fade handles. Larger than the 6 px trim
  * band so the fade grab reads as its own affordance, and the handle sits at
@@ -929,7 +928,7 @@ export default function ClipView({
       // validity second (the ordering v1.8 established; see pointerUp).
       const snappedEnd = snapBoundary(drag.origEnd + dxSamples, drag, alt);
       const target = Math.min(maxTrimEnd(), snappedEnd);
-      trimClip(clip.id, 'end', Math.round(Math.max(drag.origStart + MIN_LENGTH, target)));
+      trimClip(clip.id, 'end', Math.round(Math.max(drag.origStart + MIN_CLIP_SAMPLES, target)));
     }
   };
 

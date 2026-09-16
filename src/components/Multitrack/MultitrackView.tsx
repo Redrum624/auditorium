@@ -6,6 +6,7 @@ import { commandReason, isCommandEnabled, runCommand } from '../../services/menu
 import { usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
 import { hasAnyClip, publishSessionLaneWidth, useSessionStore } from '../../multitrack/sessionStore';
+import { orderTimeRange, rangeBandPx } from '../../multitrack/timeRange'; // lot J
 import { sessionLaneWidth } from '../../multitrack/sessionViewport';
 import { snapSample } from '../../services/snap';
 import TimelineRuler from '../Editor/TimelineRuler';
@@ -90,6 +91,9 @@ export default function MultitrackView() {
   const setSelectedClip = useSessionStore((s) => s.setSelectedClip);
   const setSelectedClips = useSessionStore((s) => s.setSelectedClips);
   const setSelectedGap = useSessionStore((s) => s.setSelectedGap);
+  // Lot J — the multitrack time range and its own raw setter.
+  const mtTimeRange = useSessionStore((s) => s.mtTimeRange);
+  const setMtTimeRange = useSessionStore((s) => s.setMtTimeRange);
 
   const documents = useAppStore((s) => s.documents);
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
@@ -216,11 +220,13 @@ export default function MultitrackView() {
   const marqueeRef = useRef<{
     pointerId: number;
     targetEl: Element;
-    // 'range' (fix round 2, X6) — a Shift press. Carries the SAME shape as
-    // 'add'/'replace' for one reason only: catching the sub-threshold
-    // click-away clear. `onOverlayPointerUp` returns before computing a hit
-    // set for it, and `onOverlayPointerMove` draws no rectangle for it —
-    // lot J owns the actual sweep and whatever it draws.
+    // 'range' (fix round 2, X6; lot J) — a Shift press. Carries the SAME
+    // shape as 'add'/'replace' for K's own purpose (catching the
+    // sub-threshold click-away clear: `onOverlayPointerUp` returns before
+    // computing a hit set for it, and `onOverlayPointerMove` draws no
+    // MARQUEE rectangle for it) — lot J owns the actual sweep, reading
+    // `anchorRangeSample`/`targets` below, fields K's own 'add'/'replace'
+    // modes never populate.
     mode: 'add' | 'replace' | 'range';
     anchorSample: number;
     anchorContentY: number;
@@ -231,6 +237,17 @@ export default function MultitrackView() {
     baseIds: string[];
     deferredClear: boolean;
     exceeded: boolean;
+    // Lot J — 'range' mode only. `targets` is `mtSnapTargets()` FROZEN once
+    // at pointerdown (T7's rule: a drag's magnet must not change under the
+    // user's hand mid-gesture), `null` for 'add'/'replace' (K's own modes
+    // never read it). `anchorRangeSample` is the SNAPPED anchor — unlike
+    // K's own `anchorSample` above (raw, unsnapped: the marquee's rectangle
+    // is pixel-accurate, not magnet-seeking) — snapped once at pointerdown
+    // and reused verbatim for every move, the `useEditorGestures.ts:252`
+    // precedent ("the anchor is snapped once; only the moving edge is
+    // re-snapped").
+    targets: number[] | null;
+    anchorRangeSample: number;
   } | null>(null);
   const [marqueeRect, setMarqueeRect] = useState<{
     left: number;
@@ -335,6 +352,14 @@ export default function MultitrackView() {
 
     const anchorSample = marqueeSampleAt(e.clientX);
     const anchorContentY = contentYAt(e.clientY);
+    // Lot J — 'range' mode only: the snap targets frozen for the whole
+    // gesture (T7), and the anchor snapped ONCE against them
+    // (`useEditorGestures.ts:252`'s precedent). `anchorSample` above stays
+    // K's own raw, unsnapped pixel anchor for the marquee rectangle; this is
+    // a SEPARATE sample in a separate coordinate role, not a second name for
+    // the same value.
+    const targets = mode === 'range' ? mtSnapTargets() : null;
+    const anchorRangeSample = targets !== null ? snappedMt(anchorSample, targets, e) : 0;
     marqueeRef.current = {
       pointerId: e.pointerId,
       targetEl: target,
@@ -346,6 +371,8 @@ export default function MultitrackView() {
       lastClientX: e.clientX,
       lastClientY: e.clientY,
       baseIds: [...useSessionStore.getState().selectedClipIds],
+      targets,
+      anchorRangeSample,
       // X6 — fix round 2 (item 6, the gutter asymmetry). On a LANE,
       // `TrackLane.onPointerDown` already clears immediately for the PLAIN
       // case (no modifiers); this flag only needs to cover what it defers
@@ -381,7 +408,21 @@ export default function MultitrackView() {
     // this record exists only to catch the click-away clear on a
     // sub-threshold release; a real Shift-drag is lot J's own sweep, drawing
     // whatever lot J draws, not K1's rubber-band.
-    if (rec.exceeded && rec.mode !== 'range') setMarqueeRect(marqueeRectFor(rec, e.clientX, e.clientY));
+    if (rec.mode === 'range') {
+      // Lot J — below the threshold, write nothing (same rule as the
+      // marquee: an un-exceeded press must not paint a band any more than it
+      // draws a rectangle). Past it, only the MOVING edge is re-snapped —
+      // `rec.anchorRangeSample` was snapped once at pointerdown and is
+      // reused verbatim — and `setMtTimeRange` is the ONLY thing painting the
+      // band: no parallel preview variable exists for a stale label to read.
+      if (rec.exceeded) {
+        const raw = marqueeSampleAt(e.clientX);
+        const moving = snappedMt(raw, rec.targets ?? [], e);
+        setMtTimeRange(orderTimeRange(rec.anchorRangeSample, moving));
+      }
+      return;
+    }
+    if (rec.exceeded) setMarqueeRect(marqueeRectFor(rec, e.clientX, e.clientY));
   };
 
   /** K6 — no edge auto-scroll, but a plain (uncaptured) vertical scroll mid-drag
@@ -440,6 +481,11 @@ export default function MultitrackView() {
       // always true for it, so a Shift press-and-release still deselects
       // (X6, fix round 2).
       if (rec.deferredClear) setSelectedClip(null);
+      // Lot J (row 9) — the sweep's own click-away: a sub-threshold `'range'`
+      // release is a Shift-click, not a drag, so it clears a standing time
+      // range exactly as Escape does (`edit.deselect`) rather than leaving a
+      // band up with nothing that swept it.
+      if (rec.mode === 'range') setMtTimeRange(null);
       // Item 3, fix round 3 — the GUTTER has no `TrackLane` to run its own
       // gap-clearing check (`TrackLane.tsx`'s D3 block, which clears a
       // standing gap unconditionally on modifiers whenever the press is not
@@ -457,9 +503,11 @@ export default function MultitrackView() {
     }
     // K1's commit — the swept clip selection — is `'add'`/`'replace'` only.
     // A `'range'` record that exceeded the threshold is a REAL Shift-drag,
-    // i.e. lot J's time-range sweep; K's role for it ends here, having
-    // already ruled out drawing a rectangle for it above. Lot J's own
-    // handler will read the same record shape and take over this branch.
+    // i.e. lot J's time-range sweep, already fully committed by the last
+    // `onOverlayPointerMove` (every move writes `mtTimeRange` directly —
+    // there is no separate commit step, the same "no parallel preview state"
+    // rule that keeps the drawn band and the store in lockstep). Nothing
+    // left to do here but let the generic teardown above run.
     if (rec.mode === 'range') return;
     const rowIds = trackIdsInBand(marqueeRows(), rec.anchorContentY, contentYAt(e.clientY));
     const span = orderedSpan(rec.anchorSample, marqueeSampleAt(e.clientX));
@@ -489,6 +537,13 @@ export default function MultitrackView() {
     // blur, alt-tab, the OS stealing the pointer — so the press was never
     // completed and is not a click either; no selection write, no
     // `deferredClear` commit, just teardown.
+    //
+    // Lot J — for `'range'` this is DELIBERATELY unlike `ClipView.tsx`'s own
+    // cancel, which rolls a clip back to where it started: `mtTimeRange` is
+    // view state with no undo entry (the `selectedGap` treatment), not an
+    // edit, so a half-swept range is left EXACTLY where the last move put
+    // it — an honest position, not a half-committed one to unwind. Teardown
+    // here clears only the gesture record, never the range itself.
     try {
       rec.targetEl.releasePointerCapture?.(rec.pointerId);
     } catch {
@@ -771,6 +826,34 @@ export default function MultitrackView() {
           )}
         </div>
 
+        {/* Lot J — the swept TIME RANGE band. Rendered BEFORE `mt-cursor-line`
+            (below) so the white cursor paints over it, exactly as the gap
+            band's own tokens (`TrackLane.tsx`'s `--accent-soft`/
+            `--accent-ring`) — the same colour language, deliberately: J5
+            keeps the two mutually exclusive on screen, so reusing the gap's
+            look says "this is the multitrack's other kind of span" rather
+            than inventing a third visual language. No `z-index` of its own
+            (paints under `EnvelopeLane`'s `z-10` and the cursor handle's 20,
+            same as the marquee rectangle). `rangeBandPx` returns LANE
+            pixels; `HEADER_W` is added here once, mirroring `cursorX` above
+            — no fifth copy of the 224. */}
+        {(() => {
+          const band = rangeBandPx(mtTimeRange, mtZoom, sessionLaneWidth());
+          return (
+            band !== null && (
+              <div
+                data-testid="mt-time-range"
+                className="pointer-events-none absolute top-0 bottom-0"
+                style={{
+                  left: HEADER_W + band.leftPx,
+                  width: band.widthPx,
+                  backgroundColor: 'var(--accent-soft)',
+                  boxShadow: 'inset 0 0 0 1px var(--accent-ring)',
+                }}
+              />
+            )
+          );
+        })()}
         {/* Multitrack cursor (white) — where playback will start. The LINE
             stays inert; only the handle below is grabbable, the same split as
             the editor's hit rule. Task 8: culled by `laneVisible` — a bar off

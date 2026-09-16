@@ -178,7 +178,12 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
   // now says its OWN reason instead of sharing one paragraph, because the two
   // pairs are blocked for different reasons and only one of them could ever be
   // lifted by selecting something.
-  it('4a greys Copy / Paste / Trim / Silence in Multitrack, each with its own reason', () => {
+  // Lot J (item 10) — Trim/Silence DROP OUT of the blocked set here: they are
+  // now view-routed (`edit.trim`/`edit.silence`), not gated on
+  // `multitrackReason` at all, so their title is `multitrackTitle` in this
+  // view regardless of whether the command is currently enabled. Copy/Paste
+  // stay blocked (lot L's clip clipboard has not landed).
+  it('4a greys Copy / Paste in Multitrack, each with its own reason, and re-titles Trim / Silence', () => {
     lastDocId = addDoc().id;
     act(() => {
       useAppStore.getState().setSelection({ start: 0, end: 1000 });
@@ -187,7 +192,7 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     setClipboard({ channels: [new Float32Array(100)], sampleRate: 44100 });
     render(<EditToolbar />);
 
-    for (const label of ['Copy', 'Paste', 'Trim', 'Silence']) {
+    for (const label of ['Copy', 'Paste']) {
       expect(btn(label)).toBeDisabled();
       const title = btn(label).title.toLowerCase();
       expect(title).toContain('multitrack');
@@ -196,10 +201,22 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     }
     expect(btn('Copy').title).toContain('needs a clip clipboard');
     expect(btn('Paste').title).toContain('needs a clip clipboard');
-    expect(btn('Trim').title).toContain('needs a time selection');
-    expect(btn('Silence').title).toContain('needs a time selection');
 
-    // The three that are NOT blocked by the view say nothing of the sort —
+    // No multitrack time range is standing, so the command is still refused —
+    // but for the NEW reason, and the title names the GESTURE rather than a
+    // blocked-view sentence (J9's discoverability compensation).
+    expect(btn('Trim')).toBeDisabled();
+    expect(btn('Silence')).toBeDisabled();
+    expect(btn('Trim').title).toBe(
+      'Trim to Selection — keeps only the swept time range on the selected clips’ tracks (all tracks with nothing selected). Shift+drag a lane to sweep a range.'
+    );
+    expect(btn('Silence').title).toBe(
+      'Silence Selection — clears the swept time range on those tracks and leaves the hole; nothing else moves. Shift+drag a lane to sweep a range.'
+    );
+    expect(btn('Trim').title.toLowerCase()).not.toContain('not available');
+    expect(btn('Silence').title.toLowerCase()).not.toContain('not available');
+
+    // The rows that were NEVER blocked by the view say nothing of the sort —
     // Delete and Split route to a session act there, Undo/Redo to the session's
     // history.
     for (const label of ['Delete', 'Undo', 'Redo']) {
@@ -207,7 +224,26 @@ describe('EditToolbar — per-button enablement, each predicate both ways', () =
     }
   });
 
-  it('4b lights the same four again on the way back to Waveform, so the gate is the VIEW', () => {
+  it('4a-j Trim/Silence LIGHT UP in Multitrack once a time range is swept', () => {
+    lastDocId = addDoc().id;
+    act(() => useAppStore.getState().setView('multitrack'));
+    render(<EditToolbar />);
+    expect(btn('Trim')).toBeDisabled();
+    expect(btn('Silence')).toBeDisabled();
+
+    act(() => {
+      useSessionStore.getState().addTrack();
+      const trackId = useSessionStore.getState().session.tracks[0].id;
+      const clip = createClip({ documentId: 'x', startSample: 1_000, offsetSample: 0, lengthSample: 3_000 });
+      useSessionStore.getState().addClip(trackId, clip);
+      useSessionStore.getState().setMtTimeRange({ startSample: 500, endSample: 2_000 });
+    });
+
+    expect(btn('Trim')).toBeEnabled();
+    expect(btn('Silence')).toBeEnabled();
+  });
+
+  it('4b lights Copy / Paste / Trim / Silence again on the way back to Waveform, so the gate is the VIEW', () => {
     lastDocId = addDoc().id;
     act(() => {
       useAppStore.getState().setSelection({ start: 0, end: 1000 });

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { nextId } from '../audio/AudioDocument';
 import type { Clip, Session, Track } from './session';
-import { clampFadePair, createTrack, crossfadableOverlap } from './session';
+import { clampFadePair, createTrack, crossfadableOverlap, MIN_CLIP_SAMPLES } from './session';
 import {
   clampAutomationValue,
   type AutomationKey,
@@ -26,6 +26,7 @@ import { laneWidthFromScrollerWidth, sessionLaneWidth, setSessionLaneWidth } fro
 import { clampGroupDelta } from './groupDrag'; // T5
 import { closeGapShifts, gapAt, gapProbeSample, type TrackGap } from './gaps'; // D3
 import { splitSelectionAfter, type LastSplit, type SplitOutcome } from './splitSelection'; // G6 (item 7)
+import { silenceTargets, trimTargets, type TimeRange } from './timeRange'; // lot J
 
 export interface SessionState {
   session: Session;
@@ -127,6 +128,36 @@ export interface SessionState {
    */
   lastSplit: LastSplit | null;
   mtCursorSample: number;
+  /**
+   * Lot J (item 10) — the multitrack TIME RANGE: one `{startSample,
+   * endSample}` span across EVERY lane (J3 — matching the cursor's own
+   * argument that it is one line drawn over every track, `clipEdges.ts:14-20`),
+   * set by a `Shift`+drag sweep on the lane background (row 9 of lot K's
+   * pointer contract) and read by Trim/Silence's own multitrack predicates
+   * (`menuActions.ts`'s `canTrimMtRange`/`canSilenceMtRange`).
+   *
+   * MUTUALLY EXCLUSIVE WITH `selectedGap` on screen (J5 — D3's "never a third
+   * state" extended to a second kind of span): `setMtTimeRange` clears a
+   * standing gap, and `setSelectedGap` clears a standing range. Deliberately
+   * NOT exclusive with the CLIP selection (J2) — the range says WHICH TIME,
+   * the clip selection says WHICH TRACKS (via `mtRangeScopeTrackIds`), and
+   * `edit.split` already ships that same split of meaning.
+   *
+   * UI-only state, in the `selectedGap`/`currentTrackId` style (ruling 3): NOT
+   * in `SessionSnapshot` (an undo neither restores nor steals it — set R, undo
+   * an unrelated clip move, and R is still standing), NOT on `Session`, so
+   * `serializeSession*` never writes it and no `.audm` byte-identity pin is
+   * affected (J6). UNLIKE the gap and the current track, this is NOT
+   * reconciled by the session subscriber: a range is absolute time, derived
+   * from no clip or track, so no session mutation can strand it — only a
+   * WHOLESALE session replacement (`sessionLanding.installSession`) drops it,
+   * the same treatment `mtEnvelope` gets there and for the same reason (a
+   * stale band must not outlive its session). The one exception is
+   * `viewStateAtRate`: a rate ADOPTION (or an undo across one) re-denominates
+   * this alongside the cursor, or a range measured in the old rate would
+   * silently name a different stretch of time in the new one.
+   */
+  mtTimeRange: TimeRange | null;
   mtZoom: { samplesPerPixel: number; scrollSample: number };
   mtPlayState: 'stopped' | 'playing';
   /**
@@ -219,7 +250,7 @@ export interface SessionActions {
    * `resolveClipFadeSpecs` for the render-side gate. */
   addClip(trackId: string, clip: Clip): void; // inserts sorted; accepts overlap verbatim; never writes fades
   moveClip(clipId: string, toTrackId: string, newStartSample: number, opts?: { clearOverlap?: boolean }): void; // clamps >=0; commits verbatim + maintains facing fades; opts.clearOverlap = v1.8 nudge; H1 no-op guard: same track + same RESOLVED sample records nothing
-  trimClip(clipId: string, edge: 'start' | 'end', newBoundarySample: number): void; // adjusts offset/length, min 32; may overlap a neighbour; re-clamps fades (X2 — see setClipFade) and maintains facing fades on the overlap it reshapes (X5)
+  trimClip(clipId: string, edge: 'start' | 'end', newBoundarySample: number): void; // adjusts offset/length, min MIN_CLIP_SAMPLES; may overlap a neighbour; re-clamps fades (X2 — see setClipFade) and maintains facing fades on the overlap it reshapes (X5)
   /** D3 — RIGID TRANSLATION of a set of clips on ONE track by ONE delta, in ONE
    * `set()`: every named clip keeps its length, its offset, its gain AND both
    * fade fields verbatim, and only `startSample` moves. No `maintainFacingFades`
@@ -384,6 +415,14 @@ export interface SessionActions {
    * resolved it through `gapAt` a moment earlier. Records no undo entry: a
    * selection is view state. */
   setSelectedGap(gap: TrackGap | null): void;
+  /** Lot J — sets (or clears with `null`) the multitrack time range. The RAW
+   * setter, as `setSelectedGap`/`setMtCursor` are: the span it is handed is
+   * committed verbatim, because the only production caller (`MultitrackView`'s
+   * sweep) has already ordered and snapped it through `orderTimeRange`. A
+   * non-null range clears a standing `selectedGap` (J5); `null` leaves a
+   * standing gap alone. Records no undo entry: like `selectedGap`, this is
+   * view state. */
+  setMtTimeRange(range: TimeRange | null): void;
   /** K2/K3 — names the CURRENT track (or clears it with `null`). Ignores an
    * id no track in the session carries — the set may never hold a dangling
    * reference, the same discipline `toggleSelectedClip` applies to a clip id.
@@ -808,8 +847,9 @@ function reconcileTrimmedFades(clip: Clip, trimmedEdge: 'start' | 'end'): Clip {
 
 /** N2 - whether `sample` is a legal split point for `clip` among its
  * track-mates `clips`: an INTEGER (every cursor writer rounds; nothing here
- * rounds or snaps - N1) at least 32 samples inside BOTH edges (`trimClip`'s
- * own minimum length), and not inside any raw overlap with a track-mate.
+ * rounds or snaps - N1) at least `MIN_CLIP_SAMPLES` inside BOTH edges
+ * (`trimClip`'s own minimum length), and not inside any raw overlap with a
+ * track-mate.
  *
  * The overlap interval is CLOSED at both ends: a split exactly at a mate's
  * start would mint an equal-start pair and one exactly at a mate's end an
@@ -817,11 +857,16 @@ function reconcileTrimmedFades(clip: Clip, trimmedEdge: 'start' | 'end'): Clip {
  * an armed crossfade there would silently degrade into two solo fades. Outside
  * every overlap the halves partition the clip's span and every pair's geometry
  * rides unchanged on whichever half holds it - which is exactly what lets
- * `splitClip` skip `maintainFacingFades`. */
-function isLegalSplitPoint(clips: readonly Clip[], clip: Clip, sample: number): boolean {
+ * `splitClip` skip `maintainFacingFades`.
+ *
+ * Exported (lot J) — `multitrack/timeRange.ts`'s `silenceTargets` omits a
+ * `split` action whose cut point this refuses, so the row greys for exactly
+ * the cases the store would refuse rather than throwing on `splitClip`'s own
+ * no-op. One definition, not a second copy. */
+export function isLegalSplitPoint(clips: readonly Clip[], clip: Clip, sample: number): boolean {
   if (!Number.isInteger(sample)) return false;
   const end = clip.startSample + clip.lengthSample;
-  if (sample - clip.startSample < 32 || end - sample < 32) return false;
+  if (sample - clip.startSample < MIN_CLIP_SAMPLES || end - sample < MIN_CLIP_SAMPLES) return false;
   for (const m of clips) {
     if (m.id === clip.id || rawOverlapWidth(clip, m) === 0) continue;
     const lo = Math.max(clip.startSample, m.startSample);
@@ -887,6 +932,7 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
   currentTrackId: null, // K2/K3
   lastSplit: null, // G6 (item 7)
   mtCursorSample: 0,
+  mtTimeRange: null, // lot J
   mtPlayState: 'stopped',
   mtPlayheadSample: 0,
   mtEnvelope: null,
@@ -905,6 +951,7 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
         selectedGap: null, // D3
         lastSplit: null, // G6 (item 7)
         mtCursorSample: 0,
+        mtTimeRange: null, // lot J
         mtPlayState: 'stopped',
         mtPlayheadSample: 0,
         mtEnvelope: null,
@@ -1139,7 +1186,7 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
         if (edge === 'start') {
           const end = clip.startSample + clip.lengthSample;
           const earliest = clip.startSample - clip.offsetSample; // offsetSample can't go below 0
-          const latest = end - 32; // lengthSample can't go below 32
+          const latest = end - MIN_CLIP_SAMPLES; // lengthSample can't go below MIN_CLIP_SAMPLES
           const newStart = Math.min(Math.max(newBoundarySample, earliest), latest);
           updated = {
             ...clip,
@@ -1153,9 +1200,9 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
           // the source AudioDocument, only its id, so it cannot know the
           // document's length. The multitrack UI (Task 22) is responsible for
           // clamping newBoundarySample to the source's available length before
-          // calling trimClip; this store only guarantees the min-length-32
-          // invariant, which is data it always has.
-          const minEnd = clip.startSample + 32;
+          // calling trimClip; this store only guarantees the min-length
+          // invariant (`MIN_CLIP_SAMPLES`), which is data it always has.
+          const minEnd = clip.startSample + MIN_CLIP_SAMPLES;
           const newEnd = Math.max(newBoundarySample, minEnd);
           updated = { ...clip, lengthSample: newEnd - clip.startSample };
         }
@@ -1563,6 +1610,11 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
     // the two can never be up at once and Delete never has to pick. Clearing
     // (`null`) touches nothing else — Escape clears the band, it does not
     // un-select clips that were not selected anyway.
+    //
+    // Lot J (J5) — a non-null gap ALSO retires a standing TIME RANGE: the
+    // band and the range are the multitrack's two mutually exclusive spans
+    // (`setMtTimeRange`'s own docblock states the other half), so raising one
+    // clears the other exactly as it clears the clip selection just below.
     set((s) => {
       const same =
         s.selectedGap !== null &&
@@ -1575,13 +1627,36 @@ export const useSessionStore = create<SessionState & SessionActions>()((set) => 
       // subscription to see.
       if (same || (gap === null && s.selectedGap === null)) return s;
       if (gap === null) return { selectedGap: null };
-      // The clip fields are written only when there is something to clear — a
-      // fresh `[]` over an already-empty set is a new value for every clip's
-      // subscription to see, which is the repaint the K1 writers' own no-op
-      // guards exist to avoid.
-      return s.selectedClipId === null && s.selectedClipIds.length === 0
-        ? { selectedGap: gap }
-        : { selectedGap: gap, selectedClipId: null, selectedClipIds: [] };
+      // Every other field is written only when there is something to clear —
+      // a fresh `[]`/`null` over an already-empty/-null value is a new value
+      // for every subscriber to see, which is the repaint the K1 writers' own
+      // no-op guards exist to avoid.
+      return {
+        selectedGap: gap,
+        ...(s.selectedClipId === null && s.selectedClipIds.length === 0
+          ? null
+          : { selectedClipId: null, selectedClipIds: [] }),
+        ...(s.mtTimeRange === null ? null : { mtTimeRange: null }), // J5
+      };
+    });
+  },
+
+  /** Lot J — the raw setter (see the field's own docblock for the full
+   * contract): `null` leaves a standing gap alone, a non-null range clears
+   * one (J5). Field-by-field no-op guard, the `setSelectedGap` shape. */
+  setMtTimeRange(range) {
+    set((s) => {
+      const same =
+        s.mtTimeRange !== null &&
+        range !== null &&
+        s.mtTimeRange.startSample === range.startSample &&
+        s.mtTimeRange.endSample === range.endSample;
+      if (same || (range === null && s.mtTimeRange === null)) return s;
+      if (range === null) return { mtTimeRange: null };
+      return {
+        mtTimeRange: range,
+        ...(s.selectedGap === null ? null : { selectedGap: null }), // J5
+      };
     });
   },
 
@@ -1690,16 +1765,20 @@ export function applySessionZoom(requested: SessionZoomRequest): void {
  *
  * WHAT ADOPTION MUST CARRY. Every session-sample number that exists at this
  * moment, because its next reader has no way to know it was left in the old
- * rate: the multitrack cursor, the live playhead, and the zoom — the last one
+ * rate: the multitrack cursor, the live playhead, the zoom — the last one
  * re-resolved through `resolveSessionZoom` (the ONE clamp) rather than written
  * raw, so the visible DURATION survives and the ceiling is re-applied against
- * the re-denominated timeline. There is no multitrack selection or loop range
- * to carry (only the cursor exists), and the snap targets are derived per
- * render from the session and the cursor (`sessionSnapTargets`), so they follow
- * for free. `lastSplit` (G6, item 7) is likewise not extended by
- * `viewStateAtRate` below — adoption is refused outright once the session
- * holds any clip (`hasAnyClip`), so an anchor can never exist yet to mis-
- * denominate.
+ * the re-denominated timeline — and (lot J) a standing TIME RANGE, both ends.
+ * Adoption itself never fires with clips already on the session
+ * (`hasAnyClip` below), but a range can be swept on an EMPTY session before
+ * the first document is inserted, and that insert is exactly what can trigger
+ * this — so a range set before the session had a rate opinion must not
+ * silently name a different stretch of time once it does. The snap targets
+ * are derived per render from the session and the cursor
+ * (`sessionSnapTargets`), so they follow for free. `lastSplit` (G6, item 7)
+ * is likewise not extended by `viewStateAtRate` below — adoption is refused
+ * outright once the session holds any clip (`hasAnyClip`), so an anchor can
+ * never exist yet to mis-denominate.
  *
  * Returns `newRate / oldRate` — the factor a caller must apply to any session
  * sample it computed BEFORE calling (a drop position resolved against the lane's
@@ -1738,13 +1817,22 @@ export function adoptSessionRate(docRate: number): number {
  * the re-denominated `samplesPerPixel` is re-clamped against the session it is
  * about to describe — the one clamp, applied where the ceiling moved.
  *
+ * Lot J — `mtTimeRange`, both ends `Math.round`ed by the same `ratio`,
+ * `null` staying `null`. This is the ONE place the range is ever
+ * RE-DENOMINATED (R26 — every other writer of the field only sets or clears
+ * it verbatim: `setMtTimeRange` itself, `setSelectedGap`'s J5 clear, the
+ * `newSession`/`installSession` resets, and the store's own initial
+ * literal), so an adoption (or an undo/redo that crosses one —
+ * `bindSessionUndo`'s `apply`, which calls this same function) is the whole
+ * of the re-scaling.
+ *
  * `ratio` is `toRate / fromRate`, and `s` must be the state BEFORE the write.
  */
 function viewStateAtRate(
   s: SessionState,
   session: Session,
   ratio: number
-): Pick<SessionState, 'mtCursorSample' | 'mtPlayheadSample' | 'mtZoom'> {
+): Pick<SessionState, 'mtCursorSample' | 'mtPlayheadSample' | 'mtZoom' | 'mtTimeRange'> {
   return {
     mtCursorSample: Math.round(s.mtCursorSample * ratio),
     mtPlayheadSample: Math.round(s.mtPlayheadSample * ratio),
@@ -1752,6 +1840,13 @@ function viewStateAtRate(
       samplesPerPixel: s.mtZoom.samplesPerPixel * ratio,
       scrollSample: Math.round(s.mtZoom.scrollSample * ratio),
     }),
+    mtTimeRange:
+      s.mtTimeRange === null
+        ? null
+        : {
+            startSample: Math.round(s.mtTimeRange.startSample * ratio),
+            endSample: Math.round(s.mtTimeRange.endSample * ratio),
+          },
   };
 }
 
@@ -2102,6 +2197,83 @@ export function closeGap(gap: TrackGap): void {
     );
   });
   useSessionStore.getState().setSelectedGap(null);
+}
+
+/**
+ * Lot J (J1/J2) — TRIM TO RANGE: keeps `range` on `trackIds` and drops the
+ * rest, in ONE undo entry ('Trim to range'). Targets resolved against the
+ * LIVE session FIRST (`trimTargets`, pure — `splitClipsAt`'s own precedent),
+ * then committed through the store's OWN actions (`removeClip`/`trimClip`)
+ * inside one `withSessionGesture` bracket — never the module-level
+ * `removeClips`, which opens ITS OWN gesture and would mint a second,
+ * mislabelled entry (`beginSessionGesture` commits a stale open one first,
+ * `sessionUndo.ts`'s own docblock).
+ *
+ * REMOVALS FIRST, then trims (`startTo` before `endTo` on a clip carrying
+ * both): `removeClip` disarms a survivor's facing fade before any trim
+ * re-reads the overlap (risk 6), and a removal can make a later split point
+ * legal — the same ordering `silenceClipsInRange` below uses, kept identical
+ * between the two so they cannot silently diverge (X2).
+ *
+ * No-op — no gesture at all — when `trimTargets` names nothing (an
+ * already-trimmed range, or a scope with no clips): the `splitClipsAt`/
+ * `closeGap` precedent.
+ */
+export function trimClipsToRange(trackIds: readonly string[], range: TimeRange): void {
+  const targets = trimTargets(useSessionStore.getState().session, trackIds, range);
+  if (targets.length === 0) return;
+  withSessionGesture('Trim to range', () => {
+    for (const t of targets) if (t.kind === 'remove') useSessionStore.getState().removeClip(t.clipId);
+    for (const t of targets) {
+      if (t.kind !== 'trim') continue;
+      if (t.startTo !== undefined) useSessionStore.getState().trimClip(t.clipId, 'start', t.startTo);
+      if (t.endTo !== undefined) useSessionStore.getState().trimClip(t.clipId, 'end', t.endTo);
+    }
+  });
+}
+
+/**
+ * Lot J (J4) — SILENCE RANGE: clears `range` on `trackIds` and leaves the
+ * hole, in ONE undo entry ('Silence range'). Same shape as
+ * `trimClipsToRange` above — targets resolved against the live session
+ * first (`silenceTargets`, pure), committed through the store's own actions
+ * inside one gesture bracket.
+ *
+ * ORDER: removals, then splits (each followed IMMEDIATELY by
+ * `trimClip(rightId, 'start', rightStartTo)` — the right half must be cut
+ * back to the range's far edge before anything downstream reads it), then
+ * trims. `docRateOf` reaches `splitClip` exactly as `splitClipsAt` does (N3):
+ * the clip's documentId is read from the PRE-mutation `session` snapshot via
+ * `locateClip` — a split target's own clip is never itself a removal target
+ * (`silenceTargets` emits at most one action per clip), so the snapshot and
+ * the live session agree on what document it carries either way.
+ *
+ * No-op — no gesture at all — on an empty target list, the same rule
+ * `trimClipsToRange` and `closeGap` apply.
+ */
+export function silenceClipsInRange(
+  trackIds: readonly string[],
+  range: TimeRange,
+  docRateOf?: (documentId: string) => number | undefined
+): void {
+  const session = useSessionStore.getState().session;
+  const targets = silenceTargets(session, trackIds, range);
+  if (targets.length === 0) return;
+  withSessionGesture('Silence range', () => {
+    for (const t of targets) if (t.kind === 'remove') useSessionStore.getState().removeClip(t.clipId);
+    for (const t of targets) {
+      if (t.kind !== 'split') continue;
+      const located = locateClip(session, t.clipId);
+      const docRate = located ? docRateOf?.(located.clip.documentId) : undefined;
+      const rightId = useSessionStore.getState().splitClip(t.clipId, t.atSample, { docRate });
+      if (rightId !== null) useSessionStore.getState().trimClip(rightId, 'start', t.rightStartTo);
+    }
+    for (const t of targets) {
+      if (t.kind !== 'trim') continue;
+      if (t.startTo !== undefined) useSessionStore.getState().trimClip(t.clipId, 'start', t.startTo);
+      if (t.endTo !== undefined) useSessionStore.getState().trimClip(t.clipId, 'end', t.endTo);
+    }
+  });
 }
 
 /**

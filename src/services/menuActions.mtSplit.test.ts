@@ -191,16 +191,35 @@ describe('edit.split in the Multitrack view — what it must NOT touch (M1/M7)',
     expect(clipsOn(0)).toHaveLength(2);
   });
 
-  it('3f keeps Cut / Copy / Paste / Trim / Silence refused in that same armed state', () => {
+  it('3f keeps Cut / Copy / Paste refused in that same armed state', () => {
     armedInMultitrack();
     const { ids } = seed([[[1000, 3000]]], 'doc-1');
     store().setSelectedClip(ids[0][0]);
     store().setMtCursor(2000);
 
     expect(isCommandEnabled('edit.split')).toBe(true);
-    for (const id of ['edit.cut', 'edit.copy', 'edit.paste', 'edit.trim', 'edit.silence']) {
+    for (const id of ['edit.cut', 'edit.copy', 'edit.paste']) {
       expect(isCommandEnabled(id)).toBe(false);
     }
+  });
+
+  // Lot J (item 10) — Trim/Silence are view-routed now (`edit.trim`/
+  // `edit.silence`, `menuActions.ts`), not gated on the document view at
+  // all: refused here with NO multitrack time range standing, and live once
+  // one is — the sibling `menuActions.mtTrim.test.ts` owns the fuller
+  // enablement/scope suite; this is the narrow pin that keeps 3f's own
+  // fixture honest about what changed.
+  it('3f-j Trim/Silence: refused with no range, live with one, in this same armed state', () => {
+    armedInMultitrack();
+    seed([[[1000, 3000]]], 'doc-1');
+
+    expect(useSessionStore.getState().mtTimeRange).toBeNull();
+    expect(isCommandEnabled('edit.trim')).toBe(false);
+    expect(isCommandEnabled('edit.silence')).toBe(false);
+
+    store().setMtTimeRange({ startSample: 500, endSample: 2_500 });
+    expect(isCommandEnabled('edit.trim')).toBe(true);
+    expect(isCommandEnabled('edit.silence')).toBe(true);
   });
 
   it('3g never consults the snap preference (N1)', async () => {

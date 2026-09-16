@@ -101,6 +101,10 @@ export function installSession(session: Session, projectPath: string | null): vo
     // F0: a stale open-envelope target must not outlive the session it was
     // pointed at — the drift `sessionFile.ts` alone used to guard against.
     mtEnvelope: null,
+    // Lot J: same argument, same treatment — a stale time range (absolute
+    // time, no session mutation can strand it) must not outlive the session
+    // it was swept over either.
+    mtTimeRange: null,
     projectPath,
   });
   // R3: every wholesale replacement is a LOAD-shaped one — it starts a new

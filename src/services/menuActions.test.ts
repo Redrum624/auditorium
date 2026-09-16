@@ -216,8 +216,21 @@ describe('edit.trim / edit.silence (U1)', () => {
 // history, which cannot undo a document edit. The toolbar greyed three of them
 // and left Trim/Silence lit; the keyboard left all five live. The gate belongs
 // on the COMMAND, so every surface inherits it at once.
+//
+// Lot J (item 10) OVERTURNS this for Trim/Silence specifically (named per
+// R25): they are now VIEW-ROUTED (`menuActions.ts`'s `edit.trim`/
+// `edit.silence`), not gated on `isDocumentEditView`/`canEditRegion` at all in
+// multitrack — `canTrimMtRange`/`canSilenceMtRange` answer there instead. That
+// they still read `false` in every test below is COINCIDENCE, not the F1
+// gate: this fixture never sweeps a multitrack time range, so the NEW
+// predicate also refuses, for an entirely different reason. `REGION_VERBS`
+// narrows to the three F1 still actually governs; Trim/Silence get their own
+// enablement suite in `menuActions.mtTrim.test.ts`, and the invariant this
+// file's `armedInMultitrack` trap exists to protect — a hidden document must
+// never be edited from the multitrack view — is re-proven below for the case
+// F1 can no longer cover: a STANDING RANGE, where Trim/Silence really do run.
 describe('the region verbs are disabled in the Multitrack view (F1)', () => {
-  const REGION_VERBS = ['edit.cut', 'edit.copy', 'edit.paste', 'edit.trim', 'edit.silence'];
+  const REGION_VERBS = ['edit.cut', 'edit.copy', 'edit.paste'];
 
   /** The exact trap: a live document selection AND a full clipboard, carried
    * into the multitrack view the way switching views really does.
@@ -238,12 +251,12 @@ describe('the region verbs are disabled in the Multitrack view (F1)', () => {
     return doc;
   }
 
-  it('reports all five disabled in Multitrack even with a selection and a full clipboard', () => {
+  it('reports all three disabled in Multitrack even with a selection and a full clipboard', () => {
     armedInMultitrack();
     for (const id of REGION_VERBS) expect(isCommandEnabled(id)).toBe(false);
   });
 
-  it('and all five live again in the waveform and spectral views', () => {
+  it('and all three live again in the waveform and spectral views', () => {
     armedInMultitrack();
     for (const view of ['waveform', 'spectral'] as const) {
       useAppStore.getState().setView(view);
@@ -251,13 +264,52 @@ describe('the region verbs are disabled in the Multitrack view (F1)', () => {
     }
   });
 
-  it('greys all five rows in the Edit MENU there too — one predicate, every surface', () => {
+  it('greys all three rows in the Edit MENU there too — one predicate, every surface', () => {
     armedInMultitrack();
     const edit = getMenuSections().find((s) => s.title === 'Edit')!;
     for (const id of REGION_VERBS) {
       const row = edit.items.find((i): i is MenuCommand => i !== 'separator' && i.id === id)!;
       expect(row.enabled(useAppStore.getState())).toBe(false);
     }
+  });
+
+  // Lot J — coincidence, not the F1 gate (see the describe's own header
+  // comment): with NO multitrack time range swept, `canTrimMtRange`/
+  // `canSilenceMtRange` refuse regardless of the document selection or
+  // clipboard this trap arms.
+  it('Trim/Silence also read false here, but for the NEW reason (no range), not F1', () => {
+    armedInMultitrack();
+    expect(useSessionStore.getState().mtTimeRange).toBeNull();
+    expect(isCommandEnabled('edit.trim')).toBe(false);
+    expect(isCommandEnabled('edit.silence')).toBe(false);
+  });
+
+  // R25 — the invariant `armedInMultitrack` exists to protect (a hidden
+  // document with a live selection is never touched from the multitrack
+  // view) still holds for Trim/Silence once a range makes them ENABLED,
+  // which F1 alone can no longer prove now that they are view-routed.
+  it('once a range makes Trim/Silence live, they edit the SESSION and leave the hidden document untouched', async () => {
+    const doc = armedInMultitrack();
+    const before = useAppStore.getState().documents.find((d) => d.id === doc.id)!;
+    const beforeSamples = Array.from(before.channels[0]);
+
+    useSessionStore.getState().addTrack();
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({ documentId: 'x', startSample: 1_000, offsetSample: 0, lengthSample: 3_000 });
+    useSessionStore.getState().addClip(trackId, clip);
+    useSessionStore.getState().setMtTimeRange({ startSample: 2_000, endSample: 5_000 });
+    expect(isCommandEnabled('edit.trim')).toBe(true);
+
+    await runCommand('edit.trim');
+
+    const after = useAppStore.getState().documents.find((d) => d.id === doc.id)!;
+    expect(Array.from(after.channels[0])).toEqual(beforeSamples); // the hidden doc never moved
+    expect(useAppStore.getState().selection).toEqual({ start: 100, end: 400 }); // and its selection survives
+    // The SESSION is what actually changed.
+    expect(useSessionStore.getState().session.tracks[0].clips[0]).toMatchObject({
+      startSample: 2_000,
+      lengthSample: 2_000,
+    });
   });
 
   // installShortcuts dispatches through runCommand, which re-checks `enabled`

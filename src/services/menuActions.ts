@@ -7,10 +7,13 @@ import {
   hasAnyClip, // lot E
   removeClips,
   rippleDeleteClips,
+  silenceClipsInRange, // lot J
   splitClipsAt,
   splitTargets,
+  trimClipsToRange, // lot J
   useSessionStore,
 } from '../multitrack/sessionStore';
+import { silenceTargets, trimTargets } from '../multitrack/timeRange'; // lot J
 import { clipBoundaries, nextClipEdge } from '../multitrack/clipEdges'; // K1
 import { sessionEndSample } from '../multitrack/sessionZoom'; // T5
 import { sessionLaneWidth } from '../multitrack/sessionViewport'; // T5
@@ -620,15 +623,21 @@ function registerSelectionAndTransportCommands(): void {
       // except a press INSIDE the band's own span on its own lane, which is
       // the first half of the double-click that would re-select it. Escape is
       // the way out that works from anywhere, including from inside that span.
+      //
+      // Lot J: a standing TIME RANGE arms it too, and Escape clears that as
+      // well — the third kind of multitrack "selection" this menu action now
+      // answers for.
       enabled: (s) =>
         s.view === 'multitrack'
           ? useSessionStore.getState().selectedClipId !== null ||
-            useSessionStore.getState().selectedGap !== null
+            useSessionStore.getState().selectedGap !== null ||
+            useSessionStore.getState().mtTimeRange !== null
           : s.selection !== null,
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           useSessionStore.getState().setSelectedClip(null);
           useSessionStore.getState().setSelectedGap(null);
+          useSessionStore.getState().setMtTimeRange(null);
           return;
         }
         useAppStore.getState().setSelection(null);
@@ -963,30 +972,33 @@ function registerEditCommands(): void {
     },
     {
       /**
-       * T5 — RIPPLE DELETE OF A TIME RANGE: listed, and disabled everywhere,
-       * because there is nothing in this app that can name the range.
+       * T5 — RIPPLE DELETE OF A TIME RANGE: listed, and disabled everywhere.
        *
-       * The ask was "with a time selection active in the multitrack, remove
-       * that span from ALL tracks and close the gap everywhere". The multitrack
-       * view has no time selection to be active. Its state is a CURSOR and a
-       * clip selection and nothing else (`SessionState`); the ruler it renders
-       * is the editor's `TimelineRuler`, whose pointer drag SEEKS rather than
-       * sweeping a range; `.audm` persists no range; the transport's only
-       * loop plumbing belongs to the single-document engine; and
-       * `appStore.selection` is the DOCUMENT's region, which `edit.deselect`
-       * above already documents as not being on screen in this view.
-       * `adoptSessionRate`'s invariant states the same fact from the other
-       * side, having had to enumerate every session-sample value that exists:
-       * "there is no multitrack selection or loop range to carry (only the
-       * cursor exists)".
+       * Lot J (item 10) BUILT the range-sweep gesture this note used to say
+       * did not exist — a promise the code no longer kept is a documentation
+       * defect (R26), so this is rewritten rather than left stale. The
+       * multitrack view NOW has a time range (`Shift`+drag a lane;
+       * `SessionState.mtTimeRange`), and `edit.silence` above is its
+       * NON-RIPPLING form: it clears the range on the scoped tracks and
+       * leaves the hole, exactly like plain Delete leaves a gap
+       * (`menuActions.ts`'s own `edit.delete`, and `sessionStore.closeGap`
+       * for the single-gap case).
        *
-       * Building the range-sweep gesture — anchor, rendering, snapping,
-       * persistence, and what it means for the cursor — is a feature of its
-       * own, not the tail of this one. What ships is the row, so the verb is
-       * where a user goes looking for it, and this note, so the next editor
-       * knows the blocker is upstream of the ripple arithmetic rather than in
-       * it. `mergeSpans` and the shift loop in `rippleDeleteClips` are the
-       * whole computation once a range exists.
+       * WHAT IS ACTUALLY MISSING is narrower than "no gesture": a RIPPLING
+       * time-range delete needs its own scope and shift semantics that were
+       * never specified —
+       *  - which tracks shift: every track in the session regardless of
+       *    scope (a ripple is inherently cross-track — item 13's phrasing,
+       *    "remove that span from ALL tracks and close the gap everywhere"),
+       *    or only `mtRangeScopeTrackIds()`'s selection-scoped set (J2's own
+       *    rule for the non-rippling verbs)?
+       *  - whether a track the range does not touch at all (no clip
+       *    overlapping it) still shifts, the same "gap is bounded on both
+       *    sides" question `gaps.ts`'s own header answers for the single-gap
+       *    case but which a MULTI-track ripple has never had to answer.
+       * `mergeSpans` and the shift loop in `rippleDeleteClips` are still the
+       * whole computation once those two questions have rulings — this verb
+       * is unblocked by lot J but not thereby specified.
        *
        * NO ACCELERATOR, deliberately: `installShortcuts` claims a matched combo
        * before it consults `enabled`, so a key bound here would be swallowed in
@@ -1018,19 +1030,44 @@ function registerEditCommands(): void {
     // note above was true only while neither had a bound key; leaving the
     // label off now would be the same dead-accelerator defect this repo has
     // already paid for twice (Ctrl+W, Ctrl+Shift+S).
+    //
+    // Lot J (item 10) — VIEW-ROUTED, in `edit.split`'s own shape above. This
+    // OVERTURNS F1's five-verb set (`isDocumentEditView`/`canEditRegion`,
+    // this file's own note just above them) for these two members ONLY:
+    // F1's argument was that Cut/Copy/Paste/Trim/Silence all edit a REGION OF
+    // THE ACTIVE DOCUMENT, which the multitrack view does not show and whose
+    // Undo (routed to the session) cannot reverse. That argument no longer
+    // applies to Trim/Silence once a multitrack time range exists (J1-J9):
+    // the multitrack arm edits the SESSION, not the hidden document, and the
+    // adjacent Undo already addresses exactly that history
+    // (`edit.undo` above routes to `undoSession()` in this view). Cut/Copy/
+    // Paste stay on `canEditRegion` — a clip clipboard is lot L's, not this
+    // one's — so F1 still governs three of the five.
     {
       id: 'edit.trim',
       label: 'Trim to Selection',
       shortcut: 'T',
-      enabled: canEditRegion,
-      run: async () => trimToSelection(),
+      enabled: (s) => (s.view === 'multitrack' ? canTrimMtRange() : canEditRegion(s)),
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          trimMtRange();
+          return;
+        }
+        trimToSelection();
+      },
     },
     {
       id: 'edit.silence',
       label: 'Silence Selection',
       shortcut: 'S',
-      enabled: canEditRegion,
-      run: async () => silenceSelection(),
+      enabled: (s) => (s.view === 'multitrack' ? canSilenceMtRange() : canEditRegion(s)),
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          silenceMtRange();
+          return;
+        }
+        silenceSelection();
+      },
     },
   ]);
 }
@@ -1478,6 +1515,56 @@ export function splitSelectedTracksAtMtCursor(): string[] {
   const rates = new Map(useAppStore.getState().documents.map((d) => [d.id, d.sampleRate]));
   return splitClipsAt(selectedTrackIds(), mtCursorSample, (id) => rates.get(id));
 }
+
+// ---- lot J ----
+/** J2 + amendment J2-a — Trim/Silence's OWN scope resolver, deliberately NOT
+ * shared with `selectedTrackIds`/`canSplitAtMtCursor` above: J2's ruling text
+ * ("the selected clips' tracks, or all tracks when nothing is selected")
+ * binds, and `selectedTrackIds()` returns `[]` on empty — which is exactly
+ * what makes `edit.split` grey with nothing selected rather than widen. Two
+ * rules that differ (`edit.split` greys; Trim/Silence widen) must not share
+ * one function, or a future edit to one silently changes the other. */
+export function mtRangeScopeTrackIds(): string[] {
+  const ids = selectedTrackIds();
+  return ids.length > 0 ? ids : useSessionStore.getState().session.tracks.map((t) => t.id);
+}
+
+/** `edit.trim`'s multitrack predicate: a range is standing AND `trimTargets`
+ * would actually change something on the scoped tracks — the `canSplitAtMtCursor`
+ * precedent, so the row greys for exactly what the store would refuse (J9:
+ * a whole-timeline range emits no target and greys here, rather than running
+ * as a silent no-op). */
+export function canTrimMtRange(): boolean {
+  const { session, mtTimeRange } = useSessionStore.getState();
+  return mtTimeRange !== null && trimTargets(session, mtRangeScopeTrackIds(), mtTimeRange).length > 0;
+}
+
+/** `edit.trim`'s multitrack run: J1 (keeps the range where it is) via the
+ * store's own `trimClipsToRange`, over the swept range and the scope above. */
+export function trimMtRange(): void {
+  const { mtTimeRange } = useSessionStore.getState();
+  if (mtTimeRange === null) return;
+  trimClipsToRange(mtRangeScopeTrackIds(), mtTimeRange);
+}
+
+/** `edit.silence`'s multitrack predicate — the `canTrimMtRange` shape over
+ * `silenceTargets` (J4). */
+export function canSilenceMtRange(): boolean {
+  const { session, mtTimeRange } = useSessionStore.getState();
+  return mtTimeRange !== null && silenceTargets(session, mtRangeScopeTrackIds(), mtTimeRange).length > 0;
+}
+
+/** `edit.silence`'s multitrack run: J4 (clears the range on the scoped
+ * tracks, leaves the hole) via `silenceClipsInRange`, passing document rates
+ * the way `splitSelectedTracksAtMtCursor` does above (N3) for the split arm
+ * a spanning clip may need. */
+export function silenceMtRange(): void {
+  const { mtTimeRange } = useSessionStore.getState();
+  if (mtTimeRange === null) return;
+  const rates = new Map(useAppStore.getState().documents.map((d) => [d.id, d.sampleRate]));
+  silenceClipsInRange(mtRangeScopeTrackIds(), mtTimeRange, (id) => rates.get(id));
+}
+// ---- end lot J ----
 // ---- end lot D ----
 
 // ---- merge clips ----
