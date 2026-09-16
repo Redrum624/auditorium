@@ -107,8 +107,12 @@ function findDocument(docId: string): AudioDocument | undefined {
  * Returns the clip ids placed, newest last.
  *
  * Clips land VERBATIM at the requested position: overlap is first-class since
- * X5, and a programmatic placement writes no fade keys — the same contract
- * `insertActiveDocAsClip` and the recorder's punch-in follow.
+ * X5, and THIS placement path writes no fade keys — the same contract
+ * `insertActiveDocAsClip` and the recorder's punch-in follow. Lot L's Paste
+ * (`multitrack/clipClipboard.ts`) is the one `addClip` caller that DOES carry
+ * fade keys over from the copied clip — see `sessionStore.ts`'s overlap
+ * contract for the consequence, "a programmatic placement never writes
+ * fades" is no longer true of `addClip` callers in general.
  */
 export function placeDocumentClips(
   docIds: readonly string[],

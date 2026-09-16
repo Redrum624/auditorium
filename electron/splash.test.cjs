@@ -564,7 +564,7 @@ describe('the failsafe: a splash that outlives its renderer still ends', () => {
   });
 
   test('a dev run gets a longer rope, because Vite legitimately takes it', () => {
-    // `npm run dev` loads http://localhost:3005, and a cold Vite transforms the
+    // `pnpm dev` loads http://localhost:3005, and a cold Vite transforms the
     // whole module graph on that first request. Ending the splash at 5 s there
     // would report a failure that is really just a dev server doing its job.
     const { splash, mainWin } = launched({ failsafeMs: 20000 });

@@ -6,7 +6,7 @@
 // full round trip: open a WAV, verify the decoded state and a rendered waveform,
 // export MP3, save-as WAV, screenshot. Exits 0 on success, 1 on any failure.
 //
-// Run: npm run build && npm run smoke
+// Run: pnpm build && pnpm smoke
 
 const path = require('node:path');
 const fs = require('node:fs');
@@ -5464,7 +5464,14 @@ async function main() {
       (id) => window.__test.selectClips(id === null ? [] : [id]),
       clipSelectionBefore
     );
-    await page.evaluate((id) => window.__test.setCurrentTrack(id), trackBefore);
+    const currentTrackRestored = await page.evaluate(
+      (id) => window.__test.setCurrentTrack(id),
+      trackBefore
+    );
+    assert(
+      currentTrackRestored === trackBefore,
+      'restoring the current track after copy/paste actually landed — sessionStore.setCurrentTrack refuses silently if trackBefore names a track that no longer exists'
+    );
     console.log(
       "  copy/paste: a real click made track 2 current, Ctrl+C copied the clip, Ctrl+V dropped it right of the bar there"
     );

@@ -6,7 +6,7 @@ const path = require('path');
 // Guards the production CSP hardening done by the `harden-production-csp`
 // Vite plugin (vite.config.ts): dev-only connect-src grants (`ws:`,
 // `http://localhost:3005`, needed for Vite HMR) must NOT survive into
-// dist/index.html. This only runs after `npm run build` has produced a
+// dist/index.html. This only runs after `pnpm build` has produced a
 // dist/ output; it's skipped (not failed) when dist/ is absent so `npm test`
 // stays green without requiring a build first (e.g. plain CI unit-test runs).
 const distIndexPath = path.join(__dirname, '..', 'dist', 'index.html');

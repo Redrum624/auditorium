@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * The NAVIGATION pass (task PW1) — `npm run navigate`.
+ * The NAVIGATION pass (task PW1) — `pnpm navigate`.
  *
  * `e2e-smoke.cjs` is a SCENARIO: one long round trip through the flows that
  * carry the app's promises (open → edit → chain → export → reopen), measured in
@@ -42,7 +42,7 @@
  * and in the report: the renderer-side command path and its cancel handling,
  * not the OS widget.
  *
- * Run: npm run build && npm run navigate
+ * Run: pnpm build && pnpm navigate
  */
 
 const path = require('node:path');

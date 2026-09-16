@@ -5,7 +5,7 @@
 // opens the test tone, switches to the Spectral view (log scale is the default),
 // waits for the spectrogram to render, and screenshots the window at 1600x1000.
 //
-// Run: npm run build && node scripts/spectral-screenshot.cjs
+// Run: pnpm build && node scripts/spectral-screenshot.cjs
 
 const path = require('node:path');
 const fs = require('node:fs');
@@ -22,7 +22,7 @@ const OUT = path.join(ROOT, 'docs', 'screenshot-spectral.png');
 
 async function main() {
   if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
-    throw new Error('dist/index.html missing — run `npm run build` before capturing the screenshot');
+    throw new Error('dist/index.html missing — run `pnpm build` before capturing the screenshot');
   }
   if (!fs.existsSync(TONE)) {
     execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'make-test-tone.cjs')], {

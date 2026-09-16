@@ -14,7 +14,7 @@
  * %APPDATA% model state exists, and the Vocal Chain card prints real
  * wall-clock timings) with:
  *
- *   npm run build && node scripts/readme-shots.cjs
+ *   pnpm build && node scripts/readme-shots.cjs
  *
  * Element-bounded crops wherever the subject is a panel or a card (the
  * Vitrine gallery discipline: tight crops, consistent width, no window

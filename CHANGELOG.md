@@ -5,6 +5,151 @@ All notable changes to Auditorium are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Thirteen items from one editor-feedback pass: the playhead follows the
+viewport during playback, an effect or pipeline tool survives a module
+switch, a multitrack pipeline targets the selected clip, a separation lands
+into the open session instead of replacing it, the bar lands where you
+point, cutting twice narrows the selection to the middle piece, the toolbox
+gets bare-letter accelerators and a Select All button, multitrack gains a
+time selection with Trim/Silence, rubber-band multi-select and a marked
+current track, multitrack clips can be copied and pasted, and only one
+pipeline pass runs at a time, app-wide.
+
+### Added
+
+- **The viewport follows the playhead during playback.** When the bar
+  reaches the right edge of a zoomed-in view it no longer runs off screen:
+  the viewport scrolls so playback keeps going, landing the bar back at the
+  left edge (and the mirror case on the left — a loop, or Play started
+  behind the visible window). A manual scroll or zoom during playback
+  suspends the follow until the bar is back inside the visible window.
+  Works in the waveform, spectral and multitrack views. Affects:
+  `src/services/playheadFollow.ts` (new), `src/components/Layout/Toolbar.tsx`.
+- **An open effect card or hosted pipeline tool survives switching
+  modules.** Leaving Effects/Pipeline for Files, Markers, Properties or
+  another module no longer discards the open card — it backgrounds,
+  keeping every typed parameter, and a running pass keeps running. Coming
+  back restores it exactly as it was left, or as far as it has progressed.
+  A module whose card is backgrounded, or whose backgrounded pass is
+  running, shows a dot on its strip icon. Affects: `src/App.tsx`,
+  `src/components/Dialogs/EffectHost.tsx`,
+  `src/components/Dialogs/PipelineToolHost.tsx`,
+  `src/components/Dialogs/EffectDialog.tsx`,
+  `src/components/Layout/ModuleStrip.tsx`.
+- **Bare-letter toolbox accelerators, and Select All added to the pill.**
+  `C` Split, `J` Join Clips, `A` Select All (new pill button, also
+  `Ctrl+A`), `D` Delete, `T` Trim to Selection, `S` Silence Selection, `U`
+  Undo, `R` Redo — every bare letter is an addition beside its existing
+  Ctrl combo, none replaces one. Suspended while typing, while Meta is
+  held, and on an auto-repeat keydown that would otherwise fire when a
+  Ctrl combo's key outlives the Ctrl release by a frame. See
+  `KEYBOARD_SHORTCUTS.md`. Affects: `src/services/shortcuts.ts`,
+  `src/services/menuActions.ts`, `src/components/Layout/EditToolbar.tsx`.
+- **Multitrack gains a time selection, with Trim and Silence acting on it.**
+  `Shift`+drag a lane's background (or the gutter below the tracks) sweeps
+  a time range across every track; `T`/`S`, or the edit pill's Trim/Silence
+  rows, now work in the multitrack view, scoped to the selected clips'
+  tracks (or every track with nothing selected). Trim removes or shortens
+  clips outside the range and keeps the rest at its session position;
+  Silence clears the range and leaves the hole. Affects:
+  `src/multitrack/timeRange.ts` (new), `src/multitrack/sessionStore.ts`,
+  `src/services/menuActions.ts`, `src/components/Multitrack/MultitrackView.tsx`,
+  `src/components/Layout/EditToolbar.tsx`.
+- **Rubber-band multi-select and a marked current track in the multitrack
+  view.** Press-and-drag on a track's background selects every clip the
+  rectangle touches (`Ctrl` unions with the standing selection); a click
+  that never becomes a drag, on any visible part of a track's background
+  or on one of its clips, makes that track the **current track**, marked
+  with a lighter lane background — where the next paste lands. Affects:
+  `src/components/Multitrack/marqueeSelect.ts` (new),
+  `src/components/Multitrack/MultitrackView.tsx`,
+  `src/components/Multitrack/TrackLane.tsx`,
+  `src/components/Multitrack/TrackHeader.tsx`, `src/multitrack/sessionStore.ts`.
+- **Copy and Paste for multitrack clips.** `Ctrl+C` copies the selected
+  clip(s); `Ctrl+V` pastes them to the right of the bar on the current
+  track, preserving their relative track/start offsets and carrying their
+  fades over. A session at a different sample rate than the copied clips
+  converts the pasted geometry, never the audio. With no current track,
+  Paste is disabled and the clipboard keeps its contents. Copying clips
+  empties the ordinary audio clipboard, and vice versa — one clipboard, two
+  shapes. Affects: `src/multitrack/clipClipboard.ts` (new),
+  `src/services/clipboard.ts`, `src/services/menuActions.ts`,
+  `src/components/Layout/EditToolbar.tsx`.
+- **One long-running pipeline pass at a time, app-wide.** Starting an
+  effect Apply, a pipeline tool, a host job (stems, voice, diarize,
+  transcribe), a mixdown, an export or a save while another is already
+  running is refused, with a reason naming the running pass — on the menu
+  row, the panel row, the toolbar button and the hosted dialog's own start
+  control alike. Switching view or module while a pass runs stays fully
+  allowed, which is the point of the module-backgrounding change above.
+  Affects: `src/services/passLock.ts` (new), `src/services/menuActions.ts`,
+  `src/App.tsx`, and every hosted dialog under `src/components/Dialogs/`.
+
+### Changed
+
+- **A multitrack pipeline targets the selected clip, not the active
+  document.** Selecting a clip and running an effect or pipeline tool
+  (Vocal Chain, Match Tempo, Align Vocal Timing, …) in the multitrack view
+  now runs it on a working copy of that clip's own source window — a new
+  `Clip Edit N` document in the Files panel — and re-points the clip at the
+  result on commit, in one `Ctrl+Z`-able step; the original file is never
+  written. In Waveform/Spectral the target is unchanged (the active
+  document, or the selection within it). With no clip selected, or more
+  than one, the row is disabled and says so; Cover Chain stays
+  Waveform-only, since it replaces the whole session. Affects:
+  `src/services/clipPass.ts` (new), `src/services/menuActions.ts`,
+  `src/App.tsx`.
+- **A separation lands into the open multitrack session instead of
+  replacing it.** Separate into Stems / Separate Voice / Separate Speakers
+  now check whether the source file is already on a track: if it is, the
+  new tracks take its exact place on the timeline; if it isn't, they're
+  appended to the end; either way the rest of the session is untouched.
+  Only a genuinely empty session (or a first separation from the waveform
+  view) still gets a brand-new, exactly-named session as before. A landing
+  at a different sample rate than the session converts the placement,
+  never the audio, and warms the resample cache off the play path.
+  Affects: `src/multitrack/sessionLanding.ts` (new),
+  `src/services/stemLanding.ts`, `src/services/coverJourney.ts`,
+  `src/multitrack/sessionFile.ts`.
+- **The bar lands where you point, more precisely.** The multitrack bar no
+  longer counts itself as a snap target for the two gestures that move it
+  (it stays a target for everything else), which fixed a snap-back to its
+  own last position; and a press-and-release on the grab handle that never
+  becomes a drag now commits the press position instead of doing nothing.
+  Affects: `src/components/Multitrack/sessionSnapTargets.ts`,
+  `src/components/Multitrack/MultitrackView.tsx`,
+  `src/components/Editor/useEditorGestures.ts`.
+- **Cutting a clip or a document a second time selects only the piece
+  between the two newest cuts**, not every piece the two cuts have ever
+  produced. The first cut is unchanged; cutting leftwards still selects
+  the span between the two cuts; the rule is per track/document, and an
+  unrelated click, an undo, or a new session resets it. Affects:
+  `src/multitrack/splitSelection.ts` (new), `src/multitrack/sessionStore.ts`,
+  `src/services/editOps.ts`.
+- **Removing a document with no real edits no longer prompts.** Closing a
+  computed document (a stem, a Voice/Backing track, a speaker track, a Mix
+  Down, a Remix, a recording) that has never actually been edited closes
+  immediately, with no "Unsaved changes" dialog. A document you *have*
+  edited still prompts, and quitting the app with unsaved computed audio
+  still warns and counts it. Affects: `src/services/fileService.ts`.
+- **Merge Clips is renamed Join Clips**, and now has a keyboard shortcut
+  (`J`) — see *Added*, above. The rendered document it produces is now
+  named `Join N` (was `Merge N`); a `Merge N` document already in an
+  existing project keeps its name. Affects: `src/services/menuActions.ts`,
+  `src/components/Layout/EditToolbar.tsx`, `src/multitrack/mergeClips.ts`.
+
+### Fixed
+
+- **The keyboard no longer goes dead behind a backgrounded pipeline pass.**
+  Previously every shortcut was suspended while any pass ran anywhere in
+  the app; now only *starting* a second pass is refused, and `Space`,
+  Undo/Redo, Delete, Split and every other key keep working on whatever
+  they always acted on. Modal dialogs (New File, Export, Convert, Record)
+  still suspend the keyboard as before. Affects: `src/services/dialogBus.ts`,
+  `src/services/shortcuts.ts`.
+
 ## [1.39.0] - 2026-09-06
 
 Separate Voice hears the people in the room: one full-length track per speaker,

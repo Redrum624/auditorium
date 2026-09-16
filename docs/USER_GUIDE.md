@@ -61,37 +61,76 @@ row.)
 have a UI — Match Tempo, Align Vocal Timing, Auto-Remix, Separate Voice, Voice
 Changer, Vocal Chain, Cover Chain, Podcast Chain, Align Lyrics, Transcribe,
 Separate into Stems — opens it as
-a **wider card in the module column**, in place of whatever card was open, with
-the strip showing **Pipeline** as the active module and **widening to the
-card's own width** — the bar and the open module are always exactly the same
-width, in every state. Nothing is dimmed and
-nothing is blocked: while the tool is open you can still select audio, move the
-playhead, zoom, switch view and use the transport, so a multi-stage pass can be
-watched stepping through beside the waveform it is working on. Close the tool
-with the **✕** in its header. (Detect Tempo has no UI of its own — it rewrites
-the TEMPO card. The Spatial Positioner, now an Effects-menu row, likewise opens
-no tool card: it opens the Spatial panel.)
+a **wider card in the module column**, with the strip showing **Pipeline** as
+the active module and **widening to the card's own width** — the bar and the
+open module are always exactly the same width, in every state. Nothing is
+dimmed and nothing is blocked: while the tool is open you can still select
+audio, move the playhead, zoom, switch view and use the transport, so a
+multi-stage pass can be watched stepping through beside the waveform it is
+working on. Close the tool with the **✕** in its header. (Detect Tempo has no
+UI of its own — it rewrites the TEMPO card. The Spatial Positioner, now an
+Effects-menu row, likewise opens no tool card: it opens the Spatial panel.)
 
-**While a pass is actually running**, the module strip greys out and the tool's
-**✕** refuses, both saying why: a running pass keeps its progress inside the
-tool, so closing it or switching module would throw the work away. It would only
-ever throw it away — every tool now stops cleanly when its window closes, so a
-pass you abandon changes nothing at all rather than half-landing an edit in a
-file you have walked away from. Two things are suspended for the duration and
-nothing else — the module switch, and **keyboard shortcuts** (`Space`, `Ctrl+Z`,
-the arrows). The keyboard is held for a reason the clean stop does not cover:
-`Ctrl+O` mid-pass would make another file the active one while the pass is still
-running, and the result would land with your selection and cursor pointing into
-the file you had just opened. The **mouse** is untouched throughout: keep
-selecting, scrubbing, zooming and switching view while it runs. Everything comes
-back by itself the moment the pass finishes.
+**Leaving the tool open and switching module no longer discards it.** Opening
+a *different* pipeline tool still replaces the retained one (there is one
+tool slot, just as there is one effect card — see *Effects*, below), but
+clicking a different module in the strip — Files, Markers, Properties, or the
+Effects card — **backgrounds** the open tool instead of closing it: it keeps
+whatever you had typed or, if a pass is actually running, keeps running
+exactly where it was. Its strip icon (**Pipeline**, or **Effects** for an
+open effect card) shows a small **dot** while something is retained behind
+it, and the dot itself is lit differently while a pass is genuinely running
+versus merely sitting there idle, so you always know where the work went.
+Clicking that icon again brings the tool back exactly as you left it, or as
+far as it has progressed. A first click on the tool's own already-active
+strip entry backgrounds it and reveals the chooser list underneath (the
+Pipeline card, or the Effects rack); a second click closes the card outright.
+
+**A running pass no longer blocks anything except starting a second one.**
+Switching module, switching view, editing the waveform, and every keyboard
+shortcut all keep working exactly as they do with nothing running — see
+*Pipeline: one pass at a time*, below, for the complete rule and why closing
+a document is the one thing that still sometimes refuses.
 
 Auto-Remix is the one tool that starts something on its own — it analyses the
-beat grid as it opens — and that mount analysis deliberately does **not** grey
-anything: the lock is only ever for a pass you started.
+beat grid as it opens — and that mount analysis deliberately does **not**
+count as a pass for the rule above: it never blocks starting a real one.
 
 A menu longer than the window scrolls inside itself; it never resizes or
 scrolls the app behind it.
+
+### Pipeline: one pass at a time
+
+**At most one long-running pass runs at a time, app-wide.** An effect Apply, a
+pipeline tool's own run (Match Tempo, Vocal Chain, Cover Chain, Separate into
+Stems, …), a Mix Down, an Export or a project Save all count; starting a
+second one while any of these is already running is **refused**, with a
+reason naming the pass that is holding things up — on the menu row, the
+Pipeline/Effects panel row, the edit toolbar, and the hosted dialog's own
+start button alike. This is the app-wide version of the same rule that
+already stopped, say, Apply and Cancel from racing each other inside one
+card.
+
+**Switching view or module while a pass runs stays fully allowed** — that is
+the whole point of the backgrounding behaviour above: a pipeline tool or an
+effect Apply keeps running (or keeps its typed state) no matter where you
+navigate to. What is refused is only *starting* a competing pass. Nothing
+else is held for the duration: the keyboard is never suspended by a running
+pass (`Space`, `Ctrl+Z`, Delete, Split and every other key act on whatever
+document or clip they always did), and the mouse was never suspended by one
+either.
+
+**Four commands are the exception**, because each could replace or discard a
+document a pass depends on out from under it: `Ctrl+O` (Open), `Ctrl+N`
+(New), **File → Open Project…**, and — narrower than the other three —
+`Ctrl+W` / the Files-panel **✕** (Close). Closing a document is refused while
+a **pipeline tool**, a mixdown, an export or a save is running, but **not**
+while an **effect Apply** is running: closing the document an effect is
+applying to is safe (the effect's own staleness guard discards the commit
+cleanly and says so in the card — see *Effects*, below), so that one door
+stays open. Every other menu row, panel row and toolbar button that could
+start a pass greys out with a reason naming the one already running, and
+lights back up the instant it ends.
 
 ### Zoom and Fit
 
@@ -181,8 +220,8 @@ Click-drag on the waveform/spectral canvas to select a region (samples are
 the underlying unit; the UI always displays formatted time). Double-click
 selects the segment under the pointer (the span between the two nearest
 markers; the whole document when there are none). Shift+click extends the
-selection from the current cursor. `Ctrl+A` selects all; `Escape` clears the
-selection.
+selection from the current cursor. `Ctrl+A` (or the bare-letter `A`) selects
+all; `Escape` clears the selection.
 
 ### The position line and the timeline
 
@@ -193,9 +232,13 @@ move it:
 - **Click anywhere on the canvas.** The line goes there, as it always has.
 - **Drag its red handle.** A small red triangle sits at the top of the line,
   centred on it. Grab it (the pointer becomes a hand) and drag: the line
-  follows live. Grabbing it does not move it, and dragging it never changes
-  the selection, so you can slide the line through a selected region without
-  disturbing it. The red triangle is deliberately unlike the **orange** marker
+  follows live. Grabbing it alone does not move it, and dragging it never
+  changes the selection, so you can slide the line through a selected region
+  without disturbing it. **A press that never turns into a drag still
+  commits**: releasing puts the line at the sample you pressed on (the magnet
+  applies, and `Alt` is read at the moment you release), so a light tap near
+  where the line already sits moves it there precisely instead of doing
+  nothing. The red triangle is deliberately unlike the **orange** marker
   flags, which hang to the *right* of their own dashed lines — you can tell at
   a glance which one you are about to grab. The same handle rides the
   multitrack view's session cursor, so all three views move their line the
@@ -241,6 +284,15 @@ boundaries: the spans between them (and between the file's start, the first
 marker, the last marker and the file's end) are its **segments**, which a
 double-click selects and `Ctrl+X` can cut without a selection.
 
+**A second `Ctrl+K` — and every one after it — selects the segment between
+the two most recent cuts**, wherever they land (cutting leftward, before the
+earlier cut, still selects the span between them). The first split still
+makes no selection, as before. This survives moving the cursor or scrolling;
+what resets it is switching to a different document, opening a new one, or
+undoing the split that made the marker it is tracking (or otherwise removing
+that marker). The multitrack view has the same rule for clips — see
+*Splitting clips*, in the Multitrack chapter.
+
 Standard editing acts on the current selection: `Ctrl+X` cuts the selection —
 or, with none, the segment the cursor is in — to the clipboard and leaves that
 span **silent at the same length**; `Ctrl+C` copies; `Ctrl+V` pastes at the
@@ -264,61 +316,63 @@ leave every marker where it was.
 
 ### The edit toolbar
 
-A pill of nine icon buttons floats just above the status pill, on the
+A pill of **ten** icon buttons floats just above the status pill, on the
 waveform's axis, whenever **at least one file is open** — in the Waveform,
 Spectral and Multitrack views alike. It is only ever a shortcut to commands
 you already have: nothing here does anything the menu and the keyboard do not.
+Every button but Copy and Paste also has a bare-letter keyboard accelerator,
+listed below and in `KEYBOARD_SHORTCUTS.md`.
 
-`Split · Merge · Copy · Paste · Delete` │ `Trim · Silence` │ `Undo · Redo`
+`Select All` │ `Split · Join · Copy · Paste · Delete` │ `Trim · Silence` │ `Undo · Redo`
 
-- **Split** is `Ctrl+K` — a marker at the cursor, or one at each edge of the
-  selection. In Waveform and Spectral it needs only an open file, so it is the
-  one button in the first group that stays lit with nothing selected; in
-  Multitrack it needs a selected clip (see below).
-- **Merge** is Split's inverse and has **no keyboard shortcut** — it is this
-  button and **Edit → Merge Clips**, nothing else. It is the one first-group
-  button that works *only* in Multitrack: on every track that has two or more
-  clips selected, those clips become a single clip running from the earliest
-  start to the latest end, with silence wherever no member covered the span.
-  The audio is rendered into a **new `Merge N` file** that appears in the
-  Files panel and becomes the active document, so each member's clip gain and
-  its fades are baked in — the merged clip itself shows gain 0 and no fades.
-  A track with only one clip selected is left alone, so with a single clip
-  selected the button stays grey (see *Merging clips*). In Waveform and
-  Spectral the tooltip says which view can do it.
-- **Trim** keeps the selected region and drops everything else;
-  **Silence** zeroes the selected region in place, leaving the length alone.
-  Both are undoable History steps like any other edit, and both are also in
-  **Edit → Trim to Selection / Silence Selection**, directly under Delete.
-  Neither has a keyboard shortcut, so neither menu row advertises one.
-- Buttons grey out individually rather than disappearing. With no selection,
-  Copy / Delete / Trim / Silence are greyed; with nothing on the
-  clipboard, Paste is greyed; Undo and Redo follow whichever history is
-  active — the **document's** in Waveform and Spectral, the **session's** in
-  Multitrack.
-- In the **Multitrack** view, **Split**, **Merge** and **Delete** work: Split
-  cuts clips at the cursor (see *Splitting clips*), Merge joins the selected
-  clips of a track into one (see *Merging clips*), and Delete removes the
-  selected clips.
-  Copy / Paste / Trim / Silence are greyed there, and their keyboard shortcuts
-  do nothing either — Copy and Paste because there is no clip clipboard yet,
-  Trim and Silence because that view has no way to select a stretch of time.
-  Each button's tooltip says which of the two it is. All four edit a region of
-  the **active document**, which the view does not show — and since switching
-  views keeps your document selection (unless you leave Multitrack with a clip
-  selected, which selects that clip's span instead — see **Views**), they would
-  otherwise change a file you cannot see, with the Undo button beside them
-  pointing at the session's history instead. Switch to Waveform or Spectral to
-  use one.
+- **Select All** (`A`, also `Ctrl+A`) selects the whole file in Waveform/
+  Spectral, or **every clip on every track** in Multitrack. It needs only an
+  open document (or, in Multitrack, a session with at least one clip), so it
+  is the one button that stays lit with nothing selected.
+- **Split** (`C`, also `Ctrl+K`) is a marker at the cursor, or one at each
+  edge of the selection, in Waveform and Spectral; in Multitrack it needs a
+  selected clip (see below).
+- **Join** (`J`, renamed from Merge) is Split's inverse: on every track that
+  has two or more clips selected, those clips become a single clip running
+  from the earliest start to the latest end, with silence wherever no member
+  covered the span. The audio is rendered into a **new `Join N` file** that
+  appears in the Files panel and becomes the active document, so each
+  member's clip gain and its fades are baked in — the joined clip itself
+  shows gain 0 and no fades. A track with only one clip selected is left
+  alone, so with a single clip selected the button stays grey (see *Joining
+  clips*). It is the one button that works *only* in Multitrack; in Waveform
+  and Spectral the tooltip says so.
+- **Trim** (`T`) keeps the selected region and drops everything else;
+  **Silence** (`S`) zeroes the selected region in place, leaving the length
+  alone. Both are undoable History steps like any other edit, and both are
+  also in **Edit → Trim to Selection / Silence Selection**, directly under
+  Delete. In **Multitrack** both act on a swept **time selection** instead
+  (see *Selecting a stretch of time*, below) rather than on a document region.
+- **Delete** is `D` or `Delete`; **Undo**/**Redo** are `U`/`R` alongside
+  `Ctrl+Z`/`Ctrl+Y`. Buttons grey out individually rather than disappearing.
+  In Waveform/Spectral, with no selection Copy/Delete/Trim/Silence are
+  greyed; with nothing on the clipboard, Paste is greyed; Undo and Redo
+  follow whichever history is active — the **document's** in Waveform and
+  Spectral, the **session's** in Multitrack.
+- In the **Multitrack** view, every button now works: **Split** cuts clips at
+  the cursor (see *Splitting clips*), **Join** joins the selected clips of a
+  track into one (see *Joining clips*), **Delete** removes the selected
+  clips, **Copy**/**Paste** act on the selected clip(s) (see *Copying and
+  pasting clips*), and **Trim**/**Silence** act on a swept time selection
+  (see *Selecting a stretch of time*). Each button's tooltip names the
+  multitrack gesture it needs when it is currently grey.
 
 ### Markers
 
 Press `M` (or **Edit → Add Marker**) to drop a marker named `Marker N` at the
-current cursor position; `Ctrl+K` (**Split at Cursor**) drops one named
+current cursor position; `Ctrl+K` or `C` (**Split at Cursor**) drops one named
 `Split N` at the cursor or at both edges of the selection. `M` is an editor
 command: in the Multitrack view it does nothing, since the document it
-would mark is not on screen there. `Ctrl+K` is routed by view: in Multitrack
-it splits clips instead (see *Splitting clips*). Every marker — whichever command, panel
+would mark is not on screen there — the mirror case is `J` (Join Clips),
+which does nothing outside Multitrack. `Ctrl+K`/`C` is routed by view
+instead, along with `T`/`S` (Trim/Silence — see *Selecting a stretch of
+time*, in the Multitrack chapter): in Multitrack `Ctrl+K`/`C` splits clips
+(see *Splitting clips*). Every marker — whichever command, panel
 or analysis wrote it — is a **segment boundary**: a double-click on the
 canvas selects the span between the two nearest markers, and `Ctrl+X` with
 no selection cuts that span. The **Markers** panel (opened from the module strip) lists every
@@ -364,7 +418,11 @@ panel card at a time, directly beneath it — **Files**, **Effects**,
 document exists, and **History** last. **Files** is the default: it is the card
 the app opens with, and nothing about the panel is remembered between runs.
 Clicking the **already-open** entry closes the card, and the waveform stretches
-across the column's width; clicking any entry reopens one. When the active
+across the column's width; clicking any entry reopens one. (For **Pipeline**
+and **Effects** specifically, when a tool or an effect card is the thing
+showing, a first click backgrounds it and reveals this chooser instead — a
+second click on the same entry is what closes it; see *Effects* and *The
+menus*, above.) When the active
 document has a tempo analysis, a persistent **TEMPO** card (BPM readout,
 structure strip, and ×2 / ÷2 / Re-detect) appears between the strip and the
 panel card.
@@ -376,8 +434,11 @@ is always last, and anything added later goes between them.
 - **Pipeline** — the twelve Pipeline-menu tools, in the same three groups
   (**Tempo & Timing**, **Voice**, **Analysis**), each a single click.
   Choosing one replaces this card with the tool itself (see *The menus* above);
-  closing the tool brings this list back. Greyed rows are unavailable right now
-  for exactly the reason the menu gives.
+  closing the tool (its own **✕**) brings this list back — switching to a
+  *different* module instead backgrounds the tool and brings this list back
+  too, but the tool itself is still there, retained, when you come back.
+  Greyed rows are unavailable right now for exactly the reason the menu
+  gives.
 - **Remix** — a remix document's per-splice adjustment rows (quality dot,
   Go To, Reject, Pin, Nudge, Re-roll, Revert to auto).
 - **History** — the undo history of whatever is active: the **session's** in
@@ -433,14 +494,20 @@ while the card is open — and if you
 switch, edit or close the document while a **Preview** plays, the transport
 takes the engine back and the card gives the preview up with it, so the button
 reads **Preview** again rather than stopping what you just started. While an
-effect is being **applied**, the module strip greys out and the ✕ and Cancel
-refuse until it finishes — the same rule as a running pipeline pass. The mouse
-stays live, so you can still edit, switch or close the document while it runs;
-do that and the effect is **not** applied — it commits only to the document as
-you left it when you clicked Apply — the card says so and stays, and **Apply**
-runs it again on the document as it is now. Closing the last document closes
-the card. Every effect processes the current
-selection, or the whole document when there's no selection.
+effect is being **applied**, its own **✕** and **Cancel** refuse until it
+finishes — Apply is never discarded that way. Everything else stays live: the
+module strip does **not** grey any more, and switching to a different module
+**backgrounds** the card (it keeps applying behind whichever module you moved
+to, and the Effects strip icon shows a running dot until it lands — see *The
+menus* and *Pipeline: one pass at a time*, above) instead of blocking the
+switch or discarding the pass. The keyboard is live too. The mouse was always
+live, so you can still edit, switch or close the document while Apply runs;
+do that and the effect is **not** applied to the document you left — it
+commits only to the document as you left it when you clicked Apply — the card
+says so the next time you see it, and **Apply** runs it again on the document
+as it is now. Closing the last document closes the card. Every effect
+processes the current selection, or the whole document when there's no
+selection.
 
 Below the effects, the same card lists the Effects menu's own **Mix** row, the
 **Spatial Positioner**. A tool row takes a **single** click (it is a verb
@@ -1340,31 +1407,47 @@ To split a song into drums, bass, vocals and everything else:
    (measured: 30 seconds of audio separated in about 20 seconds), so a
    four-minute song takes around two and a half minutes. **Cancel** stops it
    immediately.
-4. When it finishes you land in the **multitrack view** with five new
-   documents — `<name> — Drums`, `— Bass`, `— Vocals`, `— Other`, `— Residual`
-   — one per track, in a session named `<name> — Stems`.
+4. Where the five tracks land depends on what you already have open in the
+   multitrack view:
+   - **No session yet, or an empty one** — they land in a **new** session
+     named `<name> — Stems`, one document per track: `<name> — Drums`,
+     `— Bass`, `— Vocals`, `— Other`, `— Residual`.
+   - **The file you separated is already on a track in your open session** —
+     the five tracks land **in its place**: the original track is removed
+     and the five take over its exact position on the timeline. Everything
+     else in the session is untouched.
+   - **It isn't on any track** — the five tracks are **appended** to the end
+     of your open session instead. Nothing already there is removed.
 
 Two things are worth knowing before you start, because they are different kinds
 of promise:
 
 - **Nothing is lost.** The five tracks add back up to your original *sample for
   sample*: the stems are masks over your document's own spectrum, and the
-  Residual track is literally whatever the four stems didn't account for. So
-  mixing the untouched session down (**File → Mix Down to New File**) gives you
-  the original back exactly, and muting one track gives you the original minus
-  that instrument — with nothing else quietly missing.
+  Residual track is literally whatever the four stems didn't account for.
+  Muting one track gives you the original minus that instrument, with
+  nothing else quietly missing. **Mixing the session down** (**File → Mix
+  Down to New File**) reproduces the original exactly only when the landing
+  went into a brand-new session — a first separation with nothing open yet,
+  where the landing *is* the whole session. Land into an existing session
+  (in place of a track, or appended) and mixing the session down now gives
+  you the whole session, not this file on its own.
 - **How cleanly the instruments are told apart is bounded by the model.**
   Expect some bleed — a cymbal in the "Other" track, a vocal tail in the
   Residual. That is a limit of the separation, not a bug, and no setting will
   remove it. Solo each track to hear what actually landed where.
 
 Practical notes: separation is limited to **15 minutes** of audio per run;
-mixing the session down only reproduces the original exactly if the original
-itself stays within ±1 (a document you have amplified past full scale is
-detected and the tool says the exact sum will not hold); a **mono** source's
-stems arrive as stereo documents with identical channels (use **Edit → Convert
-Channels…** if you want them mono); and the five stem documents have never been
-written to disk, so closing one — or quitting — prompts you to save it.
+the exact-sum promise above only holds if the original itself stayed within
+±1 (a document you have amplified past full scale is detected and the tool
+says the exact sum will not hold); a **mono** source's stems arrive as
+stereo documents with identical channels (use **Edit → Convert Channels…**
+if you want them mono); a landing at a different sample rate than an
+existing session converts the placement, never the audio; and the five stem
+documents have never been written to disk, so quitting with them open still
+counts and warns — closing one of them, though, asks nothing first as long
+as you have not actually edited it (see *Closing a clean computed document*
+in `KNOWN_LIMITATIONS.md`).
 
 ### Separating just the voice
 
@@ -1379,9 +1462,12 @@ that is **two** documents instead of five:
 
 Everything else is identical: the same one-time 166 MB model, the same
 per-segment progress and **Cancel**, the same ~1.5× realtime, the same
-15-minute limit per run, and the same landing — the multitrack view, both
-documents open with Voice active. A **mono** source lands as stereo documents
-with identical channels, exactly as the stem tool's do. When the tool hears more
+15-minute limit per run, and the same landing rule as Separate into Stems —
+in place of the source file's own track when it is already in your open
+session, appended to the end of the session when it isn't, or into a
+brand-new session when nothing was open — with Voice made the active
+document either way. A **mono** source lands as stereo documents with
+identical channels, exactly as the stem tool's do. When the tool hears more
 than one person it lands one track per speaker instead — see *When more than one
 person is talking* below.
 
@@ -1399,6 +1485,11 @@ rest is bounded by the model, so expect some bleed. Because Backing is the
 complement of Voice, **any separation artefact in the Voice appears inverted in
 the Backing** — a syllable the model over-grabbed is missing from the bed by
 exactly as much as it is present in the voice.
+
+The same landing-mode qualifier as Separate into Stems applies here too:
+mixing the session down reproduces the original only when the landing went
+into a brand-new session; land in place of a track, or appended, and mixing
+the session down now gives you the whole session, not this file on its own.
 
 #### When more than one person is talking
 
@@ -1682,9 +1773,12 @@ limits as the buttons.
   playhead, driven by the same toolbar-pill transport buttons. The session
   cursor wears the same **red triangle handle** as the editor views, at the
   top of the lanes: grab it and drag to move the cursor live — grabbing alone
-  moves nothing, the drag obeys the session magnet (`Alt` suspends it), and
-  moving the cursor never interrupts a running playback, because the cursor is
-  where the *next* play starts. There is no pause in
+  moves nothing, the drag obeys the session magnet (`Alt` suspends it, and the
+  cursor's own last position is never one of the magnet's targets, so a small
+  deliberate move near it does not snap straight back), and a press that
+  never becomes a drag still commits on release, landing the cursor exactly
+  where you pressed. Moving the cursor never interrupts a running playback,
+  because the cursor is where the *next* play starts. There is no pause in
   multitrack playback (v1) — Play/Pause toggles play↔stop. Volume, pan, and
   mute/solo changes apply **live while playing** — the realtime monitor uses the
   same pan law as Mix Down, so it matches the render. Clip moves, trims, and clip
@@ -1714,6 +1808,51 @@ limits as the buttons.
   does not open in older builds (v1.35 and earlier). The status pill shows the
   project's name, starred while anything in it is unsaved.
 
+### Running an effect or pipeline on one clip
+
+**In the multitrack view, an effect or pipeline tool runs on the selected
+clip, not on whatever document happens to be active.** This is the opposite
+of the waveform and spectral views, where it always ran on the active
+document (or the selection within it, unchanged there): select exactly one
+clip first, then open the effect or pipeline tool exactly as you would
+otherwise.
+
+- **Select one clip, then run it.** With nothing selected the row is
+  disabled — *"Select a clip to run this on it, or switch to Waveform to run
+  it on the whole file."* With more than one clip selected: *"Select a
+  single clip — a pass runs on one clip at a time."* A selected **gap**
+  counts as nothing selected, for the same reason.
+- **The pass runs on a working copy, not your file.** Opening an effect or
+  one of the in-place pipeline tools (Match Tempo, Align Vocal Timing, Align
+  Lyrics, Vocal Chain, Podcast Chain) on a selected clip mints a fresh
+  document — named `Clip Edit N` in the Files panel — holding exactly the
+  clip's own trimmed span of its source. The card works on that copy: Preview
+  and Apply, or the tool's own run, all act on `Clip Edit N`, never on the
+  clip's original source file.
+- **The clip re-points on commit, in one undo step.** The moment the pass
+  actually writes something, the clip is re-pointed at `Clip Edit N` — one
+  `Ctrl+Z` in the multitrack undoes exactly that re-point and puts the clip
+  back on its original source, span and all. The edit itself lives on
+  `Clip Edit N`'s own document undo stack, separately; the two histories
+  never interleave, exactly as everywhere else in this app.
+- **The original file is never changed.** Nothing is ever written back to
+  the clip's original source document — a second clip elsewhere in the
+  session that references the same source file is completely unaffected.
+- **Cover Chain stays Waveform-only.** It builds a whole new session from the
+  ground up, which has no clip-scoped shape to express, so it is unavailable
+  in the multitrack view regardless of selection.
+- **Separate into Stems, Separate Voice, Transcribe, Auto-Remix and Voice
+  Changer read the clip's source document as their input** rather than
+  minting a working copy — they always produce whole new documents of their
+  own, so there is no in-place edit for a working copy to protect. With a
+  clip selected they read *that* clip's source; with nothing selected they
+  fall back to the active document, exactly as they did before this rule
+  existed.
+- **A clip whose source file has been closed, or that reads nothing from
+  its source, is refused too** — *"This clip's source file is closed. Reopen
+  it to run this."* / *"This clip reads nothing from its source file."* —
+  rather than silently running on the wrong document.
+
 <!-- K1: clip selection, edge navigation, ripple delete -->
 ### Selecting clips, walking the edges, and ripple delete
 
@@ -1724,6 +1863,24 @@ takes it back out. The set may span tracks. `Escape` clears it. Every selected
 clip wears the selected border, and the Properties panel shows **"N clips
 selected"** above its fields.
 
+**Press-and-drag on a track's background** rubber-bands a rectangle and
+selects every clip it touches, on every track it crosses — any overlap
+counts, not just a clip lying fully inside it. Holding **`Ctrl`** through the
+drag **unions** the rectangle's clips with whatever was already selected
+instead of replacing it; a plain drag replaces the selection as usual. A
+press that never travels far enough to count as a drag is a click, not a
+marquee (see *the current track*, next) — and starting the drag with
+**`Shift`** held sweeps a time range instead, which is a different gesture
+entirely (see *Selecting a stretch of time*, below).
+
+**The current track.** Every track has a *current* one, marked with a
+lighter lane background, and it is where the next **Paste** lands (see
+*Copying and pasting clips*, below). A **click** — a press that never
+becomes a drag — on any visible part of a track's background, on its header,
+or on one of its clips makes that track current, whichever track the press
+actually landed on. There is deliberately no hover highlight: only a genuine
+press sets it, never just passing the pointer over a lane.
+
 **`Shift+Click`** extends the selection from the primary (below) to the clip you
 click, taking **every clip between them on that track**, in timeline order. It
 *adds* to what is already selected rather than replacing it, so a set built with
@@ -1732,9 +1889,9 @@ a plain click: a range needs one timeline to be a range, and sweeping every clip
 inside a rectangle is not what `Shift+Click` means in a track-based editor. With
 both modifiers held, `Ctrl` wins and the click is a toggle.
 
-**`Ctrl+A`** selects every clip on every track. In the waveform and spectral
-editors the same key still selects the whole file — the multitrack view has no
-document region on screen to select.
+**`Ctrl+A`** (or the bare-letter `A`) selects every clip on every track. In
+the waveform and spectral editors the same key still selects the whole file —
+the multitrack view has no document region on screen to select.
 
 The clip you clicked **last** is the *primary*, and it is the one the panel's
 single-clip controls edit — Start, Gain, the fade lengths and curves — as well
@@ -1769,7 +1926,8 @@ committing to five would be lying about what it does.
   dropped it, and any overlap that creates arms a crossfade as usual. The drop
   hint that appears over an overlap says so — during a group drag it offers no
   `Ctrl` nudge, because there is none to offer.
-- **`Delete`** removes every selected clip, leaving the gaps where they were.
+- **`Delete`** (or the bare-letter `D`) removes every selected clip, leaving
+  the gaps where they were.
 - **`Shift+Delete`** is **Ripple Delete** — see below.
 
 **Walking the clip edges.** `Ctrl+Left` and `Ctrl+Right` move the multitrack
@@ -1808,16 +1966,82 @@ undoes every shift. If a shifted clip lands on top of its new neighbour, that
 overlap arms a crossfade exactly as dragging it there would have — it goes
 through the same maintenance a drag does, not a special case.
 
-**Edit → Ripple Delete Time Selection** sits under it and is **greyed out in
-every view**, in this version and deliberately. It would remove a stretch of
-*time* from every track at once and close the gap everywhere — but the
-multitrack view has no way to select a stretch of time: it has a cursor and a
-clip selection, and dragging on its ruler moves the cursor rather than sweeping
-a range. Until that gesture exists there is nothing for the command to act on,
-so the row says so by staying unavailable rather than by silently doing
-something else. Ripple Delete of the **selected clips** (above) is the form that
-works today, and selecting the clips that cover the stretch you want gone is the
-way to get the same result.
+**Edit → Ripple Delete Time Selection** sits under it and is still **greyed
+out in every view**. The gesture it needs now exists — `Shift`+drag a lane
+sweeps a time range, see *Selecting a stretch of time* below — but a
+*rippling* delete across every track at once raises questions the range
+itself does not answer: which tracks shift when one is removed from all of
+them, and whether a track the range never touches should shift too. Trim and
+Silence (next section) are the **non-rippling** form that ships today: each
+clears the range on its own scoped tracks and leaves the hole, the same way
+plain Delete leaves a gap rather than closing it. Ripple Delete of the
+**selected clips** (above) is the rippling form that works today, and
+selecting the clips that cover the stretch you want gone is the way to get
+the same result.
+
+### Copying and pasting clips
+
+`Ctrl+C` copies the selected clip(s); `Ctrl+V` pastes them **to the right of
+the bar** (`mtCursorSample`), on the **current track** — see *the current
+track*, above — preserving their relative track and start offsets, so a
+group copied across three tracks pastes as the same three-track shape.
+Copied fades come along with the clips.
+
+- **No current track:** Paste is disabled — *"click a track's background to
+  choose where the clips land"* — and the clipboard keeps its contents; a
+  click on any track's background sets one (see above).
+- **One clipboard, two shapes.** Copying clips in the multitrack view and
+  copying audio in the waveform/spectral views share the same `Ctrl+C`/
+  `Ctrl+V`, so they share one clipboard: copying clips empties whatever audio
+  was on it, and copying audio empties whatever clips were on it. Pasting the
+  wrong shape into the wrong view is disabled with a reason naming what is
+  actually on the clipboard, rather than doing nothing silently.
+- **A session at a different sample rate than the copied clips** converts
+  the pasted geometry — where the clips land and how long they are — never
+  the audio itself: the clip's source document plays at its own rate exactly
+  as every other placement in this app does, converted lazily off the play
+  path the first time it is needed.
+- **Undo removes the pasted clips in one step**, and undoing does **not**
+  un-copy them: the clipboard still holds the same clips afterward, so
+  `Ctrl+V` again re-pastes at wherever the bar is now.
+
+### Selecting a stretch of time
+
+**`Shift`+drag a lane's background** (or the empty gutter below the last
+track) sweeps a **time range** across every track at once, drawn as a
+translucent band the full height of the session. It cannot start on a clip —
+`Shift+Click` there extends the clip selection instead (see *Selecting
+clips*, above) — so the sweep always starts on empty lane space, the gutter
+between tracks, or the space below the last row. The sweep obeys the magnet
+like every other drag in this app; holding `Alt` suspends it.
+
+**Trim** and **Silence** — the edit pill's buttons, `T`/`S`, or **Edit →
+Trim to Selection / Silence Selection** — now work in the multitrack view,
+acting on the swept range instead of a document region:
+
+- **Trim** keeps every clip's material *inside* the range at its session
+  position: a clip entirely outside the range is removed, a clip crossing
+  one edge is shortened to it, and a clip spanning the whole range is
+  shortened on both edges — nothing shifts, nothing ripples.
+- **Silence** clears the range and leaves the hole: a clip entirely inside
+  the range is removed, a clip crossing one edge is shortened so only the
+  piece outside the range survives, and a clip spanning the whole range is
+  **split** at the range's edges, its middle piece removed.
+
+A sliver left over from a boundary crossing — under 32 samples, the same
+floor Split uses — is dropped rather than kept at that floor.
+
+Both are scoped to **the selected clips' tracks**, or to every track when
+nothing is selected — the same scope rule Split uses. A standing time range
+and a standing clip selection are **not** mutually exclusive (the range says
+*which time*, the selection says *which tracks*): sweeping a range does not
+clear a clip selection, and selecting a clip does not clear a standing
+range. A selected **gap** (see *Closing a gap*, below) is the one thing that
+does not coexist with a range: setting either one clears the other, since
+both are bands drawn over the same lanes. `Escape` clears a standing range
+along with the clip selection and a selected gap, whichever is showing.
+`Ctrl+A`/`A` (Select All) does **not** also set the range — the two are
+separate gestures.
 
 ### Splitting clips
 
@@ -1845,40 +2069,57 @@ right-hand pieces of the clips you had selected join the selection (the
 left-hand pieces keep the original clips' identity), so a second `Ctrl+K`
 further along the timeline acts on the same tracks.
 
-### Merging clips
+**A second cut — and every cut after it — narrows the selection down to just
+the newest middle piece**, not every piece the two cuts have ever produced.
+Split at the same point a second time and only the span between your last two
+cuts stays selected (cutting leftwards, before the first cut, still selects
+the span between the two cuts correctly). This is per track: a track that
+was not cut at the previous point keeps whatever it already had selected, and
+the whole act — however many tracks it touches — is still one undo step. The
+narrowing itself resets on anything that changes the selection some other
+way: clicking a different clip, selecting a gap, an undo or redo, or a new
+session. A track this narrows down to a single clip greys **Join**, since
+Join needs two or more selected clips on a track (see *Joining clips*).
 
-**Edit → Merge Clips**, or the edit pill's **Merge** button, does the opposite:
-it takes the clips you have selected on a track and gives you **one** clip in
-their place. There is no keyboard shortcut, and the command is greyed outside
-the multitrack view.
+### Joining clips
+
+**Edit → Join Clips** (`J`), or the edit pill's **Join** button, does the
+opposite of Split: it takes the clips you have selected on a track and gives
+you **one** clip in their place. The command is greyed outside the multitrack
+view.
 
 Selection decides everything. Every track that has **two or more** of its clips
-selected is merged, all of them in the same act; a track with only one selected
+selected is joined, all of them in the same act; a track with only one selected
 clip is left exactly as it was, which is why the button is grey when a single
-clip is selected. The new clip runs from the **earliest start** to the **latest
-end** of its members, and every part of that span no member covered comes back
-as **silence** — merging two clips with a gap between them gives you one clip
+clip is selected (and, since **cutting a clip twice narrows the selection to
+just the piece between the two cuts** — see *Splitting clips* — Join often
+needs a fresh multi-clip selection after a second split). The new clip runs
+from the **earliest start** to the **latest end** of its members, and every
+part of that span no member covered comes back
+as **silence** — joining two clips with a gap between them gives you one clip
 with the gap still audible as nothing, not a clip with the gap closed up.
 
-The audio is rendered, not referenced. Each merge writes a new file named
-`Merge N` into the Files panel — the same kind of computed document Mix Down
+The audio is rendered, not referenced. Each join writes a new file named
+`Join N` into the Files panel — the same kind of computed document Mix Down
 and the stem separator produce — and makes it the active one. What goes into it
 is exactly what you were hearing from those clips: each member's **clip gain**
 and its **fades** (including a crossfade armed between two members) are
 rendered into the samples. What stays outside is everything that belongs to the
 **track** rather than the clip — volume, pan, mute, solo and automation still
-apply to the merged clip as they did to its members. So the merged clip itself
+apply to the joined clip as they did to its members. So the joined clip itself
 reads gain 0 dB with no fades in the Properties panel: those are inside the
-audio now, and re-editing them means undoing the merge.
+audio now, and re-editing them means undoing the join.
 
-Clips you did **not** select are not touched. One sitting inside the merged
-span is neither absorbed nor moved — the merged clip simply overlaps it, the
+Clips you did **not** select are not touched. One sitting inside the joined
+span is neither absorbed nor moved — the joined clip simply overlaps it, the
 same way a clip dropped on top of another does.
 
-The whole thing is **one undo step** however many tracks merged, and undo puts
-the original clips back exactly as they were. It does not remove the `Merge N`
-file, though: like every computed document it stays open in the Files panel,
-and it will ask before closing because its audio has never been on disk.
+The whole thing is **one undo step** however many tracks joined, and undo puts
+the original clips back exactly as they were. It does not remove the `Join N`
+file, though: like every computed document it stays open in the Files panel —
+and unlike a document you have actually edited, closing it asks nothing first
+as long as you leave it alone, so an undone join can be dismissed with a
+single click in the Files panel (see *The Files panel*, above).
 
 ### Closing a gap
 
@@ -1902,14 +2143,20 @@ What is *not* a gap, and why:
   and the space beside it.
 
 The band replaces the clip selection and the clip selection replaces the band:
-there is one selection on screen at a time. `Escape` puts the band away, and so
-does a plain click on empty lane space **outside** it (a click *inside* it is the
-first half of the double-click that would re-select the same gap, so it leaves
-the band alone). **No keyboard shortcut selects a gap** — a key would have to
-guess which one you meant. If the track changes underneath a selected gap, the
-band is re-resolved: if the span it named is no longer a gap it simply goes —
-and an undo that brings a clip selection back takes the band away with it,
-because only one of the two is ever on screen.
+there is one selection on screen at a time. A standing time range (see
+*Selecting a stretch of time*, above) replaces it too, and vice versa —
+setting either one clears the other, since both are bands drawn over the
+same lanes. `Escape` puts the band away, and so does a plain click on empty
+lane space **outside** it, or on the gutter below the last track (a click
+*inside* the band's own span is the first half of the double-click that
+would re-select the same gap, so a click that stays a click there leaves the
+band alone — but a press that turns into a **marquee drag**, even one that
+ends up touching no clips at all, does clear it, the same as any other
+zero-hit rubber-band release). **No keyboard shortcut selects a gap** — a key
+would have to guess which one you meant. If the track changes underneath a
+selected gap, the band is re-resolved: if the span it named is no longer a
+gap it simply goes — and an undo that brings a clip selection back takes the
+band away with it, because only one of the two is ever on screen.
 
 Silence *inside* a clip is a different thing entirely — that is **Remove
 Silence** on the document (see the Effects chapter), not this.
