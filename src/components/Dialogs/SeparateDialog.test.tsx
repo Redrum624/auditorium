@@ -41,6 +41,8 @@ import {
 } from '../../dsp/diarization';
 import { createClip, createTrack } from '../../multitrack/session'; // lot E
 import { useSessionStore } from '../../multitrack/sessionStore'; // lot E
+// Fix round 5 (lot D) — the pass lock gates Download Model(s).
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // The RemixDialog.test.tsx / ConvertDialog.test.tsx pattern: everything pure
 // (the label lists, the constants, the formatting) stays REAL via requireActual;
@@ -210,6 +212,7 @@ beforeEach(() => {
   mockSeparate.mockResolvedValue({ ok: true, output: makeOutput() });
   mockCancel.mockResolvedValue(true);
   mockLandStems.mockReturnValue(makeLanding());
+  _resetPassLock();
 });
 
 describe('SeparateDialog', () => {
@@ -279,6 +282,34 @@ describe('SeparateDialog', () => {
     );
     expect(screen.getByTestId('separate-error')).toHaveClass('text-[#e0a458]');
     expect(screen.getByRole('button', { name: 'Download Model' })).toBeEnabled();
+  });
+
+  // Fix round 5 (lot D) — the sweep's fourth sibling of the AlignLyricsDialog
+  // (fix round 4) / TranscribeDialog (fix round 5) Download-Model(s) gap:
+  // `handleSeparate` already carried `isPassRunning()` (fix round 1), but
+  // this dialog's OWN download start seam never did, and the button had no
+  // `disabled` prop of any kind, not even the local `downloading` flag.
+  it('4b. the pass lock gates Download Model — disables it, and a click starts nothing, while a foreign pass holds the lock', async () => {
+    seedDoc();
+    mockModelState.mockResolvedValue(MISSING);
+    await renderSettled();
+    const download = () => screen.getByRole('button', { name: 'Download Model' }) as HTMLButtonElement;
+    expect(download().disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(download().disabled).toBe(true);
+
+    fireEvent.click(download());
+    expect(mockEnsureModel).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(download().disabled).toBe(false);
   });
 
   it('5. the header follows the live active document', async () => {

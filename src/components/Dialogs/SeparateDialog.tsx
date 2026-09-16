@@ -308,6 +308,14 @@ export default function SeparateDialog({
   const downloadedBytes = Math.min(downloadedBase + received, downloadTotal);
 
   async function handleDownload(): Promise<void> {
+    // Fix round 5 (lot D) — the real start seam, defence in depth beside the
+    // Download Model(s) button's own `runningPass !== null` gate below. The
+    // third sibling of the same M1 breach: `AlignLyricsDialog`'s Download
+    // Model (fix round 4) and `TranscribeDialog`'s Download Models (fix
+    // round 5) both had it; `handleSeparate` right below already carries
+    // this same check (fix round 1) but this dialog's OWN download start
+    // seam never did.
+    if (isPassRunning()) return;
     setDownloading(true);
     setError(null);
     setReceived(0);
@@ -689,7 +697,11 @@ export default function SeparateDialog({
               </div>
             ) : (
               <div>
-                <GlassButton variant="primary" onClick={() => void handleDownload()}>
+                <GlassButton
+                  variant="primary"
+                  onClick={() => void handleDownload()}
+                  disabled={runningPass !== null}
+                >
                   {voice ? 'Download Models' : 'Download Model'}
                 </GlassButton>
               </div>

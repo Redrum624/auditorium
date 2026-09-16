@@ -136,6 +136,14 @@ export default function VoiceChangerDialog({ onClose }: { onClose: () => void })
   }
 
   async function handleDownload(): Promise<void> {
+    // Fix round 5 (lot D) — the real start seam, defence in depth beside the
+    // Download Model button's own `runningPass !== null` gate below. The
+    // fourth sibling of the same M1 breach found this round
+    // (`AlignLyricsDialog`, `TranscribeDialog`, `SeparateDialog`):
+    // `handleSaveVoice`/`handleConvert` right below already carry this same
+    // check (fix round 1) but this dialog's OWN download start seam never
+    // did.
+    if (isPassRunning()) return;
     setDownloading(true);
     setError(null);
     setReceived(0);
@@ -343,7 +351,11 @@ export default function VoiceChangerDialog({ onClose }: { onClose: () => void })
               </div>
             ) : (
               <div>
-                <GlassButton variant="primary" onClick={() => void handleDownload()}>
+                <GlassButton
+                  variant="primary"
+                  onClick={() => void handleDownload()}
+                  disabled={runningPass !== null}
+                >
                   Download Model
                 </GlassButton>
               </div>

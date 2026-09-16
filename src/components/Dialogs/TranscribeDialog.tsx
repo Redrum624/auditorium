@@ -118,6 +118,16 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function handleDownload(): Promise<void> {
+    // Fix round 5 (lot D) — the real start seam, defence in depth beside the
+    // Download Models button's own `runningPass !== null` gate below. The
+    // sibling to `AlignLyricsDialog`'s identical fix (fix round 4): `busy`
+    // (this dialog's own local flag) already joins `downloading` once this
+    // starts, which then holds the app-wide lock via `moduleLock`, but
+    // nothing stopped STARTING it while a foreign pass (a Save, an export, a
+    // mixdown, another pipeline tool) already held that lock — M1 applies to
+    // a model download exactly as it does to `handleTranscribe`'s own
+    // analysis, which already carries this same check.
+    if (isPassRunning()) return;
     setDownloading(true);
     setError(null);
     setReceived(0);
@@ -267,7 +277,11 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
               </div>
             ) : (
               <div>
-                <GlassButton variant="primary" onClick={() => void handleDownload()}>
+                <GlassButton
+                  variant="primary"
+                  onClick={() => void handleDownload()}
+                  disabled={runningPass !== null}
+                >
                   Download Models
                 </GlassButton>
               </div>
