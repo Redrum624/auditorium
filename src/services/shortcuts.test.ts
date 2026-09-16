@@ -246,10 +246,14 @@ describe('installShortcuts', () => {
   // so a typo here would silently break Copy/Paste/Cut while leaving Split
   // untouched — three assertions, one per accelerator.
   it.each([
-    ['c', { ctrlKey: true }, 'edit.copy'],
-    ['v', { ctrlKey: true }, 'edit.paste'],
-    ['x', { ctrlKey: true }, 'edit.cut'],
-  ])('dispatches Ctrl+%s to %s, distinct from the bare-letter Split row', (key, mods, commandId) => {
+    ['c', 'edit.copy', { ctrlKey: true }],
+    ['v', 'edit.paste', { ctrlKey: true }],
+    ['x', 'edit.cut', { ctrlKey: true }],
+    // Cosmetic (final fix wave, second round) — `commandId` moved to the
+    // SECOND array slot so the title's two `%s` placeholders (positional,
+    // in array order) actually print `key` then `commandId`; the old
+    // ordering fed the second `%s` the modifier object instead.
+  ])('dispatches Ctrl+%s to %s, distinct from the bare-letter Split row', (key, commandId, mods) => {
     const runCommandSpy = jest.spyOn(menuActionsModule, 'runCommand').mockResolvedValue(undefined);
     uninstall = installShortcuts(window);
 

@@ -45,6 +45,17 @@ import { saveProject } from '../multitrack/sessionFile';
 // deliberately permitting a close during an EFFECT pass would let "Save
 // Project" run the full project encode concurrently with that pass — exactly
 // the concurrency `passFree()` on `file.save` exists to prevent.
+//
+// Acknowledged deviation from `passLock.ts`'s own M-a ("the lock is taken at
+// the START SEAM... never inside a service"): `closeDocumentFlow` below is a
+// SERVICE function, and M-a's whole reason is deadlock — a lock taken inside
+// a function that can itself be called from INSIDE an already-running pass
+// (the way `coverJourney.ts` calls `separateStems` from inside a Cover Chain
+// pass) would refuse the caller that is holding it. That risk does not reach
+// here: `closeDocumentFlow` has exactly two callers, `menuActions.ts`'s
+// `file.close` command and `FilesPanel.tsx`'s row ✕ — both direct UI start
+// seams, neither reachable from inside another pass's own body. Safe by
+// audit, not by the rule; recorded here rather than left a silent exception.
 import { runExclusivePass, blockedByPassReason, PASS_REFUSED } from './passLock';
 // Lot A (M5): Export in the multitrack view renders the session — the offline
 // mixdown is playback ground truth and is never diverged from here.

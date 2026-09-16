@@ -22,7 +22,13 @@ import {
   type TempoEntry,
 } from '../../services/tempoAnalysis';
 import { CONFIDENCE_LOW, MIN_ANALYSIS_SECONDS } from '../../dsp/tempoCore';
-import { isPassRunning, usePassLock } from '../../services/passLock';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`) — reused rather than a second
+ * one, so the running-pass label reads "Detect Tempo" everywhere this work
+ * can be started from, not once per door. */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
 
 const GAIN_MIN = -24;
 const GAIN_MAX = 24;
@@ -137,10 +143,19 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
   const running = isTempoRunning(doc.id);
   const entry = getTempo(doc);
 
+  // Final fix wave, second round — HOLDS the lock (`runExclusivePass`), not
+  // merely refuses on it: this is user-initiated tempo work, exactly the
+  // `tempo.detect` menu row's own comment describes ("one of the three
+  // bodies that must take the lock itself rather than relying on a card's
+  // own `handleToolModuleLock` publish"). Distinguish this from RemixDialog's
+  // deliberately-UNheld mount analysis (`runRemixAnalysis`, `:135-158`
+  // there) — that one is automatic, started by opening the dialog, not by a
+  // press; nothing here runs without the user clicking Detect/Re-analyze/
+  // x2/÷2 first.
   async function correct(newPeriodFrames: number): Promise<void> {
-    if (isPassRunning()) return;
     setCorrectionFailed(false);
-    const result = await regridTempo(doc.id, newPeriodFrames);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () => regridTempo(doc.id, newPeriodFrames));
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     setCorrectionFailed(result === null);
     forceRerender((n) => n + 1);
   }
@@ -149,9 +164,8 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
   // stale flip, which mutates the SAME object in place) — clear a leftover
   // correction-failed notice so it can't linger over an unrelated fresh run.
   function detectOrReanalyze(): void {
-    if (isPassRunning()) return;
     setCorrectionFailed(false);
-    void runTempoAnalysis(doc);
+    void runExclusivePass(TEMPO_DETECT_PASS, () => runTempoAnalysis(doc));
   }
 
   return (

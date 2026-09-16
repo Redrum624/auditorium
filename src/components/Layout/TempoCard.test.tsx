@@ -303,6 +303,31 @@ describe('TempoCard — chips', () => {
     expect(screen.getByRole('button', { name: 'Double tempo' })).not.toBeDisabled();
     expect(screen.getByRole('button', { name: 'Halve tempo' })).not.toBeDisabled();
   });
+
+  // Second round — the IMPERATIVE layer specifically, isolated from the
+  // reactive `disabled` binding above. `acquirePass` is deliberately NOT
+  // wrapped in `act()`: the lock is genuinely held (module state, read
+  // directly by `runExclusivePass` inside `correct`), but React has not yet
+  // re-rendered in response, so the DOM still shows the control enabled —
+  // "dispatch on an enabled control with the lock held". `fireEvent.click`
+  // on a disabled button never reaches `onClick` at all in jsdom (a plain
+  // "click while disabled" test — the shape every other test in this file
+  // uses — cannot tell the reactive layer from the imperative one, since
+  // deleting the imperative check leaves that test green). This one only
+  // stays green if `correct` itself holds the lock via `runExclusivePass`.
+  it('the imperative hold refuses a click that reaches the handler before React re-renders it disabled', () => {
+    const doc = addDoc();
+    mockGetTempo.mockReturnValue(makeTempoEntry({ periodFrames: 200 }));
+    render(<TempoCard />);
+    const button = screen.getByRole('button', { name: 'Double tempo' }) as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(button.disabled).toBe(false); // still stale — proves this reaches the handler, not the DOM gate
+    fireEvent.click(button);
+    expect(mockRegridTempo).not.toHaveBeenCalledWith(doc.id, expect.anything());
+
+    release!();
+  });
 });
 
 // Lot D fix round 1 (finding 5) — the card must show whichever document

@@ -20,7 +20,11 @@ import {
   type TempoRefusal,
 } from '../../services/tempoService';
 import { resolveRegion } from '../../services/selectionRegion';
-import { isPassRunning, usePassLock } from '../../services/passLock';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`). */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { MIN_RATIO, MAX_RATIO } from '../../dsp/wsola';
 import { Gauge } from 'lucide-react';
@@ -300,16 +304,20 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
       ? !busy && gridConfirmed && variablePlan !== null
       : validSource && validTarget && !busy && ((check !== null && check.ok) || noOpWithMarkers));
 
+  // Final fix wave, second round — HOLDS the lock (`runExclusivePass`), not
+  // merely refuses on it: user-initiated tempo work, the same rule
+  // `tempo.detect`'s own menu row follows ("one of the three bodies that must
+  // take the lock itself rather than relying on a card's own
+  // `handleToolModuleLock` publish"). This dialog's own `DialogShell` carries
+  // no `moduleLock` prop, so it defaults to `!dismissable` (`busy`, Apply's
+  // own flag) — Detect never set that, so it had no lock participation at
+  // all before this.
   async function handleDetect() {
-    // Final fix wave (item 13) — `runTempoAnalysis` spawns a real Worker
-    // (tempoAnalysis.ts) exactly like `tempo.detect` does at the menu, which
-    // IS wrapped in `runExclusivePass`; this door was the same computation
-    // with no gate at all. Defence in depth beside the button's own
-    // `runningPass !== null` below.
-    if (!doc || detecting || isPassRunning()) return;
+    if (!doc || detecting) return;
     setDetecting(true);
     try {
-      const result = await runTempoAnalysis(doc);
+      const result = await runExclusivePass(TEMPO_DETECT_PASS, () => runTempoAnalysis(doc));
+      if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
       // T6-3: an analysis that lands after the tool is gone is a warmed CACHE,
       // keyed by document — not an edit, not undoable, and correct for the
       // document it measured. So the run is deliberately left to finish, and
@@ -372,16 +380,16 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   // binding). 'x2' halves periodFrames (higher tempo -> shorter period); '/2'
   // doubles it -- the exact convention PropertiesPanel's TempoSection (T5)
   // already established.
+  // Final fix wave, second round — same HOLD as `handleDetect` above.
   async function correctOctave(periodMultiplier: 2 | 0.5) {
-    // Final fix wave (item 13) — `regridTempo` spawns the same Worker
-    // `handleDetect` does; see that gate's comment.
-    if (!doc || !docEntry || docEntry.bpm === null || isPassRunning()) return;
+    if (!doc || !docEntry || docEntry.bpm === null) return;
     setCorrectionFailed(false);
     // A ×2 / ÷2 re-track replaces the beat positions themselves, so any earlier
     // confirmation described a grid that no longer exists (RULING 1).
     setGridConfirmed(false);
     const newPeriodFrames = docEntry.periodFrames / periodMultiplier;
-    const result = await regridTempo(doc.id, newPeriodFrames);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () => regridTempo(doc.id, newPeriodFrames));
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     // Same reading as `handleDetect`: a re-track writes the analysis cache for
     // the document it re-tracked, never the document itself. See the concern
     // recorded in the T6 report — the cache write itself is not cancellable from

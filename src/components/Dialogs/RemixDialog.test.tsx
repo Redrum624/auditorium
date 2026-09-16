@@ -500,6 +500,35 @@ describe('RemixDialog', () => {
     expect(screen.getByTestId('remix-halve')).not.toBeDisabled();
   });
 
+  // Second round — the IMPERATIVE layer, isolated from the reactive
+  // `disabled` binding above. `acquirePass` is deliberately NOT wrapped in
+  // `act()`: the lock is genuinely held (module state, read directly by
+  // `regridAndDerive`'s own `isPassRunning()` check, added fix round 1), but
+  // React has not yet re-rendered in response, so the DOM still shows the
+  // controls enabled — "dispatch on an enabled control with the lock held".
+  // A plain "click while disabled" test cannot tell the reactive layer from
+  // the imperative one (deleting the imperative check leaves that test
+  // green); this only stays green if `regridAndDerive` itself checks the
+  // live lock.
+  it('the imperative check refuses Re-detect/x2/÷2 before React re-renders them disabled', async () => {
+    seedDoc();
+    await renderReady();
+    const redetect = screen.getByTestId('remix-redetect') as HTMLButtonElement;
+    const double = screen.getByTestId('remix-double') as HTMLButtonElement;
+    const halve = screen.getByTestId('remix-halve') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(redetect.disabled).toBe(false);
+    expect(double.disabled).toBe(false);
+    expect(halve.disabled).toBe(false);
+    fireEvent.click(redetect);
+    fireEvent.click(double);
+    fireEvent.click(halve);
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    release!();
+  });
+
   it('12. Create stays disabled until the tempo is confirmed', async () => {
     seedDoc();
     await renderReady();

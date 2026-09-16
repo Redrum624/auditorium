@@ -21,7 +21,7 @@ import { DEFAULT_REMIX_WEIGHTS, type JoinCostTerms } from '../../dsp/remixCost';
 import { MAX_REQUIRED_JOINS, type RemixJoin } from '../../dsp/remixPlan';
 import type { RemixPlan } from '../../dsp/remixRender';
 import type { RemixAnalysis } from '../../services/tempoAnalysis';
-import { acquirePass, _resetPassLock } from '../../services/passLock';
+import { acquirePass, isPassRunning, _resetPassLock } from '../../services/passLock';
 
 // The MarkersPanel.test.tsx / RemixDialog.test.tsx pattern: everything pure
 // stays REAL via requireActual — crucially `useRemixVersion` and the module's
@@ -1164,6 +1164,40 @@ describe('RemixPanel — the pass lock gates every adjustment (final fix wave)',
     });
     for (const button of adjustments()) expect(button).not.toBeDisabled();
     expect(screen.getByTestId('remix-crossfade')).not.toBeDisabled();
+  });
+
+  // Second round — the HOLD specifically, not merely the refusal above.
+  // `runAdjustment` already carried a local `busyRef` and an `isPassRunning()`
+  // pre-check before this round (round 2), so a "click while a FOREIGN pass
+  // is already held" test cannot tell whether `runAdjustment` itself now
+  // holds the lock for the duration of `op` — those two pre-existing guards
+  // would catch it regardless. This tests the actual repro shape instead:
+  // does starting an adjustment make `isPassRunning()` true for as long as
+  // it is in flight, so a DIFFERENT door (Detect Tempo, an effect Apply)
+  // correctly refuses to start concurrently with it.
+  it('holds the app-wide lock for the duration of an adjustment, not merely refuses while one is already running', async () => {
+    const doc = addRemixDoc();
+    mockGetSession.mockReturnValue(makeSession(doc.id, SIX_JOINS));
+    let resolveReRoll!: () => void;
+    mockReRoll.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReRoll = () => resolve(null);
+      })
+    );
+
+    render(<RemixPanel />);
+    expect(isPassRunning()).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /re-roll/i }));
+    // Still in flight — the lock must be HELD, not merely checked once at
+    // the start and forgotten.
+    expect(isPassRunning()).toBe(true);
+
+    await act(async () => {
+      resolveReRoll();
+      await Promise.resolve();
+    });
+    expect(isPassRunning()).toBe(false);
   });
 });
 

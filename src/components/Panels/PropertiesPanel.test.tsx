@@ -748,5 +748,58 @@ describe('PropertiesPanel — Tempo section (Task T5)', () => {
       expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
       expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
     });
+
+    // Second round — the IMPERATIVE layer, isolated from the reactive
+    // `disabled` binding above. `acquirePass` is deliberately NOT wrapped in
+    // `act()`: the lock is genuinely held (module state, read directly by
+    // `runExclusivePass` inside `correct`/`detectOrReanalyze`), but React has
+    // not yet re-rendered in response, so the DOM still shows the controls
+    // enabled — "dispatch on an enabled control with the lock held". A plain
+    // "click while disabled" test cannot tell the reactive layer from the
+    // imperative one (deleting the imperative hold leaves that test green);
+    // these only stay green if the handlers themselves hold the lock.
+    it('the imperative hold refuses Detect Tempo before React re-renders it disabled', () => {
+      const doc = addDoc();
+      render(<PropertiesPanel />);
+      const button = screen.getByTestId('tempo-analyze-button') as HTMLButtonElement;
+
+      const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+      expect(button.disabled).toBe(false); // still stale — proves this reaches the handler, not the DOM gate
+      fireEvent.click(button);
+      expect(mockRunTempoAnalysis).not.toHaveBeenCalledWith(doc);
+
+      release!();
+    });
+
+    it('the imperative hold refuses Re-analyze before React re-renders it disabled', () => {
+      const doc = addDoc();
+      mockGetTempo.mockReturnValue(makeTempoEntry({ stale: true }));
+      render(<PropertiesPanel />);
+      const button = screen.getByTestId('tempo-reanalyze-button') as HTMLButtonElement;
+
+      const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+      expect(button.disabled).toBe(false);
+      fireEvent.click(button);
+      expect(mockRunTempoAnalysis).not.toHaveBeenCalledWith(doc);
+
+      release!();
+    });
+
+    it('the imperative hold refuses x2/÷2 before React re-renders them disabled', () => {
+      const doc = addDoc();
+      mockGetTempo.mockReturnValue(makeTempoEntry({ periodFrames: 200 }));
+      render(<PropertiesPanel />);
+      const double = screen.getByTestId('tempo-double-button') as HTMLButtonElement;
+      const halve = screen.getByTestId('tempo-halve-button') as HTMLButtonElement;
+
+      const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+      expect(double.disabled).toBe(false);
+      expect(halve.disabled).toBe(false);
+      fireEvent.click(double);
+      fireEvent.click(halve);
+      expect(mockRegridTempo).not.toHaveBeenCalledWith(doc.id, expect.anything());
+
+      release!();
+    });
   });
 });

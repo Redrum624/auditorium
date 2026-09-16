@@ -13,7 +13,11 @@ import {
   type AlignPlan,
   type AlignRefusal,
 } from '../../services/timingAlignService';
-import { isPassRunning, usePassLock } from '../../services/passLock';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`). */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
 import { FieldLabel, GlassButton, GlassSelect, GlassSlider, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -179,15 +183,19 @@ export default function AlignTimingDialog({ onClose }: { onClose: () => void }) 
   const canRegrid = grid !== null && grid.origin === 'own' && getTempo(doc) !== null;
   const canApply = !busy && plan !== null && confirmed && strengthPct > 0 && runningPass === null;
 
+  // Final fix wave, second round — HOLDS the lock (`runExclusivePass`), not
+  // merely refuses on it: user-initiated tempo work, the same rule
+  // `tempo.detect`'s own menu row follows.
   async function correctOctave(periodMultiplier: 2 | 0.5) {
-    // Final fix wave (item 13) — `regridTempo` spawns the same Worker
-    // `tempo.detect` runs behind `runExclusivePass`; this door had no gate.
-    if (!doc || !canRegrid || isPassRunning()) return;
+    if (!doc || !canRegrid) return;
     const entry = getTempo(doc);
     if (!entry || entry.bpm === null) return;
     setError(null);
     setConfirmed(false);
-    const result = await regridTempo(doc.id, entry.periodFrames / periodMultiplier);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () =>
+      regridTempo(doc.id, entry.periodFrames / periodMultiplier)
+    );
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     // A re-track writes the analysis CACHE for the document it re-tracked — not
     // the document, not an undo entry — so the run is left alone and only the
     // setState is guarded. See the T6 report's recorded concern.

@@ -9,7 +9,13 @@ import {
   useTempoVersion,
 } from '../../services/tempoAnalysis';
 import { commandReason, isCommandEnabled, multitrackToolDoc, runCommand } from '../../services/menuActions';
-import { isPassRunning, usePassLock } from '../../services/passLock';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`) — Re-detect below reuses it
+ * already through `runCommand('tempo.detect')`; ×2/÷2 need it directly since
+ * they call `regridTempo` themselves rather than going through the menu. */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
 import { useSessionStore } from '../../multitrack/sessionStore';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { clusterColor, meterLabel, structureRuns } from '../../utils/structureStrip';
@@ -122,10 +128,14 @@ export default function TempoCard() {
           .filter(Boolean)
           .join(' · ');
 
+  // Final fix wave, second round — HOLDS the lock, not merely refuses on
+  // it: user-initiated tempo work, the same rule `tempo.detect`'s own menu
+  // row and PropertiesPanel's `TempoSection` follow.
   async function correct(newPeriodFrames: number): Promise<void> {
-    if (!doc || isPassRunning()) return;
+    if (!doc) return;
     setCorrectionFailed(false);
-    const result = await regridTempo(doc.id, newPeriodFrames);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () => regridTempo(doc.id, newPeriodFrames));
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     setCorrectionFailed(result === null);
   }
 

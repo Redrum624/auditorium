@@ -935,4 +935,44 @@ describe('the pass lock gates Detect and x2/÷2 (final fix wave)', () => {
     expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
     expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
   });
+
+  // Second round — the IMPERATIVE layer, isolated from the reactive
+  // `disabled` binding above. `acquirePass` is deliberately NOT wrapped in
+  // `act()`: the lock is genuinely held (module state, read directly by
+  // `runExclusivePass` inside `handleDetect`/`correctOctave`), but React has
+  // not yet re-rendered in response, so the DOM still shows the controls
+  // enabled — "dispatch on an enabled control with the lock held". A plain
+  // "click while disabled" test cannot tell the reactive layer from the
+  // imperative one (deleting the imperative hold leaves that test green);
+  // these only stay green if the handlers themselves hold the lock.
+  it('the imperative hold refuses Detect before React re-renders it disabled', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(null);
+    render(<TempoDialog onClose={jest.fn()} />);
+    const button = screen.getByTestId('tempo-detect-button') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(button.disabled).toBe(false); // still stale — proves this reaches the handler, not the DOM gate
+    fireEvent.click(button);
+    expect(mockRunTempoAnalysis).not.toHaveBeenCalled();
+
+    release!();
+  });
+
+  it('the imperative hold refuses x2/÷2 before React re-renders them disabled', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(makeEntry({ bpm: 120, confidence: 0.8 }));
+    render(<TempoDialog onClose={jest.fn()} />);
+    const double = screen.getByTestId('tempo-double-button') as HTMLButtonElement;
+    const halve = screen.getByTestId('tempo-halve-button') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(double.disabled).toBe(false);
+    expect(halve.disabled).toBe(false);
+    fireEvent.click(double);
+    fireEvent.click(halve);
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    release!();
+  });
 });

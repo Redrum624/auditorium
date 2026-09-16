@@ -21,7 +21,14 @@ import {
 } from '../../services/remixService';
 import { effectiveCrossfadeMs } from '../../dsp/remixRender';
 import type { JoinCostTerms } from '../../dsp/remixCost';
-import { isPassRunning, usePassLock } from '../../services/passLock';
+import { isPassRunning, PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** No prior menu-level equivalent exists to reuse (`edit.remix`'s own command
+ * only opens `RemixDialog`; the actual work there holds the lock through
+ * `DialogShell`'s `moduleLock` prop, plumbing this plain sidebar panel has
+ * no access to) — a new descriptor, `kind: 'pipeline'` to match every other
+ * non-effect, non-host-job pass. */
+const REMIX_ADJUST_PASS = { id: 'remix.adjust', label: 'Auto-Remix', kind: 'pipeline' } as const;
 
 /**
  * The Auto-Remix adjustment surface (Task T15) for the ACTIVE document's remix
@@ -285,14 +292,19 @@ export default function RemixPanel() {
   /** One adjustment at a time: they are async (the DP may be in the session's
    * plan worker) and they rewrite the same document, so a second press while
    * one is outstanding would race two `applyEdit`s onto the same remix.
-   * Final fix wave (item 13): also refuses while a FOREIGN pass holds the
-   * app-wide lock — `busyRef` only ever knew about this panel's own runs. */
+   * Final fix wave (item 13, second round) — HOLDS the app-wide lock for the
+   * duration (`runExclusivePass`), not merely refuses on it: this is
+   * user-initiated work (a button the user clicked), the same rule
+   * `tempo.detect`'s own menu row follows. `isPassRunning()` stays as a
+   * pre-check too, so a foreign pass never even flashes `busy` before the
+   * acquire fails. */
   const runAdjustment = async (op: () => Promise<unknown>): Promise<void> => {
     if (busyRef.current || stale || isPassRunning()) return;
     busyRef.current = true;
     setBusy(true);
     try {
-      await op();
+      const result = await runExclusivePass(REMIX_ADJUST_PASS, op);
+      if (result === PASS_REFUSED) return; // defence in depth — the pre-check above already refused this
     } finally {
       busyRef.current = false;
       if (mountedRef.current) setBusy(false);
