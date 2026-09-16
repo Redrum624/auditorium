@@ -233,9 +233,16 @@ export interface SessionActions {
    *  - `addClip` inserts sorted and accepts an overlapping clip VERBATIM.
    *    Insert Active File (`menuActions.ts`'s `insertActiveDocAsClip`) drops
    *    the clip at the cursor and punch-in recording (`multitrackRecord.ts`)
-   *    at the punch-in sample; neither checks what is already there, and a
-   *    programmatic placement never writes fade keys — inventing a crossfade
-   *    around a recorded take is not this layer's call.
+   *    at the punch-in sample; neither checks what is already there, and
+   *    neither writes fade keys — inventing a crossfade around a recorded
+   *    take is not this layer's call. Lot L's Paste
+   *    (`multitrack/clipClipboard.ts`) is the ONE exception: it CARRIES OVER
+   *    the copied clip's own fades rather than inventing new ones, but the
+   *    effect on an overlap is the same as any other `addClip` call — no
+   *    `maintainFacingFades` runs here, so a pasted clip whose carried-over
+   *    fade happens to exactly span the overlap it creates renders as X3's
+   *    canonical-pair crossfade with nobody having armed it, exactly like a
+   *    raw layering coincidence would.
    *  - `moveClip` commits the requested position verbatim by default; a drag
    *    that creates or maintains an overlap arms/maintains the pair's facing
    *    fades (see `maintainFacingFades`) so it renders as X3's canonical-pair
@@ -248,7 +255,7 @@ export interface SessionActions {
    * choice, a vetoed arm, a pile-up) renders as honest solo fades over a raw
    * sum, hard-clamped to +/-1 in `mixdown.ts`, so it can clip — see
    * `resolveClipFadeSpecs` for the render-side gate. */
-  addClip(trackId: string, clip: Clip): void; // inserts sorted; accepts overlap verbatim; never writes fades
+  addClip(trackId: string, clip: Clip): void; // inserts sorted; accepts overlap verbatim; never INVENTS fades (lot L's Paste CARRIES OVER the copied clip's own, the one exception — see the overlap contract above)
   moveClip(clipId: string, toTrackId: string, newStartSample: number, opts?: { clearOverlap?: boolean }): void; // clamps >=0; commits verbatim + maintains facing fades; opts.clearOverlap = v1.8 nudge; H1 no-op guard: same track + same RESOLVED sample records nothing
   trimClip(clipId: string, edge: 'start' | 'end', newBoundarySample: number): void; // adjusts offset/length, min MIN_CLIP_SAMPLES; may overlap a neighbour; re-clamps fades (X2 — see setClipFade) and maintains facing fades on the overlap it reshapes (X5)
   /** D3 — RIGID TRANSLATION of a set of clips on ONE track by ONE delta, in ONE

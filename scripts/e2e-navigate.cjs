@@ -2764,6 +2764,20 @@ async function main() {
         // the same `selectClips` hook the Split check below already uses,
         // rather than trusting whichever selection happened to survive.
         if (view === 'multitrack') {
+          // Fix round 1 (addendum) — captured, not assumed: the comment two
+          // steps below ("the P0-2 clip is still the selected primary") is a
+          // real claim about a SPECIFIC clip, and `const saved = …` right
+          // after this block reads `selectedClipId` fresh — if this block's
+          // OWN clear-then-reselect were left standing when `saved` runs, the
+          // walk would restore to WHICHEVER clip `seededClips[0]` happens to
+          // be, not necessarily the one the Properties step actually clicked.
+          // Restoring it here, before `saved` is ever captured, is what makes
+          // that later comment true by construction rather than by
+          // coincidence (today there is only the one P0-2 clip, so the two
+          // happen to agree — this fix does not depend on that).
+          const selectionBeforeCopyCheck = await page.evaluate(
+            () => window.__test.getClipFadeState().selectedClipId
+          );
           await page.evaluate(() => window.__test.selectClips([]));
           const copyNoSelection = await pillDisabledReaches(page, 'Copy', true);
           assert(
@@ -2780,6 +2794,10 @@ async function main() {
           assert(
             copyWithSelection === true,
             'Copy lights up in the multitrack view once a clip is selected (L1)'
+          );
+          await page.evaluate(
+            (id) => window.__test.selectClips(id === null ? [] : [id]),
+            selectionBeforeCopyCheck
           );
 
           // Item 10: Split is the one first-group button that is LIVE here, and

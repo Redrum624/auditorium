@@ -6,6 +6,7 @@ import { useSessionStore } from './sessionStore';
 import { _resetSessionUndo, redoSession, undoSession } from './sessionUndo';
 import {
   PASTE_CLOSED_SOURCE_REASON,
+  PASTE_EMPTY_REASON,
   PASTE_HOLDS_AUDIO_REASON,
   PASTE_NO_TRACK_REASON,
   clipsToClipboardEntries,
@@ -218,6 +219,40 @@ describe('pasteClipsAtCursor — the paste target (L2, K2/K3)', () => {
     expect(allClips()).toHaveLength(4);
   });
 
+  // Fix round 1 (addendum item 3) — `pastedClipGeometry` is unit-tested at a
+  // rate ratio elsewhere, but that test hands `ratio` in as a bare number;
+  // nothing before this test exercised `pasteClipsAtCursor`'s OWN wiring of
+  // `ratio = session.sampleRate / payload.sampleRate` (`clipClipboard.ts`),
+  // so inverting that line (`payload.sampleRate / session.sampleRate`) would
+  // have passed the whole suite. This copies in a 48_000 Hz session and
+  // pastes into a DIFFERENT, LIVE 44_100 Hz session — the clipboard is a
+  // module slot that survives a session swap, exactly like it survives
+  // `newSession` in the app.
+  it('cross-rate paste: the ratio is session.sampleRate / payload.sampleRate, not the inverse', () => {
+    const doc = addSourceDoc();
+    const { session: sourceSession, c1 } = buildSession(doc.id);
+    installSession(sourceSession, { currentTrackId: sourceSession.tracks[2].id });
+    useSessionStore.getState().setSelectedClips([c1.id]);
+    copySelectedClips(); // clipClipboard.sampleRate = 48_000 (SESSION_RATE)
+
+    const u0 = createTrack('U0');
+    const targetSession: Session = { name: 'Target session', sampleRate: 44_100, tracks: [u0] };
+    installSession(targetSession, { currentTrackId: u0.id, mtCursorSample: 100_000 });
+
+    const placed = pasteClipsAtCursor();
+
+    expect(placed).toHaveLength(1);
+    const pasted = clipsOn(0)[0];
+    expect(pasted.startSample).toBe(100_000);
+    // ratio = 44_100 / 48_000 = 0.91875, so lengthSample = round(72_000 *
+    // 0.91875) = 66_150. The inverted wiring (48_000 / 44_100 = 1.0884…)
+    // would instead produce 78_367 — a clearly different, non-coincidental
+    // value, which is what makes this test a real discriminator between the
+    // two directions rather than one that happens to agree with both.
+    expect(pasted.lengthSample).toBe(66_150);
+    expect(pasted.offsetSample).toBe(12_000); // unconverted — DOCUMENT samples
+  });
+
   it('primary: selectedClipId is the topmost track/earliest pasted clip; a second paste does not consume the clipboard', () => {
     const doc = addSourceDoc();
     const { session, c1, c2 } = buildSession(doc.id);
@@ -257,6 +292,21 @@ describe('copySelectedClips — an empty selection leaves the clipboard alone (L
 });
 
 describe('pasteBlockReason (L3, L4a, Risk 4)', () => {
+  // Fix round 1 (addendum item 4) — Risk 10's cold-store case had zero
+  // references: `PASTE_EMPTY_REASON` was reachable from every other test's
+  // fixture (they all copy something first) but never asserted on its own.
+  // Deleting the `if (kind === null) return PASTE_EMPTY_REASON;` line makes
+  // `pasteBlockReason()` fall through to `undefined` here — Paste would
+  // light up over a genuinely empty clipboard and do nothing on a press.
+  it('PASTE_EMPTY_REASON with a live current track but nothing ever copied', () => {
+    const doc = addSourceDoc();
+    const { session } = buildSession(doc.id);
+    installSession(session, { currentTrackId: session.tracks[2].id });
+
+    expect(getClipboardKind()).toBeNull();
+    expect(pasteBlockReason()).toBe(PASTE_EMPTY_REASON);
+  });
+
   it('PASTE_NO_TRACK_REASON with a clip clipboard but no current track', () => {
     const doc = addSourceDoc();
     const { session, c1 } = buildSession(doc.id);

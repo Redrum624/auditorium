@@ -5322,11 +5322,23 @@ async function main() {
     // Lot L (items 11/12) — Copy/Paste for multitrack CLIPS.
     //
     // Clicking a track's BACKGROUND to make it the CURRENT track (K2/K3) has
-    // no test hook by design (the brief's own ruling: a hook would be a
-    // second, untested definition of a gesture Playwright can drive for
-    // real) — a real `page.mouse` press-and-release is the same argument the
-    // gap block's own double-click makes, run in the other direction. Ctrl+C/
-    // Ctrl+V are the real keys, exactly as the brief's Outputs section asks.
+    // no test hook for the GESTURE by design (the brief's own ruling: a hook
+    // would be a second, untested definition of a click Playwright can drive
+    // for real) — a real `page.mouse` press-and-release is the same argument
+    // the gap block's own double-click makes, run in the other direction.
+    // Ctrl+C/Ctrl+V are the real keys, exactly as the brief's Outputs section
+    // asks.
+    //
+    // Fix round 1 — `currentTrackId` is NOT part of `SessionSnapshot`, so
+    // nothing in this 5000-line walk has ever reset it, and lot K's own
+    // ruling (clicking a CLIP also sets it, R20) means it is already non-null
+    // from clip clicks earlier in this very script (the gap block right
+    // above sets it via `selectClips`-driven... no — via the REAL clip
+    // selections `TrackLane`/`ClipView` make on every clip press). The old
+    // `assert(trackBefore === null, ...)` assumed a precondition this walk
+    // can never actually meet. Captured, not assumed, and restored via
+    // `setCurrentTrack` (a save/restore hook only — never a substitute for
+    // the click below, see its own docblock in `testHooks.ts`).
     //
     // The session found here is the gap block's own restore: ONE clip over
     // [0, 88200) on track 1 (index 0). Track 2 (index 1) is EMPTY — its
@@ -5343,27 +5355,64 @@ async function main() {
         clipboardSource.lengthSample === 88200,
       `found the session where the gap block left it (${JSON.stringify(clipboardBefore.clips)})`
     );
-    // The gap block's own restore left no selection standing — captured
+    // The gap block's own restore left no CLIP selection standing — captured
     // rather than assumed, so this sub-step's own restore below puts back
-    // whatever was ACTUALLY there rather than a guess.
+    // whatever was ACTUALLY there rather than a guess. The CURRENT TRACK is
+    // captured the same way, for the same reason (fix round 1): whatever
+    // clip clicks earlier in the walk left it at, not `null`.
     const clipSelectionBefore = clipboardBefore.selectedClipId;
     const trackBefore = await page.evaluate(() => window.__test.getCurrentTrack());
-    assert(trackBefore === null, `no track had been clicked current yet (${trackBefore})`);
-    await page.evaluate((id) => window.__test.selectClips([id]), clipboardSource.clipId);
 
-    const lane2Box = await page.evaluate(() => {
+    const lane2 = await page.evaluate(() => {
       const lane = document.querySelectorAll('[data-testid="track-lane"]')[1];
       const r = lane.getBoundingClientRect();
-      return { x: r.x + r.width * 0.9, y: r.y + r.height / 2 };
+      return { x: r.x + r.width * 0.9, y: r.y + r.height / 2, trackId: lane.getAttribute('data-track-id') };
     });
-    await page.mouse.move(lane2Box.x, lane2Box.y);
+    assert(lane2.trackId !== null, `track 2's lane carries its own id (${JSON.stringify(lane2)})`);
+    // Fix round 1 (addendum, HIGH) — the CLICK must land BEFORE the clip is
+    // (re-)selected, not after: `TrackLane.onPointerDown` clears the clip
+    // selection on a plain, no-modifier press (X6) — `if (!e.ctrlKey &&
+    // !e.shiftKey) setSelectedClip(null);` (`TrackLane.tsx`) — before this
+    // fix the hook-selected clip was wiped by the very next line's click, so
+    // `Control+c` fired with nothing selected, `canCopyClips()` was false,
+    // and the clipboard never actually became `'clips'`. The marquee
+    // capture-phase handler does not `stopPropagation`, so the lane handler
+    // genuinely runs underneath it. `setCurrentTrack` is untouched by
+    // `selectClips` (K's own field, written only by the three click sites),
+    // so selecting the clip back AFTER this click is safe and keeps the
+    // track this click just set.
+    await page.mouse.move(lane2.x, lane2.y);
     await page.mouse.down();
     await page.mouse.up();
-    await page.waitForFunction(() => window.__test.getCurrentTrack() !== null, null, {
-      timeout: 5000,
-    });
-    const currentAfterClick = await page.evaluate(() => window.__test.getCurrentTrack());
-    console.log(`  clicked track 2's background; current track is now ${currentAfterClick}`);
+    // A CAUSALITY check, not a "was it null" one: whatever `trackBefore` was,
+    // the click must land on track 2's own id specifically — a click that
+    // silently did nothing (or hit some other row) would leave it unchanged,
+    // and this is the assertion that would catch that, unlike waiting for
+    // merely "not null" against a value already non-null before the click.
+    const clickedTrack = await page
+      .waitForFunction(
+        (id) => window.__test.getCurrentTrack() === id,
+        lane2.trackId,
+        { timeout: 5000 }
+      )
+      .then(() => true)
+      .catch(() => false);
+    const currentTrackNow = await page.evaluate(() => window.__test.getCurrentTrack());
+    assert(
+      clickedTrack === true,
+      `clicking track 2's background made it current (expected ${lane2.trackId}, ` +
+        `got ${currentTrackNow}; was ${trackBefore} before the click)`
+    );
+    console.log(`  clicked track 2's background; current track is now ${lane2.trackId}`);
+
+    // NOW select the clip to copy — after the click, so the click's own
+    // deselect (X6) cannot wipe it before Ctrl+C ever fires.
+    await page.evaluate((id) => window.__test.selectClips([id]), clipboardSource.clipId);
+    const selectedBeforeCopy = await page.evaluate(() => window.__test.getClipFadeState().selectedClipId);
+    assert(
+      selectedBeforeCopy === clipboardSource.clipId,
+      `the source clip is selected right before Ctrl+C, surviving the click (${selectedBeforeCopy})`
+    );
 
     await page.keyboard.press('Control+c');
     const clipboardKind = await page.evaluate(() => window.__test.getClipboardKind());
@@ -5407,14 +5456,15 @@ async function main() {
       clipboardAfterUndo === 'clips',
       'undoing the paste does not un-copy — the clipboard still holds the clip (L3)'
     );
-    // Restore the clip selection this sub-step found (K2/K3's `currentTrackId`
-    // has no setter hook by the same "no untested second definition" ruling
-    // that keeps the CLICK itself real — it is left naming track 2, which
-    // nothing later in this walk reads or depends on).
+    // Restore the clip selection AND the current track this sub-step found
+    // (fix round 1): `setCurrentTrack` is a save/restore-only harness seam,
+    // not a stand-in for the click above, which is what actually proved the
+    // K2/K3 gesture.
     await page.evaluate(
       (id) => window.__test.selectClips(id === null ? [] : [id]),
       clipSelectionBefore
     );
+    await page.evaluate((id) => window.__test.setCurrentTrack(id), trackBefore);
     console.log(
       "  copy/paste: a real click made track 2 current, Ctrl+C copied the clip, Ctrl+V dropped it right of the bar there"
     );

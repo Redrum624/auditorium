@@ -66,15 +66,30 @@ describe('setClipClipboard stores a defensive copy', () => {
   });
 });
 
-describe('clearClipboard empties both slots', () => {
-  it('after clearClipboard, both getters are null and the kind is null', () => {
+describe('clearClipboard empties whichever slot is live', () => {
+  // Corrected (fix round 1, addendum item 5c): the two slots are mutually
+  // exclusive by construction (L4a), so the two can never BOTH be populated
+  // at once — `setClipClipboard` below has already nulled the audio slot
+  // before `clearClipboard()` ever runs, so this test does NOT exercise
+  // `clearClipboard`'s own `clipboard = null` line (it was already null).
+  // The two tests below cover each slot's OWN clearing separately instead of
+  // one test wrongly claiming to cover both at once.
+  it('clears the CLIP slot when it is the one live', () => {
     setClipboard({ channels: [Float32Array.of(0.1)], sampleRate: 22_050 });
     setClipClipboard(clipsPayload());
-    // setClipClipboard above already cleared the audio slot (L4a); re-confirm
-    // clearClipboard takes down whichever slot is actually live plus the
-    // other one, so this pins the "clears both, unconditionally" claim
-    // rather than one that happens to already be empty.
     expect(getClipboardKind()).toBe('clips');
+
+    clearClipboard();
+
+    expect(getClipboard()).toBeNull();
+    expect(getClipClipboard()).toBeNull();
+    expect(getClipboardKind()).toBeNull();
+  });
+
+  it('clears the AUDIO slot when it is the one live', () => {
+    setClipClipboard(clipsPayload());
+    setClipboard({ channels: [Float32Array.of(0.1)], sampleRate: 22_050 });
+    expect(getClipboardKind()).toBe('audio');
 
     clearClipboard();
 

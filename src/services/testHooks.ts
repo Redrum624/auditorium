@@ -308,6 +308,19 @@ export interface TestApi {
    * harness (no marquee hook exists either; Playwright drags the real lane,
    * see the brief's own "no marquee hook" ruling). */
   getCurrentTrack(): string | null;
+  /** Lot L fix round 1 — a SAVE/RESTORE seam, never a substitute for the real
+   * click the K2/K3 gesture needs: `currentTrackId` has no reset (it is not
+   * part of `SessionSnapshot`, so no Ctrl+Z ever moves it, and every prior
+   * click in a long walk leaves it non-null forever after). A smoke step that
+   * needs a specific current track for its own gesture-causality assertion —
+   * or that wants to leave the session exactly as it found it — captures
+   * `getCurrentTrack()` first and restores it through this setter afterward;
+   * it never uses this setter to ESTABLISH the state the click itself is
+   * supposed to prove. Harness-only (a save/restore hook, not a second
+   * definition of the gesture) — the same class as `selectClips` coexisting
+   * with real clip clicks elsewhere in this file. Returns the value read back
+   * from the store after the write, echoing `setMtCursor`'s own shape. */
+  setCurrentTrack(id: string | null): string | null;
   /** Lot L (items 11/12): which shape the clipboard holds, or `null` when
    * empty — a scalar, no store handle. The smoke presses the real
    * `Control+c`/`Control+v` and reads the placed clip back through
@@ -2021,6 +2034,11 @@ export function installTestHooks(): void {
     },
 
     getCurrentTrack: () => useSessionStore.getState().currentTrackId,
+
+    setCurrentTrack: (id) => {
+      useSessionStore.getState().setCurrentTrack(id);
+      return useSessionStore.getState().currentTrackId;
+    },
 
     getClipboardKind: () => getClipboardKind(),
 
