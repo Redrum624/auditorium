@@ -34,7 +34,7 @@
 // A small file is measured too, as the control that separates fixed per-call
 // overhead from per-byte cost.
 //
-//   npm run build && node scripts/open-ipc-probe.cjs [--repeats=5] [--out=<path>]
+//   pnpm build && node scripts/open-ipc-probe.cjs [--repeats=5] [--out=<path>]
 //     [--big1=<file>] [--big2=<file>]
 
 const path = require('node:path');

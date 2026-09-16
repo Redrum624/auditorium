@@ -60,9 +60,32 @@
  *         nearest-wins set let them silently beat everything (the H3 hazard).
  * Resolution is `snapSampleTiered`/`snapSpanTiered`'s: nearest within the
  * highest tier holding a candidate. The flat union (`sessionSnapTargets`) is
- * kept for the POINT surfaces — a ruler seek or an envelope key has no clip
- * aimed at an edge, and for the ruler the cursor is its own old position,
- * which a dominant tier would turn into a sticky trap.
+ * kept for the POINT surfaces — a clip drop or an envelope key has no clip of
+ * its own aimed at an edge, so priority buys those gestures nothing.
+ *
+ * ---------------------------------------------------------------------------
+ * F2/F3 — THE CURSOR IS NOT ITS OWN TARGET IN THE GESTURES THAT MOVE IT
+ * ---------------------------------------------------------------------------
+ * `mtCursorSample` is included in tier 0 by default (`{ includeCursor: true }`)
+ * for every gesture that aims AT the bar — a clip drop, an envelope key drag —
+ * exactly as `excludeClipIds` withholds a dragged clip's own edges from
+ * itself. But the multitrack ruler seek and the cursor handle drag both MOVE
+ * the bar, and the bar's own current position was a live snap target for both:
+ * a small deliberate move near "where it already is" got pulled straight back
+ * to it, which is precisely the literal reading of the user's complaint ("near
+ * its last position"). That is the same trap-27 shape the header above
+ * describes for a dragged clip — "the dragged thing is never its own target" —
+ * applied to the cursor instead of a clip. `mtSnapTargets`
+ * (`MultitrackView.tsx`) is therefore the one caller that passes
+ * `{ includeCursor: false }`, which covers both bar-moving gestures at once
+ * (the ruler prop and the handle capture share that one function).
+ *
+ * This overturns the note this header used to carry: "for the ruler the
+ * cursor is its own old position, which a dominant tier would turn into a
+ * sticky trap." That sentence removed the tier *dominance* (kept the ruler on
+ * the flat union) but left the cursor *in* the target set, so the trap
+ * survived in a milder form — a flat-union near-miss instead of a
+ * tier-guaranteed one. `includeCursor: false` removes the target itself.
  *
  * ---------------------------------------------------------------------------
  * THE MAPPING
@@ -187,6 +210,13 @@ export function buildSessionSnapTiers(
   return [mergeTargets(...edgeLists), mergeTargets(...markerLists), mergeTargets(...beatLists)];
 }
 
+/** F2/F3 — see the header note above. `includeCursor` defaults to `true`: the
+ * cursor stays a tier-0 target for every gesture EXCEPT the two that move the
+ * bar itself, which pass `{ includeCursor: false }`. */
+export interface SessionSnapOptions {
+  includeCursor?: boolean;
+}
+
 /**
  * The session's snap tiers, resolved from the stores. Empty — with no work
  * done at all — whenever the magnet is off.
@@ -200,7 +230,10 @@ export function buildSessionSnapTiers(
  * `editorSnapTargets.ts`. It is called once at pointerdown; the set a drag uses
  * is the set as it stood when the drag began.
  */
-export function sessionSnapTiers(excludeClipIds: readonly string[]): SessionSnapTiers {
+export function sessionSnapTiers(
+  excludeClipIds: readonly string[],
+  opts: SessionSnapOptions = {}
+): SessionSnapTiers {
   if (!isSnapEnabled()) return [[], [], []];
 
   const { session, mtCursorSample } = useSessionStore.getState();
@@ -227,19 +260,23 @@ export function sessionSnapTiers(excludeClipIds: readonly string[]): SessionSnap
     }
   }
 
-  return buildSessionSnapTiers(sources, session.sampleRate, excludeClipIds, [mtCursorSample]);
+  const extra = opts.includeCursor === false ? [] : [mtCursorSample];
+  return buildSessionSnapTiers(sources, session.sampleRate, excludeClipIds, extra);
 }
 
 /**
- * The FLAT union of every tier, for the point surfaces (the multitrack ruler's
- * seek, an envelope key's X). A seeked cursor or a dragged key has no clip
- * edge of its own aiming at a target, so priority buys those gestures nothing
- * — and for the ruler it would cost: the cursor's own old position is in tier
- * 0, and a dominant tier would make leaving it for a nearby beat impossible.
- * Clip gestures (move, trim, drop) take `sessionSnapTiers` instead.
+ * The FLAT union of every tier, for the point surfaces (an envelope key's X,
+ * the multitrack ruler seek). A dragged key has no clip edge of its own aiming
+ * at a target, so priority buys that gesture nothing. The ruler seek is the
+ * one caller (via `mtSnapTargets`) that passes `{ includeCursor: false }` —
+ * see F2/F3 above. Clip gestures (move, trim, drop) take `sessionSnapTiers`
+ * instead.
  */
-export function sessionSnapTargets(excludeClipId: string | null): number[] {
-  return mergeTargets(...sessionSnapTiers(excludeClipId === null ? [] : [excludeClipId]));
+export function sessionSnapTargets(
+  excludeClipId: string | null,
+  opts: SessionSnapOptions = {}
+): number[] {
+  return mergeTargets(...sessionSnapTiers(excludeClipId === null ? [] : [excludeClipId], opts));
 }
 
 function clipSpan(clip: Clip): ClipSpan {

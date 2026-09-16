@@ -3,6 +3,7 @@ import { docDuration } from '../../audio/AudioDocument';
 import { DOC_DRAG_MIME, beginDocumentDrag, endDocumentDrag } from '../../multitrack/laneDrop';
 import { closeDocumentFlow } from '../../services/fileService';
 import { usePendingOpens } from '../../services/openProgress';
+import { closeBlockedReason, closeFree, usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
 
 /** Format a duration in seconds as `m:ss`. */
@@ -17,7 +18,25 @@ function formatDuration(seconds: number): string {
  * Left-sidebar list of open documents. Each row shows the name (with a `*` when
  * dirty), duration, and sample rate. Clicking a row activates that document;
  * the hover ✕ button closes it through the shared closeDocumentFlow (which
- * prompts to save when dirty).
+ * prompts to save when dirty). A clean never-saved document — the amber
+ * `files-neversaved` dot below — closes with no prompt at all (lot B): the dot
+ * is not a close guard, only the quit guard still reads that flag.
+ *
+ * Lot M — the lot-B close duty (ledger Ruling R14). `invalidateStemRun` /
+ * `invalidateTranscript` / `invalidateLyricsAlignment` (inside
+ * `closeDocumentFlow`) TERMINATE an in-flight utility process for the
+ * document being closed, with no confirmation of their own — before this lot
+ * the ✕ was gated only on `hasDoc`, so one click mid-transcription silently
+ * killed the job. `passLock.ts` is the only thing that knows a pass is
+ * running, so the ✕ reads `closeFree()`/`closeBlockedReason()` from there
+ * directly (not through `menuActions`' `file.close`, which only ever closes
+ * the ACTIVE document — a row here can close any OTHER open one too). Fix
+ * round 1 (item 6): that policy is exported from `passLock.ts` exactly ONCE
+ * now — `menuActions.ts`'s `file.close` reads the same two functions — where
+ * before each of these two doors reimplemented it. See `closeFree`'s own
+ * docblock in `passLock.ts` for the full argument (every pass kind refuses a
+ * close except a running hosted EFFECT, proven safe against it by
+ * `App.effectHost.test.tsx`'s "the mouse stays live during Apply" suite).
  */
 export default function FilesPanel() {
   const documents = useAppStore((s) => s.documents);
@@ -28,6 +47,11 @@ export default function FilesPanel() {
   // so, "live but nothing happening" is indistinguishable from a hang. That
   // ambiguity is exactly what the incident's frozen window offered.
   const pendingOpens = usePendingOpens();
+  // Lot M: module state, not zustand — subscribe so every row's ✕ recomputes
+  // the instant the lock moves.
+  usePassLock();
+  const canClose = closeFree();
+  const closeTitle = closeBlockedReason() ?? undefined;
 
   if (documents.length === 0 && pendingOpens.length === 0) {
     return <div className="p-2 text-sm text-[#8b8b92]">No files open.</div>;
@@ -98,9 +122,10 @@ export default function FilesPanel() {
               <button
                 type="button"
                 aria-label={`Close ${doc.name}`}
-                title="Close"
-                onClick={() => void closeDocumentFlow(doc.id)}
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#8b8b92] opacity-0 transition-opacity hover:bg-white/10 hover:text-[#d4d4d8] group-hover:opacity-100"
+                title={canClose ? 'Close' : closeTitle}
+                disabled={!canClose}
+                onClick={() => canClose && void closeDocumentFlow(doc.id)}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#8b8b92] opacity-0 transition-opacity hover:bg-white/10 hover:text-[#d4d4d8] group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <X size={14} />
               </button>

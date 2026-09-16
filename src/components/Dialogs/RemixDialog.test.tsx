@@ -23,6 +23,7 @@ import {
   _getTempoWorkerTerminateCount,
   _resetTempoWorkerTestState,
 } from '../../__mocks__/createTempoWorkerMock';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // The ConvertDialog.test.tsx / TempoDialog.test.tsx pattern: everything pure
 // (formatting, the option assembly, the cluster-run grouping) stays REAL via
@@ -187,6 +188,8 @@ beforeEach(() => {
   mockCreateRemix.mockResolvedValue({ ok: true, remixDocId: 'remix-1', plan: {} as never });
   mockRegridTempo.mockResolvedValue(null);
   mockDeriveRemixFeatures.mockImplementation(() => makeAnalysis());
+  // Final fix wave: module-level state, like the app store above.
+  _resetPassLock();
 });
 
 describe('RemixDialog', () => {
@@ -462,6 +465,68 @@ describe('RemixDialog', () => {
     // The re-tracked grid is published to the shared cache, so the row a
     // `regridTempo` write left without remix descriptors is repaired.
     expect(mockSetRemixAnalysis).toHaveBeenCalledTimes(1);
+  });
+
+  // Final fix wave (item 13) — Re-detect/x2/÷2 all funnel through
+  // `regridAndDerive`, which spawns the same Worker `tempo.detect` runs
+  // behind `runExclusivePass`; none of the three had a gate before this
+  // wave. Same shape as `AlignLyricsDialog.test.tsx`'s "the pass lock gates
+  // Record and Download Model".
+  it('disables Re-detect/x2/÷2 while a foreign pass holds the lock, and a click on any starts nothing', async () => {
+    seedDoc();
+    await renderReady();
+    expect(screen.getByTestId('remix-redetect')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-double')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-halve')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(screen.getByTestId('remix-redetect')).toBeDisabled();
+    expect(screen.getByTestId('remix-double')).toBeDisabled();
+    expect(screen.getByTestId('remix-halve')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('remix-redetect'));
+    fireEvent.click(screen.getByTestId('remix-double'));
+    fireEvent.click(screen.getByTestId('remix-halve'));
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('remix-redetect')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-double')).not.toBeDisabled();
+    expect(screen.getByTestId('remix-halve')).not.toBeDisabled();
+  });
+
+  // Second round — the IMPERATIVE layer, isolated from the reactive
+  // `disabled` binding above. `acquirePass` is deliberately NOT wrapped in
+  // `act()`: the lock is genuinely held (module state, read directly by
+  // `regridAndDerive`'s own `isPassRunning()` check, added fix round 1), but
+  // React has not yet re-rendered in response, so the DOM still shows the
+  // controls enabled — "dispatch on an enabled control with the lock held".
+  // A plain "click while disabled" test cannot tell the reactive layer from
+  // the imperative one (deleting the imperative check leaves that test
+  // green); this only stays green if `regridAndDerive` itself checks the
+  // live lock.
+  it('the imperative check refuses Re-detect/x2/÷2 before React re-renders them disabled', async () => {
+    seedDoc();
+    await renderReady();
+    const redetect = screen.getByTestId('remix-redetect') as HTMLButtonElement;
+    const double = screen.getByTestId('remix-double') as HTMLButtonElement;
+    const halve = screen.getByTestId('remix-halve') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(redetect.disabled).toBe(false);
+    expect(double.disabled).toBe(false);
+    expect(halve.disabled).toBe(false);
+    fireEvent.click(redetect);
+    fireEvent.click(double);
+    fireEvent.click(halve);
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    release!();
   });
 
   it('12. Create stays disabled until the tempo is confirmed', async () => {

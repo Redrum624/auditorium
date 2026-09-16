@@ -34,6 +34,7 @@ import {
 } from '../../services/coverPlacement';
 import { useHistoryVersion } from '../../services/undoHistory';
 import type { DerivedValue, StageStatus } from '../../services/vocalChain';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -352,6 +353,8 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [running, setRunning] = useState<string | null>(null);
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
   const [report, setReport] = useState<CoverJourneyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [liveResults, setLiveResults] = useState<CoverJourneyStageResult[]>([]);
@@ -375,7 +378,21 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
 
   const take = documents.find((d) => d.id === takeDocId) ?? null;
   const song = documents.find((d) => d.id === songDocId) ?? null;
-  const ready = take !== null && song !== null && song.id !== take.id;
+  // Fix round 3 (item 3) — split from the button's gate. `inputsReady` is
+  // ONLY the document-picker question ("are two different documents
+  // chosen") and is what the amber hint below reads; it must NOT know about
+  // the pass lock, because the hint's own text ("Choose two different
+  // documents…") is a claim about the PICKERS, not about a foreign pass.
+  // Fix round 1 conflated the two — `ready` alone fed both the hint and the
+  // button — so a user who had already picked two valid documents was told
+  // to "choose two different documents" while a FOREIGN pass (not this
+  // dialog's own `busy`) held the lock. `ready` (the button's own gate)
+  // still ANDs in `runningPass === null`; only the hint's condition changes.
+  const inputsReady = take !== null && song !== null && song.id !== take.id;
+  // M-a's evidence (`coverJourney.ts:829` calls `separateStems` FROM INSIDE
+  // this run) is exactly why the lock must be checked HERE, at the surface,
+  // rather than inside `runCoverJourney`/`separateStems` themselves.
+  const ready = inputsReady && runningPass === null;
   const done = report !== null;
   const locked = busy || done;
 
@@ -397,7 +414,7 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
   );
 
   async function handleRun(): Promise<void> {
-    if (!ready || busy || done) return;
+    if (!ready || busy || done || isPassRunning()) return;
     setBusy(true);
     setProgress(0);
     setRunning(null);
@@ -561,7 +578,7 @@ export default function CoverChainDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
 
-        {!ready && !busy && (
+        {!inputsReady && !busy && (
           <p data-testid="cover-journey-not-ready" className="text-xs" style={{ color: AMBER }}>
             Choose two different documents: the original song (the full mix — this pass separates it for you)
             and your vocal take.

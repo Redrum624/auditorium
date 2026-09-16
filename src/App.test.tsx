@@ -12,6 +12,9 @@ import { createClip } from './multitrack/session';
 import { runCommand } from './services/menuActions';
 import { getRemixSession } from './services/remixService';
 import { focusTranscriptPanel } from './services/dialogBus';
+import { _resetClipWork, clipWorkTargetId } from './services/clipPass';
+import { _resetPassLock, isPassRunning } from './services/passLock';
+import * as effectRunnerModule from './services/effectRunner';
 // U2: the strip registry's own answers, so these tests assert the RULE (Files
 // leads, History trails) rather than a second copy of today's roster.
 import { DEFAULT_PANEL, stripTabs } from './components/Layout/ModuleStrip';
@@ -62,6 +65,8 @@ beforeEach(() => {
   useSessionStore.getState().newSession(44100);
   useSessionStore.getState().setProjectPath(null);
   _resetSessionUndo();
+  _resetPassLock();
+  _resetClipWork();
   delete (window as { electronAPI?: unknown }).electronAPI;
   mockGetInFlightSaveCount.mockReturnValue(0);
   mockIsProjectSaveInFlight.mockReturnValue(false);
@@ -741,5 +746,362 @@ describe('the window drop guard is about Files, and only Files (F11)', () => {
     unmount();
 
     expect(dispatch('drop', ['Files']).defaultPrevented).toBe(false);
+  });
+});
+
+/**
+ * Lot D fix round 1 (CRITICAL/HIGH) — the drift watcher, at the React level
+ * `clipPass.test.ts` cannot reach (that file pins the per-kind slot
+ * ownership half of the fix; this is the half that actually unmounts a
+ * stale host). The reviewer's reproduction: an effect card mints a working
+ * copy in multitrack, then something ELSE (any of the writers enumerated in
+ * `lot-d-report.md`'s "Fix round 1" section — a Files-panel row,
+ * `primeMultitrackDocTarget` priming a different command, a landing) moves
+ * `activeDocumentId` away from it WHILE the card stays mounted and
+ * retained (lot C's C1/C2). Simulated here with a direct `setActiveDocument`
+ * call rather than one specific R16 dialog, because the watcher's whole
+ * point is that it does not matter which writer caused the drift.
+ */
+describe('the clip-work drift watcher closes a stale host before Apply can reach it (lot D, fix round 1)', () => {
+  function setupMultitrackClip() {
+    const source = createDocument({
+      name: 'source.wav',
+      sampleRate: 44100,
+      channels: [new Float32Array(44100)],
+    });
+    act(() => {
+      useAppStore.getState().addDocument(source);
+      useAppStore.getState().setView('multitrack');
+      useSessionStore.getState().addTrack();
+    });
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: source.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    act(() => {
+      useSessionStore.getState().addClip(trackId, clip);
+      useSessionStore.getState().setSelectedClips([clip.id]);
+    });
+    return source;
+  }
+
+  it('closes the retained effect card and never lets Apply reach the source document', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+
+    const workId = useAppStore.getState().activeDocumentId;
+    expect(workId).not.toBe(source.id);
+    expect(clipWorkTargetId('effect')).toBe(workId);
+
+    // The drift: some OTHER writer moves the active document away from the
+    // working copy while the card is still mounted and idle (not running —
+    // M1 never fires here).
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    // The card is gone — a stale Apply is unreachable.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(clipWorkTargetId('effect')).toBeNull();
+
+    // And the source document itself was never written.
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+    // The orphaned working copy does not leak either.
+    expect(useAppStore.getState().documents.some((d) => d.id === workId)).toBe(false);
+  });
+
+  it('does not fire for an ordinary single-document effect card outside multitrack', () => {
+    const doc = createDocument({ name: 'a.wav', sampleRate: 44100, channels: [new Float32Array(100)] });
+    act(() => {
+      useAppStore.getState().addDocument(doc);
+    });
+
+    render(<App />);
+    act(() => {
+      // Synchronous — `effect.amplify`'s run() is `openEffectDialog`, no await needed.
+      void runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+
+    const other = createDocument({ name: 'b.wav', sampleRate: 44100, channels: [new Float32Array(100)] });
+    act(() => {
+      useAppStore.getState().addDocument(other); // an ordinary document switch
+    });
+
+    // No clip-work slot was ever opened (not multitrack) — the watcher must
+    // not close a perfectly ordinary card just because the active document
+    // changed, which is the whole reason EffectDialog stays open across a
+    // Files-panel switch today.
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+  });
+
+  // Fix round 2 (coordinator finding — the trigger half of the CRITICAL fix
+  // had no test) — the SECOND `useLayoutEffect` (`App.tsx:641-645`), the
+  // TOOL watcher, is a SEPARATE code path from the effect watcher above
+  // (X2). Same generic-drift shape, `tempo.match` instead of `effect.amplify`.
+  it('closes the retained TOOL host when its own target drifts (tool watcher)', async () => {
+    const source = setupMultitrackClip();
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('tempo.match');
+    });
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    const workId = clipWorkTargetId('tool');
+    expect(workId).not.toBeNull();
+    expect(workId).not.toBe(source.id);
+
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+    expect(clipWorkTargetId('tool')).toBeNull();
+    expect(useAppStore.getState().documents.some((d) => d.id === workId)).toBe(false);
+  });
+
+  // Fix round 2 — the CRITICAL sequence itself, end to end, with the REAL
+  // `runEffectOnSelection` (this file mocks nothing effect-related, unlike
+  // `App.effectHost.test.tsx`, which is why that file could never have pinned
+  // this: a mocked runner writes nothing regardless of which document is
+  // active, so "source untouched" would pass there even with the bug
+  // present). Forward order: effect card first, a NON-`CLIP_WORK_COMMANDS`
+  // tool (`edit.transcribe`) second — the exact reproduction the review
+  // constructed. `edit.transcribe` also exercises `primeMultitrackDocTarget`
+  // (R16), which activates `source` itself before opening the dialog, so this
+  // is the reproduction's own priming step, not a stand-in for it.
+  it('CRITICAL sequence (forward): effect card, then Transcribe — Apply never reaches the source document', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+    const workId = clipWorkTargetId('effect');
+    expect(workId).not.toBeNull();
+
+    // Step 3: a clip-scoped pipeline tool that is NOT a `CLIP_WORK_COMMANDS`
+    // member — it primes `activeDocumentId` to `source` (R16) and mints
+    // nothing of its own, which is exactly what let the OLD unconditional
+    // `endClipWork()` discard the effect's slot while leaving `hostedEffect`
+    // untouched.
+    await act(async () => {
+      await runCommand('edit.transcribe');
+    });
+
+    // The effect card is gone — the fix, not a coincidence of this ordering.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(clipWorkTargetId('effect')).toBeNull();
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument(); // Transcribe took the column
+
+    // Step 4: "return to the retained effect card" — the user's own mental
+    // model of what should still be there. Clicking Effects now shows the
+    // CHOOSER, not a re-opened Amplify card with Apply one click away.
+    fireEvent.click(within(screen.getByTestId('sidebar-tabs')).getByRole('button', { name: 'Effects' }));
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(screen.getByTestId('effects-panel')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull();
+
+    // Step 5, defensively: even though Apply is unreachable, the document
+    // itself was never touched.
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+    expect(useAppStore.getState().documents.some((d) => d.id === workId)).toBe(false); // no leak
+  });
+
+  // Fix round 2 — the reverse ordering: a CLIP_WORK_COMMANDS tool
+  // (`tempo.match`, which DOES mint its own working copy) first, the effect
+  // card second. This is the "whole-file, restore.selection === null" shape
+  // the review named: pre-fix, opening the card second discarded the tool's
+  // slot through the SAME unowned `endClipWork()`, and because the tool was
+  // minted directly off a fresh clip selection (`appStore.selection` is
+  // always `null` in multitrack), the discard's captured restore point was
+  // `{activeDocumentId: source, selection: null}` — landing on `source`
+  // WHOLE-FILE the moment anything re-activated it. Post-fix, opening the
+  // effect card mints its OWN slot and the resulting drift closes the tool
+  // (the same watcher pinned above) rather than restoring over it.
+  it('CRITICAL sequence (reverse): Match Tempo, then the effect card — Apply never reaches the source document', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('tempo.match');
+    });
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    const toolWorkId = clipWorkTargetId('tool');
+    expect(toolWorkId).not.toBeNull();
+
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+
+    // The tool auto-closed (the drift watcher, not a leftover slot the
+    // effect's own mint silently inherited) and did not touch the effect's.
+    expect(screen.queryByTestId('tool-host')).toBeNull();
+    expect(clipWorkTargetId('tool')).toBeNull();
+    expect(useAppStore.getState().documents.some((d) => d.id === toolWorkId)).toBe(false);
+    const effectWorkId = clipWorkTargetId('effect');
+    expect(effectWorkId).not.toBeNull();
+    expect(effectWorkId).not.toBe(toolWorkId);
+    expect(useAppStore.getState().activeDocumentId).toBe(effectWorkId);
+
+    // Apply for real (the actual worker mock, not a stubbed resolver) —
+    // proves the effect card's OWN target, not merely its slot bookkeeping,
+    // survived intact.
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('effect-host')).getByRole('button', { name: 'Apply' }));
+    });
+
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+  });
+
+  // X-1 (final fix wave) — the missing symmetric order: effect card FIRST,
+  // a `CLIP_WORK_COMMANDS` TOOL second (the two prior tests cover tool-first
+  // and effect-first-with-a-NON-minting-second-actor; this is effect-first
+  // with a second actor that mints its own working copy, same as the card
+  // did). C5 says "at most one effect card AND one hosted tool are retained
+  // ... opening one does not disturb the other" and is pinned exactly that
+  // way in the WAVEFORM view (`App.effectHost.test.tsx`, "an effect
+  // foregrounds over an idle retained tool — both retained"). In MULTITRACK
+  // it does not hold, symmetrically in both orders: this pins the behaviour
+  // deliberately being KEPT (not relaxed) — see those dialogs' own
+  // `canApply`/run gates, none of which re-checks the target document the
+  // way `EffectDialog`/`AlignLyricsDialog` do, which is why the watcher
+  // still has to do this job here.
+  it('X-1: effect card, then Match Tempo (both minting) — the retained effect is closed, not backgrounded, in multitrack (C5 does not hold here)', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+    const effectWorkId = clipWorkTargetId('effect');
+    expect(effectWorkId).not.toBeNull();
+
+    await act(async () => {
+      await runCommand('tempo.match');
+    });
+
+    // The effect card is gone — closed by the same drift watcher, not
+    // backgrounded the way C5 promises outside multitrack.
+    expect(screen.queryByTestId('effect-host')).toBeNull();
+    expect(clipWorkTargetId('effect')).toBeNull();
+    expect(useAppStore.getState().documents.some((d) => d.id === effectWorkId)).toBe(false);
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+  });
+
+  // Fix round 3 (review finding 1) — the drift watcher used to close a host
+  // UNCONDITIONALLY, including mid-Apply: the unmount discards the in-flight
+  // pass safely (no wrong-document write — confirmed separately), but
+  // `DialogShell`'s own unmount cleanup then releases `passLock.ts`'s
+  // APP-WIDE lock WHILE THE WORKER IS STILL COMPUTING, a direct M1
+  // regression (a second pass could start concurrently with the first one's
+  // own cleanup). Real `runEffectOnSelection`, held open with a manually
+  // resolved promise so the moment of "still running" is directly
+  // observable — no mock of the outcome logic itself, only of when it
+  // settles.
+  it('never closes a host while its own pass is running, and defers the close until it settles', async () => {
+    const source = setupMultitrackClip();
+    const sourceChannelsBefore = source.channels[0];
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('effect.amplify');
+    });
+    const workId = clipWorkTargetId('effect');
+    expect(workId).not.toBeNull();
+
+    let resolveApply!: (v: 'cancelled') => void;
+    const spy = jest
+      .spyOn(effectRunnerModule, 'runEffectOnSelection')
+      .mockReturnValueOnce(new Promise((resolve) => (resolveApply = resolve)));
+
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('effect-host')).getByRole('button', { name: 'Apply' }));
+    });
+    expect(isPassRunning()).toBe(true);
+
+    // The drift, WHILE the pass is still running.
+    act(() => {
+      useAppStore.getState().setActiveDocument(source.id);
+    });
+
+    // Deferred: still mounted, lock still held, slot untouched — none of
+    // finding 1's regression.
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+    expect(isPassRunning()).toBe(true);
+    expect(clipWorkTargetId('effect')).toBe(workId);
+
+    // The worker "finishes" — resolved as `'cancelled'`, matching what the
+    // REAL runner would actually decide here (`shouldCancel` sees the drift)
+    // — so `EffectDialog`'s own code does NOT call `onClose()` itself; only
+    // the watcher's deferred re-check can close it now.
+    await act(async () => {
+      resolveApply('cancelled');
+    });
+
+    expect(isPassRunning()).toBe(false); // released — but only once, and only now
+    expect(screen.queryByTestId('effect-host')).toBeNull(); // the deferred close fired
+    expect(clipWorkTargetId('effect')).toBeNull();
+
+    const sourceNow = useAppStore.getState().documents.find((d) => d.id === source.id)!;
+    expect(sourceNow.channels[0]).toBe(sourceChannelsBefore);
+
+    spy.mockRestore();
+  });
+
+  // Fix round 3 (review finding 2) — the End-to-end plumbing: `AlignLyricsDialog`
+  // reports `hasUnsavedInput` through `DialogShell` -> `DialogHostApi` ->
+  // `PipelineToolHost` -> `App.tsx`'s `toolHasUnsavedInput`, and the tool
+  // watcher reads it. `AlignLyricsDialog.test.tsx` pins the OTHER half (its
+  // own `canAlign`/`canReplace` gate) at the component level; this is the
+  // one test that proves the whole chain actually connects through a real
+  // `<App/>` render — no mocked plumbing.
+  it('defers closing Align Lyrics while it holds typed text, unlike an ordinary tool', async () => {
+    setupMultitrackClip();
+
+    render(<App />);
+    await act(async () => {
+      await runCommand('lyrics.align');
+    });
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
+
+    // The drift.
+    act(() => {
+      useAppStore.getState().setActiveDocument(useAppStore.getState().documents[0].id);
+    });
+
+    // NOT closed — the typed lyrics are still there, unlike the ordinary
+    // (no-unsaved-input) tool/effect drift cases pinned above.
+    expect(screen.getByTestId('tool-host')).toBeInTheDocument();
+    expect(screen.getByTestId('align-lyrics-text')).toHaveValue('la la la');
+
+    // Clearing the text lifts the deferral: `toolHasUnsavedInput` flipping to
+    // `false` is itself one of the watcher's OWN dependencies, so the SAME
+    // (already-standing) drift condition it could not act on before now
+    // closes the host — no second writer needed.
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: '' } });
+    expect(screen.queryByTestId('tool-host')).toBeNull();
   });
 });

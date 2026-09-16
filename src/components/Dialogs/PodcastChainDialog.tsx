@@ -19,6 +19,7 @@ import {
   type PodcastChainStageResult,
 } from '../../services/podcastChain';
 import type { ChainStagePhase, StageStatus } from '../../services/vocalChain';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -259,6 +260,8 @@ export default function PodcastChainDialog({ onClose }: { onClose: () => void })
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [running, setRunning] = useState<string | null>(null);
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
   const [report, setReport] = useState<PodcastChainReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The live half of the stepper. `liveResults` holds the engine's OWN result
@@ -327,7 +330,9 @@ export default function PodcastChainDialog({ onClose }: { onClose: () => void })
   }
 
   async function handleApply(): Promise<void> {
-    if (busy || finished || !anyEnabled) return;
+    // Fix round 1 — the real start seam: a FOREIGN pass already holding
+    // `passLock.ts` must refuse this too, not just our own `busy`.
+    if (busy || finished || !anyEnabled || isPassRunning()) return;
     setBusy(true);
     setProgress(0);
     setRunning(null);
@@ -674,7 +679,7 @@ export default function PodcastChainDialog({ onClose }: { onClose: () => void })
                 variant="primary"
                 data-testid="podcast-chain-apply"
                 onClick={() => void handleApply()}
-                disabled={busy || !anyEnabled || tooManyChannels}
+                disabled={busy || !anyEnabled || tooManyChannels || runningPass !== null}
               >
                 Apply
               </GlassButton>

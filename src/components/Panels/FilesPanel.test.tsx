@@ -2,6 +2,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import FilesPanel from './FilesPanel';
 import { closeDocumentFlow } from '../../services/fileService';
 import { _resetPendingOpens, beginOpen, endOpen } from '../../services/openProgress';
+import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { createDocument, type AudioDocument } from '../../audio/AudioDocument';
 
@@ -108,6 +109,55 @@ describe('FilesPanel', () => {
     render(<FilesPanel />);
     fireEvent.click(screen.getByLabelText('Close a.wav'));
     expect(mockClose).toHaveBeenCalledWith(doc.id);
+  });
+
+  // Lot M — the lot-B close duty (ledger Ruling R14). Before this lot the ✕
+  // was gated only on `hasDoc`, while `invalidateStemRun` /
+  // `invalidateTranscript` / `invalidateLyricsAlignment` (inside
+  // `closeDocumentFlow`) terminate an in-flight utility process with no
+  // confirmation — one click mid-transcription silently killed the job.
+  describe('a running pass gates the ✕ (lot M, ledger R14)', () => {
+    afterEach(() => {
+      _resetPassLock();
+    });
+
+    it('refuses the close and names the running pass, for a non-effect pass', () => {
+      const doc = addDoc({ name: 'a.wav' });
+      render(<FilesPanel />);
+      let release: (() => void) | null = null;
+      act(() => {
+        release = acquirePass({ id: 'edit.transcribe', label: 'Transcribe', kind: 'host-job' });
+      });
+
+      const close = screen.getByLabelText('Close a.wav') as HTMLButtonElement;
+      expect(close).toBeDisabled();
+      expect(close.title).toContain('Transcribe');
+
+      fireEvent.click(close);
+      expect(mockClose).not.toHaveBeenCalled();
+      void doc;
+      act(() => {
+        release!();
+      });
+    });
+
+    it('still allows the close while a hosted EFFECT is applying — proven safe elsewhere (App.effectHost.test.tsx)', () => {
+      addDoc({ name: 'a.wav' });
+      render(<FilesPanel />);
+      let release: (() => void) | null = null;
+      act(() => {
+        release = acquirePass({ id: 'effect.amplify', label: 'Amplify', kind: 'effect' });
+      });
+
+      const close = screen.getByLabelText('Close a.wav') as HTMLButtonElement;
+      expect(close).not.toBeDisabled();
+
+      fireEvent.click(close);
+      expect(mockClose).toHaveBeenCalledTimes(1);
+      act(() => {
+        release!();
+      });
+    });
   });
 
   // A big decode now runs on a worker, so the app stays responsive for the

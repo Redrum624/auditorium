@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * The NAVIGATION pass (task PW1) — `npm run navigate`.
+ * The NAVIGATION pass (task PW1) — `pnpm navigate`.
  *
  * `e2e-smoke.cjs` is a SCENARIO: one long round trip through the flows that
  * carry the app's promises (open → edit → chain → export → reopen), measured in
@@ -42,7 +42,7 @@
  * and in the report: the renderer-side command path and its cancel handling,
  * not the OS widget.
  *
- * Run: npm run build && npm run navigate
+ * Run: pnpm build && pnpm navigate
  */
 
 const path = require('node:path');
@@ -468,13 +468,24 @@ async function cancelDialog(page, timeoutMs = 120000) {
  * had — it is `disabled` while `dismissable` is false — so this loop clicks
  * until it takes, exactly as `cancelDialog` presses until it takes, and
  * `presses > 1` is the same observation that the veto was exercised.
+ *
+ * Lot C (C5): scoped to `[data-testid="tool-host"]`, matching
+ * `closeEffectHost`'s own scoping below. Before C5 at most one host was ever
+ * mounted, so an unscoped `[data-testid="hosted-tool-close"]` could only ever
+ * match the tool's own ✕; now that an idle tool and an idle effect can both
+ * be retained at once, `EffectHost` renders FIRST in `App.tsx`'s DOM order
+ * (`{hostedEffect !== null && <EffectHost/>}` precedes the tool host), so an
+ * unscoped query would silently click the EFFECT card's ✕ instead whenever
+ * both happen to be mounted.
  */
 async function closeHostedTool(page, timeoutMs = 120000) {
   const started = Date.now();
   let presses = 0;
   while (Date.now() - started < timeoutMs) {
     const clicked = await page.evaluate(() => {
-      const b = document.querySelector('[data-testid="hosted-tool-close"]');
+      const b = document.querySelector(
+        '[data-testid="tool-host"] [data-testid="hosted-tool-close"]'
+      );
       if (!b || b.disabled) return false;
       b.click();
       return true;
@@ -885,10 +896,10 @@ async function sweepSelects(page, where) {
 
 /** Waits for the pill button labelled `label` to reach `want` for `.disabled`,
  * and says whether it got there. The multitrack enablement of Split (item 10)
- * and of Merge (D6) is driven by SESSION-store writes that reach React outside
- * any browser event, so reading `.disabled` on the very next round trip races
- * the re-render in BOTH directions — a stale read would report the previous
- * answer and pass or fail for the wrong reason. */
+ * and of Join (D6, renamed from Merge — H1) is driven by SESSION-store writes
+ * that reach React outside any browser event, so reading `.disabled` on the
+ * very next round trip races the re-render in BOTH directions — a stale read
+ * would report the previous answer and pass or fail for the wrong reason. */
 async function pillDisabledReaches(page, label, want) {
   return page
     .waitForFunction(
@@ -2271,7 +2282,34 @@ async function main() {
         // THE ROW could tell the two-track voice split from the speaker split
         // that replaced it. The first sentence the hosted tool shows is what
         // can: it now promises one track per speaker.
+        //
+        // Navigate sweep fix (lot E invalidated this): lot E (item 5) split
+        // that ONE sentence into THREE arms (in-place / appended / replaced,
+        // `SeparateDialog.tsx`'s `landingMode`), and this pin predates lot E
+        // (added in `0c7c947`) with the pre-split wording. A weakened
+        // assertion accepting any of the three arms would let a genuinely
+        // WRONG arm through — exactly what this pin exists to catch — so the
+        // fix establishes which arm applies rather than loosening the check.
+        //
+        // The arm here is IN-PLACE, established explicitly rather than
+        // assumed: the active document at this point in the walk is the one
+        // P0-2 dropped onto the multitrack lane (`droppedDocName`), which is
+        // therefore already a clip ON the session's timeline — exactly
+        // `planLanding`'s in-place condition (`hasAnyClip` true + the active
+        // document `locate`d on a track). Asserted below, not inferred, so a
+        // future change to the walk's own document/session sequencing fails
+        // LOUDLY at the precondition instead of producing a confusing text
+        // diff two lines later.
         if (commandId === 'voice.separate') {
+          const activeForSeparate = await page.evaluate(
+            () => window.__test.getStateSummary().activeName
+          );
+          assert(
+            activeForSeparate === droppedDocName,
+            `precondition for the IN-PLACE arm: the active document is still the one P0-2 dropped ` +
+              `onto the multitrack timeline (active "${activeForSeparate}", dropped "${droppedDocName}") — ` +
+              `if this no longer holds, the arm below needs re-establishing, not the assertion loosening`
+          );
           const produces = await page.evaluate(() => {
             const e = document.querySelector('[data-testid="separate-produces"]');
             // JSX wraps the paragraph across source lines; the pin is the
@@ -2280,10 +2318,13 @@ async function main() {
           });
           assert(
             produces !== null &&
-              produces.startsWith('One track per speaker plus Backing.') &&
+              produces.startsWith(
+                `One track per speaker plus Backing, in place of ${activeForSeparate} on your timeline.`
+              ) &&
               produces.includes('each speaker'),
-            `“${title}” opens the SPEAKER split — its own copy names one track per speaker, not ` +
-              `the two-track voice split it replaced (${JSON.stringify(produces)})`
+            `“${title}” opens the SPEAKER split in its IN-PLACE arm — its own copy names one track ` +
+              `per speaker landing where "${activeForSeparate}" sits on the timeline, not the ` +
+              `two-track voice split it replaced nor either of the other two arms (${JSON.stringify(produces)})`
           );
         }
         await closeHostedTool(page);
@@ -2721,13 +2762,14 @@ async function main() {
         // state is item 10's, not asserted here).
         const split = state.editButtons.find((b) => b.label === 'Split');
         assert(split !== undefined, `Split is present in the ${view} view`);
-        // D6: Merge Clips sits directly after Split — the verb it undoes, read
-        // beside it. One static list draws the pill, so the order is the same
-        // nine in every view.
+        // D6: Join Clips (H1: renamed from Merge Clips) sits directly after
+        // Split — the verb it undoes, read beside it. H4/H8 (lot H): Select
+        // All leads the pill now. One static list draws the pill, so the
+        // order is the same ten in every view.
         assert(
           state.editButtons.map((b) => b.label).join(',') ===
-            'Split,Merge,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
-          `the ${view} view's pill carries the nine verbs with Merge second (${state.editButtons
+            'Select All,Split,Join,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
+          `the ${view} view's pill carries the ten verbs with Join third (${state.editButtons
             .map((b) => b.label)
             .join(',')})`
         );
@@ -2737,15 +2779,57 @@ async function main() {
             `Split is lit in the ${view} view — it needs only an open file`
           );
         }
-        // The per-view greying rule: the region verbs are the multitrack view's
-        // greyed set, because they act on a waveform selection that view has no
-        // notion of.
         const copy = state.editButtons.find((b) => b.label === 'Copy');
+        // Lot L (items 11/12) OVERTURNS the old per-view greying rule for
+        // Copy/Paste (named per R25): they no longer share Trim/Silence's
+        // pre-lot-J fate of being unconditionally greyed in Multitrack — each
+        // is now routed onto the CLIP selection / clip clipboard
+        // (`canCopyClips`/`pasteBlockReason`, `menuActions.ts`), like
+        // Trim/Silence are onto the time range. A clip selection SURVIVES a
+        // view switch (it lives in the session store, not the app store), and
+        // the earlier "Module: Properties — a selected clip mounts the
+        // pickers" step left one selected via a REAL click — so this is not a
+        // synthetic state, it is what the walk's own session actually holds
+        // here. Both arms of the new predicate are proven against it, through
+        // the same `selectClips` hook the Split check below already uses,
+        // rather than trusting whichever selection happened to survive.
         if (view === 'multitrack') {
-          assert(
-            copy !== undefined && copy.disabled === true,
-            'Copy is greyed in the multitrack view — it acts on a selection this view does not have'
+          // Fix round 1 (addendum) — captured, not assumed: the comment two
+          // steps below ("the P0-2 clip is still the selected primary") is a
+          // real claim about a SPECIFIC clip, and `const saved = …` right
+          // after this block reads `selectedClipId` fresh — if this block's
+          // OWN clear-then-reselect were left standing when `saved` runs, the
+          // walk would restore to WHICHEVER clip `seededClips[0]` happens to
+          // be, not necessarily the one the Properties step actually clicked.
+          // Restoring it here, before `saved` is ever captured, is what makes
+          // that later comment true by construction rather than by
+          // coincidence (today there is only the one P0-2 clip, so the two
+          // happen to agree — this fix does not depend on that).
+          const selectionBeforeCopyCheck = await page.evaluate(
+            () => window.__test.getClipFadeState().selectedClipId
           );
+          await page.evaluate(() => window.__test.selectClips([]));
+          const copyNoSelection = await pillDisabledReaches(page, 'Copy', true);
+          assert(
+            copyNoSelection === true,
+            'Copy greys in the multitrack view with no clip selected (L1)'
+          );
+          const seededClips = await page.evaluate(() => window.__test.getClipFadeState().clips);
+          assert(
+            seededClips.length > 0,
+            `the seeded multitrack session still has a clip to select (${JSON.stringify(seededClips)})`
+          );
+          await page.evaluate((id) => window.__test.selectClips([id]), seededClips[0].clipId);
+          const copyWithSelection = await pillDisabledReaches(page, 'Copy', false);
+          assert(
+            copyWithSelection === true,
+            'Copy lights up in the multitrack view once a clip is selected (L1)'
+          );
+          await page.evaluate(
+            (id) => window.__test.selectClips(id === null ? [] : [id]),
+            selectionBeforeCopyCheck
+          );
+
           // Item 10: Split is the one first-group button that is LIVE here, and
           // its liveness follows the SESSION store (the clip selection and the
           // edit cursor), which no app-store change touches. The pill therefore
@@ -2792,14 +2876,14 @@ async function main() {
             'Split greys with the cursor on a clip edge — there is nothing to cut there'
           );
 
-          // D1: a merge needs two or more selected clips on one track, and the
-          // clip above is alone on its own. Merge therefore greys here for a
+          // D1: a join needs two or more selected clips on one track, and the
+          // clip above is alone on its own. Join therefore greys here for a
           // reason the cursor cannot change — the same selection that lights
           // Split leaves it dark, which is why this pair is read together.
-          const mergeAlone = await pillDisabledReaches(page, 'Merge', true);
+          const mergeAlone = await pillDisabledReaches(page, 'Join', true);
           assert(
             mergeAlone === true,
-            'Merge greys in the multitrack view with a single clip selected — one clip is not a merge'
+            'Join greys in the multitrack view with a single clip selected — one clip is not a join'
           );
 
           // D3 — a selected GAP paints a band in its own lane, and Escape is
@@ -2889,17 +2973,17 @@ async function main() {
             copy !== undefined,
             `Copy is present in the ${view} view (its enablement follows the selection)`
           );
-          // The M7 rule pointing the other way: Merge is the one first-group
+          // The M7 rule pointing the other way: Join is the one first-group
           // button the EDITORS cannot run, so it is greyed here with a tooltip
           // that names Multitrack rather than left silently dead.
-          const merge = state.editButtons.find((b) => b.label === 'Merge');
+          const merge = state.editButtons.find((b) => b.label === 'Join');
           assert(
             merge !== undefined && merge.disabled === true,
-            `Merge is greyed in the ${view} view — it joins clips, which this view has none of`
+            `Join is greyed in the ${view} view — it joins clips, which this view has none of`
           );
           assert(
             typeof merge.title === 'string' &&
-              merge.title.startsWith('Merge Clips — not available'),
+              merge.title.startsWith('Join Clips (J) — not available'),
             `and its tooltip says so, naming the view that can (${JSON.stringify(merge.title)})`
           );
         }

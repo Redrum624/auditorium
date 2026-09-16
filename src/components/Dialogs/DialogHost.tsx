@@ -37,6 +37,23 @@ export interface DialogHostApi {
    * `false` on unmount — a host left believing a pass is still running would
    * grey the module strip and suspend the shortcuts for the session. */
   onModuleLockChange(locked: boolean): void;
+  /**
+   * Lot D fix round 3 (review finding 2) — called by the hosted `DialogShell`
+   * whenever the dialog's OWN `hasUnsavedInput` prop changes, and with
+   * `false` on unmount. Optional: only a dialog that actually holds
+   * unrecoverable local state the store cannot restore (typed text, a raw
+   * recording) ever passes `hasUnsavedInput`, so every other hosted dialog
+   * behaves exactly as before this was added. This is deliberately a
+   * SEPARATE signal from `onModuleLockChange` — that one means "a pass is
+   * running", this one means "closing me right now would silently destroy
+   * something the user typed or recorded that no store holds" — conflating
+   * them would have `App.tsx`'s drift watcher (the one consumer) either hold
+   * the app-wide pass lock while the user is merely typing (wrong: M1 is
+   * about passes, not text fields) or fail to protect a finished, idle
+   * recording (wrong: `busy` is long since `false` by the time a take sits
+   * waiting to be placed).
+   */
+  onUnsavedInputChange?(hasUnsavedInput: boolean): void;
 }
 
 /** `null` means "not hosted", which is the default everywhere. */
@@ -49,14 +66,19 @@ export function useDialogHost(): DialogHostApi | null {
 
 export function DialogHostProvider({
   onModuleLockChange,
+  onUnsavedInputChange,
   children,
 }: {
   onModuleLockChange(locked: boolean): void;
+  onUnsavedInputChange?(hasUnsavedInput: boolean): void;
   children: ReactNode;
 }) {
-  // Memoised on the callback so the context value is stable across the host's
-  // own re-renders: the shell publishes from an effect keyed on this object,
-  // and a fresh object per render would re-publish on every paint.
-  const api = useMemo<DialogHostApi>(() => ({ onModuleLockChange }), [onModuleLockChange]);
+  // Memoised on the callbacks so the context value is stable across the
+  // host's own re-renders: the shell publishes from an effect keyed on this
+  // object, and a fresh object per render would re-publish on every paint.
+  const api = useMemo<DialogHostApi>(
+    () => ({ onModuleLockChange, onUnsavedInputChange }),
+    [onModuleLockChange, onUnsavedInputChange]
+  );
   return <DialogHostContext.Provider value={api}>{children}</DialogHostContext.Provider>;
 }

@@ -2,6 +2,11 @@ import { Captions, Download, Users } from 'lucide-react';
 import { useAppStore, centreEditorOn } from '../../stores/appStore';
 import { formatTime } from '../../utils/timeFormat';
 import { openTranscribeDialog } from '../../services/dialogBus';
+// Fix round 1 (finding 6) — this panel's two "Transcribe again…"/"Transcribe…"
+// buttons call `openTranscribeDialog()` directly, bypassing the
+// `edit.transcribe` command entirely (lot M's documented registry bypass);
+// priming here is what gives them R16's wiring in multitrack.
+import { primeMultitrackDocTarget } from '../../services/menuActions';
 import {
   DIARIZATION_LIMITS,
   exportTranscript,
@@ -70,7 +75,13 @@ export default function TranscriptPanel() {
       <div className="flex flex-col gap-2 p-2">
         <p className="text-sm text-[#8b8b92]">No transcript for this document.</p>
         <div>
-          <GlassButton variant="primary" onClick={() => openTranscribeDialog()}>
+          <GlassButton
+            variant="primary"
+            onClick={() => {
+              primeMultitrackDocTarget();
+              openTranscribeDialog();
+            }}
+          >
             <Captions size={13} className="mr-1 inline-block align-[-2px]" aria-hidden="true" />
             Transcribe…
           </GlassButton>
@@ -173,7 +184,10 @@ export default function TranscriptPanel() {
           <GlassButton
             data-testid="transcript-retranscribe"
             title="Run the transcription again — replaces this transcript."
-            onClick={() => openTranscribeDialog()}
+            onClick={() => {
+              primeMultitrackDocTarget();
+              openTranscribeDialog();
+            }}
           >
             <Captions size={13} className="mr-1 inline-block align-[-2px]" aria-hidden="true" />
             Transcribe again…

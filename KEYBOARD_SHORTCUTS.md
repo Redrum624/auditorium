@@ -9,32 +9,52 @@ Shortcuts are ignored while focus is inside a text input, textarea, select, or
 a `contenteditable` element, so they never hijack normal typing (e.g. renaming
 a track or a marker).
 
+A bare letter also never fires while **Meta** is held — a modifier this
+table does not model — and an auto-repeat keydown for a bare letter (the
+shape a Ctrl combo's own key repeats into if Ctrl is released a frame early)
+is dropped too, so releasing a held combo early can never run a different,
+unintended command.
+
 They are also suspended while a **modal dialog** is open (New File, Export,
-Convert, Record), and — in the module column — while a **pipeline pass** or an
-**effect Apply** is actually running.
-Both suspensions exist for the same reason: those surfaces resolve the document
-they act on at the moment you confirm, so a `Ctrl+O` behind one would land the
-result on a file you had just replaced. A pipeline tool or an effect card that
-is merely OPEN and idle suspends nothing — the whole point of hosting it beside
-the waveform is that you can keep working — and the keys come back by
-themselves when the pass finishes. Mouse interaction is never suspended by
-either; an effect Apply guards itself instead — it commits only to the document
-as you left it when you clicked Apply, and says so in the card if that changed
-(see the User Guide).
+Convert, Record) — that surface resolves the document it acts on at the
+moment you confirm, so a `Ctrl+O` behind one would land the result on a file
+you had just replaced.
+
+**A running pipeline pass or effect Apply does *not* suspend the keyboard.**
+Only *starting* another one does. While a pass runs — in the open module card
+or backgrounded behind a different module — every other key keeps working
+exactly as when nothing is running: `Space`, Undo/Redo, Delete, Split, and
+every other bare letter act on whatever document or clip they always did, and
+the mouse is untouched throughout (see *Pipeline: one pass at a time* in the
+User Guide). What *is* refused, with a reason naming the running pass, is
+starting a second pass — every other effect/pipeline row — plus `Ctrl+O`
+(Open), `Ctrl+N` (New) and Open Project, none of which may replace a document
+a pass depends on. `Ctrl+W` (Close) is narrower: it refuses only while a
+pipeline tool, mixdown, export or save is running, not while an **effect
+Apply** is — closing the document mid-Apply is safe and discards the edit
+cleanly instead (see the User Guide).
 
 | Shortcut | Action |
 |---|---|
 | `Space` | Play / Pause |
 | `Ctrl+Z` | Undo |
+| `U` | Undo — the same view-routed command as `Ctrl+Z` |
 | `Ctrl+Shift+Z` | Redo |
 | `Ctrl+Y` | Redo |
+| `R` | Redo — the same view-routed command as `Ctrl+Y` |
 | `Ctrl+K` | Split at Cursor — a marker at the cursor, or at both edges of the selection |
+| `C` | Split at Cursor — the same view-routed command as `Ctrl+K` (the scissors, not Copy) |
+| `J` | Join Clips — multitrack only: joins the selected clips on a track into one, silence in the gaps |
 | `Ctrl+X` | Cut the selection (or the cursor's segment) to the clipboard, leaving the span silent at the same length |
-| `Ctrl+C` | Copy |
-| `Ctrl+V` | Paste |
+| `Ctrl+C` | Copy — the selection in the editor; the selected **clip(s)** in multitrack |
+| `Ctrl+V` | Paste — at the cursor in the editor; to the right of the bar, on the **current track**, in multitrack |
 | `Delete` | Silence the selection in place at the same length (or remove every selected multitrack clip, leaving the gap — and with a **gap** selected instead, close it) |
+| `D` | Delete — the same view-routed command as `Delete` |
 | `Shift+Delete` | Ripple Delete — editor: remove the selection and close the gap; multitrack: remove the selected clip(s) and close the gap, or close a **selected gap** |
 | `Ctrl+A` | Select All — the whole file in the editor; **every clip on every track** in the multitrack view |
+| `A` | Select All — the same view-routed command as `Ctrl+A` |
+| `T` | Trim to Selection — editor: keeps the selected region, drops the rest; multitrack: keeps a swept **time range**, removing or shortening clips outside it |
+| `S` | Silence Selection — editor: zeroes the selected region in place; multitrack: silences the swept **time range**, leaving the gap |
 | `Ctrl+Left` | Previous clip edge — multitrack only |
 | `Ctrl+Right` | Next clip edge — multitrack only |
 | `Home` | Go to Start — the file's, or the **session's** in the multitrack view |
@@ -46,7 +66,7 @@ as you left it when you clicked Apply, and says so in the card if that changed
 | `Ctrl+W` | Close |
 | `M` | Add Marker at the cursor (editor views only) |
 | `Ctrl+E` | Export… |
-| `Escape` | Deselect — the clip selection or a selected gap in the multitrack; or, with an effect card open, closes the card (see below) |
+| `Escape` | Deselect — the clip selection, a selected gap, or a selected **time range** in the multitrack; or, with an effect card open, closes the card (see below) |
 
 ## The multitrack-only rows
 
@@ -57,16 +77,20 @@ cannot see. There is one global key table and no per-view table beside it:
 every key runs a command, and a command re-checks its own predicate before it
 runs, which is what makes a view-scoped key inert outside its view.
 (`Shift+Delete` used to be in this list; it now ripples the editor's selection
-too — see the table above.) `Ctrl+K` is the one view-ROUTED edit key: it drops
-a marker in the editors and splits clips at the edit cursor in the multitrack,
-where it is greyed with nothing selected.
+too — see the table above.) `Ctrl+K`/`C` is not the only view-routed edit key
+any more: `T` and `S` now act on the selection in the editors and on a swept
+**time range** in multitrack (see *Selecting a stretch of time* in the User
+Guide), the same way `Ctrl+K`/`C` drops a marker in the editors and splits
+clips at the edit cursor in multitrack, where it is greyed with nothing
+selected.
 
-**Merge Clips** — Split's inverse — has **no key at all**, and no row above
-because there is nothing to put in one. You reach it through the edit pill's
-**Merge** button or **Edit → Merge Clips**; both are multitrack-only and both
-stay greyed until some track has two or more of its clips selected. The same is
-true of the Pipeline's **Separate Voice** and **Podcast Chain**: neither binds a
-key, and both are reached from the Pipeline menu or the Pipeline module card.
+**Join Clips** (renamed from Merge Clips) — Split's inverse — is bound to
+`J`. You can also reach it through the edit pill's **Join** button or
+**Edit → Join Clips**; both are multitrack-only and both stay greyed until
+some track has two or more of its clips selected. The Pipeline's
+**Separate Voice** and **Podcast Chain** still have no key at all: neither
+binds one, and both are reached from the Pipeline menu or the Pipeline
+module card.
 
 **Selecting a gap has no key either.** A gap — the empty stretch on one track
 between two of its clips, or between the start of the timeline and its first
@@ -95,16 +119,21 @@ The rest of the multitrack clip verbs are mouse gestures rather than table rows:
 | Drag a group onto another track | The clip you grabbed joins the track under the pointer and the others shift by the same number of tracks, so the group keeps its shape. If that would push any member off the top or bottom of the track list, **nothing changes track** — the group is never scattered, and the highlighted lane is the one the grabbed clip will actually land on |
 | `Ctrl` held at the **drop** of a **single-clip** drag | Still the push-clear nudge it has always been — the clip is pushed past the neighbour it would have overlapped, instead of crossfading into it |
 | `Ctrl` held at the drop of a **group** drag (2+ clips) | **Nothing.** A group drag has no nudge in this version: pushing only the colliding member clear would change the spacing between the clips you are dragging, and a group drag that deforms the group is not the gesture you made. The group lands where you dropped it, and any overlap it creates arms a crossfade as usual |
+| `Shift`+press-and-drag on a lane's background (or the gutter below the tracks) | Sweeps a **time range** across every track — the band `T` (Trim) and `S` (Silence) act on. It cannot start on a clip — `Shift+Click` there extends the clip selection instead (above). A press that never moves just clears whatever was selected, the same as a plain click |
 
 In neither case does a held `Ctrl` toggle the selection — that is what
 `Ctrl+Click` does, and a drag is not a click. The hint that appears over an
 overlap mid-drag offers the `Ctrl` nudge only on a single-clip drag, for the
 same reason.
 
-**`Edit → Ripple Delete Time Selection`** has no key and is greyed out in every
-view: it would ripple a stretch of *time* out of every track, and the multitrack
-view has no gesture for selecting a stretch of time yet (its ruler seeks; there
-is a cursor and a clip selection and nothing else). It carries no combo
+**`Edit → Ripple Delete Time Selection`** has no key and is still greyed out in
+every view. The gesture it needs now exists — `Shift`+drag a lane sweeps a
+time range (above) — but a *rippling* delete across every track raises
+questions the range itself does not answer: which tracks shift when one is
+removed from all of them, and whether a track the range never touches should
+shift too. `T` (Trim) and `S` (Silence) are the non-rippling form that ships
+today: each clears the range on its scoped tracks and leaves the hole, the
+same way a plain `Delete` leaves a gap. The row carries no combo
 deliberately — a matched combo is claimed before the command's own predicate is
 consulted, so a key bound to a permanently disabled row would be swallowed in
 every view and give nothing back.
@@ -118,7 +147,7 @@ and over an effect card it means what it meant when the effect was a dialog:
 | Surface | What `Escape` does |
 |---|---|
 | The editor (nothing open) | Deselect, as above |
-| The **multitrack** view | Clears the clip selection, or a selected gap — the document selection behind them is not on screen there, so clearing that instead would be an edit with no feedback anywhere |
+| The **multitrack** view | Clears the clip selection, a selected gap, or a selected time range — the document selection behind them is not on screen there, so clearing that instead would be an edit with no feedback anywhere |
 | A modal dialog (New File, Export, Convert, Record) | Closes the topmost one — unless it is mid-run, when it refuses |
 | A **pipeline tool** in the module column (Match Tempo, Vocal Chain, Cover Chain, Transcribe, …) | Nothing. Close it with the **✕** in its header |
 | An **effect card** in the module column, idle | **Closes the card** — the same as its **✕** or **Cancel**: a running **Preview** is stopped and the real document goes back to the engine. The selection is kept: the key does *not* fall through to Deselect |
@@ -159,11 +188,10 @@ here.
 | Open Project… | File menu |
 | Mix Down to New File | File menu, multitrack-only |
 | Ripple Delete Time Selection | Edit menu — permanently greyed and deliberately key-less; see above |
-| Trim to Selection / Silence Selection | Edit menu (also on the floating edit toolbar) |
 | Convert Sample Rate… / Convert Channels… | Edit menu |
 | Insert Active File at Cursor / Add Track | Edit menu, multitrack-only |
 | Next Marker / Previous Marker | Edit menu |
-| Capture Noise Print | Effects menu, top row (needs a selection) |
+| Capture Noise Print | Effects menu, top row (needs a selection in waveform/spectral, or one selected clip in multitrack) |
 | Every effect in the rack | Effects menu — one row per registered effect under its category heading, each opening that effect's card in the module column; no effect has a key |
 | Spatial Positioner | Effects menu, the closing Mix group |
 | Detect Tempo / Match Tempo / Align Vocal Timing / Auto-Remix | Pipeline menu, Tempo & Timing group |

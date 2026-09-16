@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Activity, X } from 'lucide-react';
 import { resolveAutomation, type AutomationParam } from '../../multitrack/automation';
 import { multitrackRecorder } from '../../multitrack/multitrackRecord';
@@ -57,6 +58,7 @@ export default function TrackHeader({ track }: { track: Track }) {
   const removeTrack = useSessionStore((s) => s.removeTrack);
   const mtEnvelope = useSessionStore((s) => s.mtEnvelope);
   const setMtEnvelope = useSessionStore((s) => s.setMtEnvelope);
+  const setCurrentTrack = useSessionStore((s) => s.setCurrentTrack); // K2, fix round 2
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(track.name);
@@ -112,6 +114,38 @@ export default function TrackHeader({ track }: { track: Track }) {
   const panLabel =
     track.pan === 0 ? 'C' : `${track.pan < 0 ? 'L' : 'R'}${Math.round(Math.abs(track.pan) * 100)}`;
 
+  // K2, fix round 2 — a press on the HEADER's own background also names the
+  // track current: `MultitrackView.tsx`'s own row-attribute comment already
+  // rules "THE WHOLE ROW IS THE TRACK, header included" for drop resolution,
+  // and the user's words for item 12 ("click anywhere on a visible part of
+  // the background of the track") name no exception for the header half of
+  // the row. Excludes an actual CONTROL — an `<input>` (rename box, Vol/Pan
+  // sliders) or a `<button>` (Mute/Solo/Record toggles, the envelope toggle,
+  // Remove) — by checking the PRESSED element itself, not the whole header:
+  // those already have their own meaning, and this must not fire alongside
+  // (or instead of) it. Bubble phase, no `stopPropagation`: this sits well
+  // outside the multitrack marquee's own capture-phase gate (which already
+  // rejects every header press via its own positive lane/scroller target
+  // test), so the two cannot collide.
+  const onHeaderPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    // Fix round 3 (BLOCKER) — `target instanceof HTMLElement &&
+    // target.tagName === 'BUTTON'` missed every icon-only button (Remove,
+    // the envelope toggle): both render a lucide `<svg>` child, and in a
+    // real browser `e.target` for a press on the glyph is that `<svg>` (or a
+    // `<path>` inside it) — an `SVGElement`, not an `HTMLElement` — so the
+    // old guard was simply false and the press fell through to
+    // `setCurrentTrack`, hijacking the current track off a Remove-track or
+    // envelope-toggle press. `closest('button, input')` — the same idiom
+    // `MultitrackView.tsx`'s `resolveTrackAt` already uses for
+    // `[data-track-id]` — walks up from WHATEVER element was actually
+    // pressed (the svg/path included) to the nearest real control,
+    // regardless of how deep the press landed inside it.
+    const target = e.target;
+    if (target instanceof Element && target.closest('button, input')) return;
+    setCurrentTrack(track.id);
+  };
+
   return (
     <div
       className="flex h-24 w-56 shrink-0 flex-col gap-1 px-2 py-1.5"
@@ -123,6 +157,7 @@ export default function TrackHeader({ track }: { track: Track }) {
         borderRight: '1px solid var(--glass-border)',
       }}
       data-testid="track-header"
+      onPointerDown={onHeaderPointerDown}
     >
       <div className="flex items-center gap-1">
         {editing ? (

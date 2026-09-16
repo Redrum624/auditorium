@@ -8,7 +8,15 @@ import {
   regridTempo,
   useTempoVersion,
 } from '../../services/tempoAnalysis';
-import { runCommand } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, multitrackToolDoc, runCommand } from '../../services/menuActions';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`) — Re-detect below reuses it
+ * already through `runCommand('tempo.detect')`; ×2/÷2 need it directly since
+ * they call `regridTempo` themselves rather than going through the menu. */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
+import { useSessionStore } from '../../multitrack/sessionStore';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { clusterColor, meterLabel, structureRuns } from '../../utils/structureStrip';
 import { GlassCard } from '../UI/glass';
@@ -73,7 +81,25 @@ export default function TempoCard() {
   // FIRST — run start/progress/completion/invalidation re-render this card
   // (module-state store, not zustand; StatusBar.tsx precedent).
   useTempoVersion();
-  const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
+  // Lot M: same reason, for the app-wide pass lock — called unconditionally,
+  // ahead of the early `return null` below, like every other hook here.
+  // Final fix wave (item 13): the return value is now READ — the x2/÷2 chips
+  // below used to gate on `running` alone (this document's OWN tempo flag),
+  // a stale-parallel-variable exactly like the one this card's own doc
+  // comment (Fix round 1, finding 5) already corrected for "which document".
+  // `regridTempo` spawns the same Worker `tempo.detect` already locks.
+  const runningPass = usePassLock();
+  // Fix round 1 (finding 5) — this card must show the SAME document
+  // `tempo.detect` would actually analyse, or "Re-detect"/"this document" is
+  // a stale-parallel-variable lie the moment a clip is selected in
+  // multitrack. `multitrackToolDoc` is the shared resolver `tempo.detect`'s
+  // own run body reads; its multitrack arm reads the session store
+  // (`clipPassTarget()`), which the `useAppStore` selector below cannot see
+  // on its own — the same freshness gap `PipelinePanel.tsx`/`EffectsPanel.tsx`
+  // close with these same two selectors.
+  useSessionStore((s) => s.session);
+  useSessionStore((s) => s.selectedClipIds);
+  const doc = useAppStore((s) => multitrackToolDoc(s));
   const [correctionFailed, setCorrectionFailed] = useState(false);
 
   // A different document is a different grid — a failure note must not carry
@@ -102,10 +128,14 @@ export default function TempoCard() {
           .filter(Boolean)
           .join(' · ');
 
+  // Final fix wave, second round — HOLDS the lock, not merely refuses on
+  // it: user-initiated tempo work, the same rule `tempo.detect`'s own menu
+  // row and PropertiesPanel's `TempoSection` follow.
   async function correct(newPeriodFrames: number): Promise<void> {
     if (!doc) return;
     setCorrectionFailed(false);
-    const result = await regridTempo(doc.id, newPeriodFrames);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () => regridTempo(doc.id, newPeriodFrames));
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     setCorrectionFailed(result === null);
   }
 
@@ -163,7 +193,7 @@ export default function TempoCard() {
               type="button"
               aria-label="Double tempo"
               title="Double tempo (×2) — re-tracks the beat grid"
-              disabled={running}
+              disabled={running || runningPass !== null}
               onClick={() => void correct(entry.periodFrames / 2)}
               className="glass-pill-btn"
               style={chipStyle}
@@ -174,7 +204,7 @@ export default function TempoCard() {
               type="button"
               aria-label="Halve tempo"
               title="Halve tempo (÷2) — re-tracks the beat grid"
-              disabled={running}
+              disabled={running || runningPass !== null}
               onClick={() => void correct(entry.periodFrames * 2)}
               className="glass-pill-btn"
               style={chipStyle}
@@ -186,8 +216,8 @@ export default function TempoCard() {
         <button
           type="button"
           aria-label="Re-detect tempo"
-          title="Re-run tempo detection on this document"
-          disabled={running}
+          title={commandReason('tempo.detect') ?? 'Re-run tempo detection on this document'}
+          disabled={running || !isCommandEnabled('tempo.detect')}
           onClick={() => void runCommand('tempo.detect')}
           className="glass-pill-btn"
           style={chipStyle}

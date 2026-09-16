@@ -14,6 +14,7 @@ import {
   type TranscribeProgress,
 } from '../../services/transcribeService';
 import { focusTranscriptPanel } from '../../services/dialogBus';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, GlassSelect, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -84,6 +85,8 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
   const [speakers, setSpeakers] = useState<string>(AUTO_SPEAKERS);
 
   const busy = downloading || running;
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
 
   // The unmount mirror (SeparateDialog.tsx:94's unmountedRef): a ref, because
   // the cleanup must read the CURRENT value, not the one captured when the
@@ -115,6 +118,16 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function handleDownload(): Promise<void> {
+    // Fix round 5 (lot D) — the real start seam, defence in depth beside the
+    // Download Models button's own `runningPass !== null` gate below. The
+    // sibling to `AlignLyricsDialog`'s identical fix (fix round 4): `busy`
+    // (this dialog's own local flag) already joins `downloading` once this
+    // starts, which then holds the app-wide lock via `moduleLock`, but
+    // nothing stopped STARTING it while a foreign pass (a Save, an export, a
+    // mixdown, another pipeline tool) already held that lock — M1 applies to
+    // a model download exactly as it does to `handleTranscribe`'s own
+    // analysis, which already carries this same check.
+    if (isPassRunning()) return;
     setDownloading(true);
     setError(null);
     setReceived(0);
@@ -136,6 +149,8 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function handleTranscribe(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canRun`.
+    if (isPassRunning()) return;
     // Resolved from LIVE state, never captured at open.
     const live = liveDoc();
     if (!live) {
@@ -181,7 +196,8 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
 
   const expectedBytes = model?.expectedBytes ?? 0;
   const modelMissing = model !== null && !model.downloaded;
-  const canRun = !busy && doc !== null && length > 0 && model?.downloaded === true;
+  const canRun =
+    !busy && doc !== null && length > 0 && model?.downloaded === true && runningPass === null;
   const message = error ?? (doc === null ? 'No document is open.' : null);
   const estimateSeconds = doc ? length / doc.sampleRate / MEASURED_REALTIME_FACTOR : 0;
   const remaining = progress?.estimatedRemainingMs ?? null;
@@ -261,7 +277,11 @@ export default function TranscribeDialog({ onClose }: { onClose: () => void }) {
               </div>
             ) : (
               <div>
-                <GlassButton variant="primary" onClick={() => void handleDownload()}>
+                <GlassButton
+                  variant="primary"
+                  onClick={() => void handleDownload()}
+                  disabled={runningPass !== null}
+                >
                   Download Models
                 </GlassButton>
               </div>

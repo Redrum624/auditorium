@@ -125,14 +125,42 @@ describe('a press on empty lane space', () => {
     expect(store().selectedClipIds).toEqual([ids[0], ids[1]]);
   });
 
-  it('is a no-op on an empty selection — the same state object comes back', () => {
+  // Fix round 1 (lot K, K2) — this used to be a plain no-op: an empty-lane
+  // press on a session with nothing selected touched nothing at all. K2 makes
+  // that premise obsolete BY DESIGN: the press now also names the CURRENT
+  // track, which is a real, deliberate change the user asked for (item 12),
+  // so the state object is no longer expected to survive a FIRST press
+  // untouched. The invariant this test used to protect — an empty-lane press
+  // must not mint a fresh `[]`/`selectedClipIds` for every clip's subscription
+  // to repaint over — is still real and is re-pinned below, on the SECOND
+  // press, once the track is already current.
+  it('a press on empty lane space sets the current track — a real, deliberate change (K2)', () => {
     const { lane } = renderLane();
-    const held = useSessionStore.getState();
+    expect(store().currentTrackId).toBeNull();
 
     press(lane);
 
-    // The guard that keeps an empty-lane press from repainting the timeline:
-    // a fresh `[]` would be a new value for every clip's subscription to see.
+    expect(store().currentTrackId).toBe(track.id);
+    // The clip-selection half of the gesture is still the untouched no-op:
+    // nothing was selected before, and nothing is selected after.
+    expect(store().selectedClipId).toBeNull();
+    expect(store().selectedClipIds).toEqual([]);
+  });
+
+  it('a SECOND press on the same, already-current lane is a true no-op — the same state object comes back', () => {
+    const { lane } = renderLane();
+    press(lane); // first press: currentTrackId null -> track.id, a real change
+    expect(store().currentTrackId).toBe(track.id);
+    const held = useSessionStore.getState();
+
+    press(lane); // second press: the track is ALREADY current
+
+    // `setCurrentTrack`'s own no-op guard (`sessionStore.ts`) must bail when
+    // the id is unchanged, or every press on an already-current lane would
+    // mint a fresh state object for every clip's subscription to see — the
+    // exact repaint-on-every-press cost this test originally existed to rule
+    // out, now guarded one layer down instead of by the gesture doing nothing
+    // at all.
     expect(useSessionStore.getState()).toBe(held);
   });
 });

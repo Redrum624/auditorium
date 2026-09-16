@@ -72,6 +72,36 @@ describe('EffectHost — a 348-wide card in the module column', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  /**
+   * C-e (lot C, item 3) — hidden means `display:none` on the card's OWN
+   * GlassCard, plus the `hidden` attribute and `data-backgrounded`.
+   * `GlassCard`'s className carries Tailwind `flex`, which beats the UA
+   * `[hidden]{display:none}` rule on its own — the inline style is what
+   * actually hides it, so both are pinned.
+   */
+  it('backgrounded: hides via data-backgrounded, the hidden attribute and inline display:none', () => {
+    const { rerender } = render(
+      <EffectHost effectId="amplify" onClose={() => {}} onModuleLockChange={() => {}} />
+    );
+    const visible = screen.getByTestId('effect-host');
+    expect(visible).not.toHaveAttribute('data-backgrounded');
+    expect(visible).not.toHaveAttribute('hidden');
+    expect(visible.style.display).not.toBe('none');
+
+    rerender(
+      <EffectHost
+        effectId="amplify"
+        backgrounded
+        onClose={() => {}}
+        onModuleLockChange={() => {}}
+      />
+    );
+    const hidden = screen.getByTestId('effect-host');
+    expect(hidden).toHaveAttribute('data-backgrounded', 'true');
+    expect(hidden).toHaveAttribute('hidden');
+    expect(hidden.style.display).toBe('none');
+  });
+
   it('releases the module lock on unmount, so a host can never be stranded locked', () => {
     const onModuleLockChange = jest.fn();
     const { unmount } = render(
@@ -323,6 +353,38 @@ describe('EffectHost — Escape closes the card (N18)', () => {
 
     expect(closeModal).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  /**
+   * C-g — backgrounded, the card is not on screen, so its Escape handler must
+   * be inert: it neither closes the card (`onClose` unreachable to see) nor
+   * steals the key from the stage's own `edit.deselect` (the window listener
+   * `installShortcuts` sits on). Read through a ref because the listener is
+   * installed once.
+   */
+  it('backgrounded: Escape does nothing — no onClose, and the key reaches the window (C-g)', () => {
+    const onClose = jest.fn();
+    const { rerender } = render(
+      <EffectHost
+        effectId="amplify"
+        backgrounded
+        onClose={onClose}
+        onModuleLockChange={() => {}}
+      />
+    );
+
+    const { reachedWindow } = pressEscapeOn(document.body);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(reachedWindow).toBe(true);
+    expect(screen.getByTestId('effect-host')).toBeInTheDocument();
+
+    // Foregrounded again, the SAME instance's Escape closes it as usual.
+    rerender(
+      <EffectHost effectId="amplify" onClose={onClose} onModuleLockChange={() => {}} />
+    );
+    pressEscapeOn(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('uninstalls its listener on unmount: an Escape after the card is gone closes nothing', () => {

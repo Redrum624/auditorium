@@ -405,6 +405,92 @@ describe('splitAtCursor', () => {
     expect(markers(doc.id).filter((m) => m.positionSample === 2)).toHaveLength(1);
     expect(getHistory(doc.id).done).toEqual(['Split']);
   });
+
+  // Item 7 (G1-G6) — the second and later CURSOR-arm split selects the middle
+  // segment; the first leaves the selection untouched (G2). X3: a 400-sample
+  // stereo document, cuts at 120/180/250 — the brief's own non-identity values.
+  describe('item 7 (G1-G6): the second split selects the middle segment', () => {
+    function addStereoDoc(): ReturnType<typeof addDoc> {
+      return addDoc([ramp(400), ramp(400, 1000)]);
+    }
+
+    it('1 (G1/G2) the FIRST split leaves the selection null; the SECOND selects the middle — FAILS TODAY', () => {
+      addStereoDoc();
+      useAppStore.getState().setCursor(120);
+
+      splitAtCursor();
+      expect(useAppStore.getState().selection).toBeNull();
+
+      useAppStore.getState().setCursor(250);
+      splitAtCursor();
+
+      expect(useAppStore.getState().selection).toEqual({ start: 120, end: 250 });
+      expect(useAppStore.getState().cursorSample).toBe(250);
+    });
+
+    it('2 (G3) cutting leftwards still selects the span between the two cuts', () => {
+      addStereoDoc();
+      useAppStore.getState().setCursor(250);
+      splitAtCursor();
+
+      useAppStore.getState().setCursor(120);
+      splitAtCursor();
+
+      expect(useAppStore.getState().selection).toEqual({ start: 120, end: 250 });
+    });
+
+    it('3 (G5) an unrelated marker between the two cuts bounds the selected segment', () => {
+      const doc = addStereoDoc();
+      useAppStore.getState().setCursor(120);
+      splitAtCursor();
+
+      useAppStore.getState().addMarker(doc.id, { id: 'unrelated', name: 'Marker N', positionSample: 180 });
+
+      useAppStore.getState().setCursor(250);
+      splitAtCursor();
+
+      expect(useAppStore.getState().selection).toEqual({ start: 180, end: 250 });
+    });
+
+    it('4 (G6) a document switch resets the anchor', () => {
+      // Both documents exist BEFORE the anchor is established, so the only
+      // resets in play afterward are `setActiveDocument`'s own
+      // (`activationReset`) — not `addDocument`'s separate inline reset.
+      const doc = addStereoDoc();
+      const other = addDoc([ramp(50)]);
+      useAppStore.getState().setActiveDocument(doc.id); // back to the stereo doc
+
+      useAppStore.getState().setCursor(120);
+      splitAtCursor();
+
+      useAppStore.getState().setActiveDocument(other.id); // switch away
+      useAppStore.getState().setActiveDocument(doc.id); // switch back
+
+      useAppStore.getState().setCursor(250);
+      splitAtCursor();
+
+      expect(useAppStore.getState().selection).toBeNull();
+      expect(markers(doc.id).map((m) => m.positionSample)).toEqual([120, 250]);
+    });
+
+    it('5 (G6) undoing the split that made the anchor its own marker falls back to no anchor', () => {
+      // Not a document switch: `lastSplitMarker` itself is untouched by this
+      // undo (only the marker list rides the undo entry) — the anchor is
+      // still {doc, 120}, but 120 no longer carries a marker, so the LIVE
+      // check in the cursor arm (not an explicit reset here) must catch it.
+      const doc = addStereoDoc();
+      useAppStore.getState().setCursor(120);
+      splitAtCursor();
+
+      undo(doc.id); // removes the marker at 120
+
+      useAppStore.getState().setCursor(250);
+      splitAtCursor();
+
+      expect(useAppStore.getState().selection).toBeNull();
+      expect(markers(doc.id).map((m) => m.positionSample)).toEqual([250]);
+    });
+  });
 });
 
 describe('copySelection', () => {

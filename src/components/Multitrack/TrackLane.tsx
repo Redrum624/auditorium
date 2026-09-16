@@ -36,6 +36,11 @@ interface TrackLaneProps {
   laneHeight: number;
   selectedClipId: string | null;
   isDragTarget: boolean;
+  /** K2/K3 — whether THIS track is `currentTrackId`. Optional (default
+   * `false`) so the several standalone renders of this component in other
+   * test files — none of which exercise the current-track mark — keep
+   * compiling and keep their existing, unrelated assertions green. */
+  isCurrent?: boolean;
   resolveTrackAt: (clientX: number, clientY: number) => string | null;
   onDragOverTrack: (trackId: string | null) => void;
 }
@@ -94,11 +99,13 @@ export default function TrackLane({
   laneHeight,
   selectedClipId,
   isDragTarget,
+  isCurrent = false,
   resolveTrackAt,
   onDragOverTrack,
 }: TrackLaneProps) {
   const setSelectedClip = useSessionStore((s) => s.setSelectedClip);
   const setSelectedGap = useSessionStore((s) => s.setSelectedGap);
+  const setCurrentTrack = useSessionStore((s) => s.setCurrentTrack);
   const mtEnvelope = useSessionStore((s) => s.mtEnvelope);
   // D3 — the band this lane draws, or null. Narrowed to THIS track here rather
   // than in the render, so a gap selected on another lane wakes no subscriber
@@ -142,7 +149,20 @@ export default function TrackLane({
     // Only a click on empty lane space (not a clip) reaches here — clips call
     // stopPropagation — so clear the selection.
     if (e.button !== 0) return;
-    setSelectedClip(null);
+    // K2 — pointer contract row 7: ANY button-0 press on this lane's
+    // background makes it the current track, unconditionally on modifiers.
+    // Press rather than release (and not gated behind the deferred clear
+    // below) so a Ctrl/Shift marquee drag that STARTS here still leaves a
+    // correct paste target the instant it begins, and a Ctrl+C on a clip
+    // followed by Ctrl+V reads a target the instant after the copy.
+    setCurrentTrack(track.id);
+    // X6 / K1's deferred clear — the other half of this rule lives in
+    // `MultitrackView`'s marquee pointerup, which commits `setSelectedClip(null)`
+    // when the gesture never exceeded the drag threshold. The two move
+    // together: skipping the clear here without committing it there (or vice
+    // versa) either kills the marquee's Ctrl-union or breaks the click-away
+    // deselect `USER_GUIDE.md:1720` documents (X1).
+    if (!e.ctrlKey && !e.shiftKey) setSelectedClip(null);
     // D3 (controller ruling, review round 1 I3): a plain press on empty lane
     // space PUTS A STANDING BAND AWAY — clicking away is how every other
     // selection in this app is dropped, and leaving the band up made Escape the
@@ -271,6 +291,13 @@ export default function TrackLane({
     <div
       data-track-id={track.id}
       data-testid="track-lane"
+      // K1, fix round 2 — a PURPOSE-MADE attribute for `MultitrackView`'s
+      // marquee hit-test, deliberately separate from `data-testid`: a testid
+      // is understood app-wide as test-only plumbing, free to rename, and a
+      // rename would silently kill the marquee's positive target test with
+      // no type error and no obviously-related test failure. This one is
+      // production behaviour and is named for what it means.
+      data-lane-bg="true"
       onPointerDown={onPointerDown}
       onDoubleClick={onDoubleClick}
       onDragEnter={onDragEnter}
@@ -282,8 +309,16 @@ export default function TrackLane({
         height: laneHeight,
         // G6: the floating .glass-track-row card paints the lane fill; the
         // drag-target highlight keeps its accent wash + inset ring, routed
-        // through the tokens.
-        backgroundColor: isDragTarget ? 'var(--accent-soft)' : 'transparent',
+        // through the tokens. K3: the CURRENT track's mark — a plain lighter
+        // fill, deliberately not an accent token (accent means "selected" on
+        // this surface) — sits BELOW the drag-target wash in precedence: that
+        // one is transient and about the drop, so it keeps winning even over
+        // a lane that is current.
+        backgroundColor: isDragTarget
+          ? 'var(--accent-soft)'
+          : isCurrent
+            ? 'var(--lane-current)'
+            : 'transparent',
         boxShadow: isDragTarget ? 'inset 0 0 0 1px var(--accent)' : undefined,
       }}
     >

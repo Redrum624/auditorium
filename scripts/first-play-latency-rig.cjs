@@ -23,7 +23,7 @@
 // speaker one output-latency later). No loopback capture — stated as an
 // estimate, per-field, in the JSON verdict.
 //
-//   npm run build   (once, so dist/ exists)
+//   pnpm build   (once, so dist/ exists)
 //   node scripts/first-play-latency-rig.cjs [--launches=3] [--probes-per-launch=3]
 //                                           [--content=tone|songs|mixed] [--out=<path>]
 //
@@ -253,7 +253,7 @@ async function main() {
     throw new Error(`--content must be tone, songs or mixed (got ${content})`);
   }
   if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
-    throw new Error('dist/index.html missing — run `npm run build` first');
+    throw new Error('dist/index.html missing — run `pnpm build` first');
   }
   if ((content === 'tone' || content === 'mixed') && !fs.existsSync(TONE)) {
     console.log('Generating test tone...');

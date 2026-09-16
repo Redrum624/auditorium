@@ -2,6 +2,20 @@ import { docLength, nextId, type AudioDocument } from '../audio/AudioDocument';
 import type { FadeCurve } from '../dsp/fades';
 import type { AutomationLane } from './automation';
 
+/** J8 (X3) — the minimum a clip may ever be shrunk to, in session samples:
+ * enforced by `sessionStore.trimClip` on BOTH edges (a clip asked to go
+ * shorter keeps this many samples instead) and by `isLegalSplitPoint` on both
+ * sides of a cut (a split point closer than this to either of the clip's own
+ * edges is illegal). Lot J's `trimTargets`/`silenceTargets`
+ * (`multitrack/timeRange.ts`) apply the SAME floor to a range boundary: a
+ * clip whose intersection with the swept range is under this many samples is
+ * removed rather than trimmed to an overhang (J8's ruling — held-at-the-floor
+ * would leave audio outside the range). Replaces five identical `32` literals
+ * that had drifted into their own copies (`sessionStore.ts`, `ClipView.tsx`).
+ * 32 samples is 0.67 ms at 48 kHz — inaudible, and exactly the store's own
+ * definition of "not a piece". */
+export const MIN_CLIP_SAMPLES = 32;
+
 export interface Clip {
   id: string; // 'clip-N'
   documentId: string; // source AudioDocument id
@@ -159,15 +173,25 @@ export function documentClipLength(doc: AudioDocument, sessionRate: number): num
 }
 
 /** Creates a clip referencing a region of a source AudioDocument, with a
- * sequential 'clip-N' id. `gainDb` defaults to 0 when omitted. */
+ * sequential 'clip-N' id. `gainDb` defaults to 0 when omitted.
+ *
+ * Lot E (fix round 1) — the four fade options are OPTIONAL and, when omitted,
+ * write NOTHING onto the returned clip (not even an `undefined`-valued key):
+ * every existing caller that never passed them gets the exact same object
+ * shape as before. A caller that wants to carry a source clip's fades onto a
+ * newly-minted one (the in-place landing arm) passes them through verbatim. */
 export function createClip(opts: {
   documentId: string;
   startSample: number;
   offsetSample: number;
   lengthSample: number;
   gainDb?: number;
+  fadeInSample?: number;
+  fadeOutSample?: number;
+  fadeInCurve?: FadeCurve;
+  fadeOutCurve?: FadeCurve;
 }): Clip {
-  return {
+  const clip: Clip = {
     id: nextId('clip'),
     documentId: opts.documentId,
     startSample: opts.startSample,
@@ -175,6 +199,11 @@ export function createClip(opts: {
     lengthSample: opts.lengthSample,
     gainDb: opts.gainDb ?? 0,
   };
+  if (opts.fadeInSample !== undefined) clip.fadeInSample = opts.fadeInSample;
+  if (opts.fadeOutSample !== undefined) clip.fadeOutSample = opts.fadeOutSample;
+  if (opts.fadeInCurve !== undefined) clip.fadeInCurve = opts.fadeInCurve;
+  if (opts.fadeOutCurve !== undefined) clip.fadeOutCurve = opts.fadeOutCurve;
+  return clip;
 }
 
 /** The source-document window a clip reads, in the DOCUMENT's own samples:

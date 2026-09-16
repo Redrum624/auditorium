@@ -16,6 +16,9 @@ import {
 import { registerDialogSetters } from '../../services/dialogBus';
 import { createDocument, type AudioDocument } from '../../audio/AudioDocument';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
+// Fix round 5 (lot D) — the pass lock gates Download Models the same way
+// fix round 4 gated AlignLyricsDialog's Record and Download Model.
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 const EMBED_DIM = 8;
 const DOC_LENGTH = 48000 * 3;
@@ -67,6 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  _resetPassLock();
 });
 
 describe('TranscribeDialog — the honesty obligations', () => {
@@ -136,6 +140,57 @@ describe('TranscribeDialog — the model download', () => {
     await settle();
     expect(screen.queryByTestId('transcribe-model-missing')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Transcribe' })).toBeEnabled();
+  });
+});
+
+// Fix round 5 (lot D) — the sibling to AlignLyricsDialog's fix round 4: `busy`
+// (this dialog's own `downloading`/`running` flag) said nothing about a pass
+// lock held ELSEWHERE (a Save, an export, a mixdown, another pipeline tool).
+// `handleTranscribe` already had this same "real start seam" defence
+// (`isPassRunning()` at fix round 1); Download Models had neither the
+// reactive `disabled` clause nor the imperative guard.
+describe('the pass lock gates Download Models (fix round 5)', () => {
+  it('disables Download Models while a foreign pass holds the lock', async () => {
+    seedDoc();
+    backend.modelDownloaded = false;
+    render(<TranscribeDialog onClose={() => {}} />);
+    await settle();
+    const download = () => screen.getByRole('button', { name: 'Download Models' }) as HTMLButtonElement;
+    expect(download().disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(download().disabled).toBe(true);
+
+    act(() => {
+      release!();
+    });
+    expect(download().disabled).toBe(false);
+  });
+
+  it('a click on a disabled Download Models button starts nothing — no download progress appears', async () => {
+    seedDoc();
+    backend.modelDownloaded = false;
+    render(<TranscribeDialog onClose={() => {}} />);
+    await settle();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+
+    // A disabled button swallows the click natively; the defence-in-depth
+    // `isPassRunning()` check inside `handleDownload` covers a direct call
+    // bypassing the button. Either way, no download ever starts.
+    expect(screen.queryByTestId('transcribe-download-status')).toBeNull();
+
+    act(() => {
+      release!();
+    });
   });
 });
 

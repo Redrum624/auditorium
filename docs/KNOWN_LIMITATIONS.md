@@ -393,6 +393,38 @@ working set changed" signal. Counting a closed or newly opened document as
 dirt would need a per-project record of what the last save contained, which
 is feature work beyond M4's definition.
 
+## Closing a clean computed document silently drops its in-memory analyses
+
+**Area:** the close prompt (`src/services/fileService.ts` `closeDocumentFlow`,
+`closeNeedsPrompt`) versus every analysis cached outside the document object
+(`src/services/transcribeService.ts`, `diarizeService.ts`, `tempoAnalysis.ts`,
+`noiseProfile.ts`, `remixService.ts`'s remix-session state, `stemService.ts`)
+
+**Current behavior:** the close prompt now fires on `doc.dirty` alone (see
+*the remove-file alert*, above) — a document is never marked dirty by running
+a pipeline tool or an analysis on it, only by an actual edit (`markDirty` is
+called from marker add/rename/delete and nowhere else). So closing a document
+that has never been edited closes immediately even when it is carrying a
+**finished transcript**, a **diarization**, a **tempo/beat-grid analysis**, a
+**remix session**'s splice adjustments, an in-flight or completed **stem
+separation run**, or a captured **noise print** — every one of those lives in
+a module-level cache keyed by the document's id (`invalidateTranscript` /
+`invalidateStemRun` / `invalidateLyricsAlignment` are called from
+`closeDocumentFlow` for exactly this reason), not on the document itself, and
+none of them sets `dirty`. Before this batch a computed document's `neverSaved`
+flag caught this case with a prompt; a document you had merely *analysed*
+without editing now gives no warning at all before the analysis is gone.
+
+**Intended behavior:** accepted, not fixed — this is the direct, named cost of
+removing the alert for the case it was actually solving (a computed document
+you closed by mistake with nothing to show for it yet). Recovering it would
+mean marking a document dirty for a non-edit, which would reopen exactly the
+"closing a stem/mixdown prompts for no reason" complaint this batch exists to
+close. A user who has spent real time on Transcribe, diarization, Detect
+Tempo, a remix session, Separate into Stems or Capture Noise Print on a
+document should treat that document as work to keep open (or export/save)
+until they are done with it.
+
 ## Closing while busy asks instead of force-quitting
 
 **Area:** Window close guard (`electron/closeGuard.cjs`)
@@ -605,13 +637,18 @@ Ctrl+Z and then silently clears itself — a gap that looks fixed and is not.
 - **Never touched by undo or redo.** `applyDerivedDirty` rewrites `dirty` and
   nothing else, so undoing past the creation point cannot silence the prompt —
   the failure mode a stamped `dirty` would have had.
-- **Consulted alongside `dirty`** by `closeDocumentFlow`, which asks
-  "*<name>* has never been saved to a file. Save it before closing?" (Save /
-  Don't Save / Cancel) rather than the "Unsaved changes" wording, which would
-  imply a file exists to save changes back into; and by the renderer's reply to
-  the native close guard, so quitting with an unsaved Remix open shows the
-  Quit/Cancel box instead of discarding it. Choosing Save and then cancelling
-  the save-as dialog aborts the close, exactly as it does for a dirty document.
+- **Consulted alongside `dirty`** — until the 2026-09-14 batch (lot B) always,
+  now only once `dirty` is already true (see the update below) — by
+  `closeDocumentFlow`, which picks the dialog's title/wording from it: `"${name}
+  exists only in this project and the project has not been saved. Save the
+  project before closing it?"` (title "Unsaved document") versus the ordinary
+  `"${name} has unsaved changes. Save the project before closing it?"` (title
+  "Unsaved changes") — never the file-specific phrasing this entry originally
+  quoted, which predates lot A's (M4) move to a **project**-level save offer.
+  `neverSaved` alone still arms the renderer's reply to the native close guard,
+  so quitting with an unsaved Remix open shows the Quit/Cancel box instead of
+  discarding it. Choosing Save and then cancelling the save-as dialog aborts
+  the close, exactly as it does for a dirty document.
 - **A session save does NOT clear it.** `.audm` embeds only CLIP-REFERENCED
   documents, as a point-in-time copy under a foreign id that reopening restores
   as a NEW document; the document itself still has no path of its own and File
@@ -620,9 +657,25 @@ Ctrl+Z and then silently clears itself — a gap that looks fixed and is not.
   **Export does not clear it** — an export writes somewhere else and leaves
   `filePath`/`dirty` alone, and the flag follows the same rule.
 
-The cost is one extra prompt: a computed document you genuinely don't want
-always takes a "Don't Save" click. That is the deliberate direction to err in —
-the alternative lost the work with no click at all.
+Through v1.39 the cost was one extra prompt: a computed document you genuinely
+don't want always took a "Don't Save" click. That was the deliberate
+direction to err in — the alternative lost the work with no click at all.
+
+**2026-09-14 update (lot B, item 2 — "remove the alert when removing a
+file").** The per-document close path (`closeDocumentFlow`) no longer reads
+`neverSaved` at all: `closeNeedsPrompt(doc)` is `doc.dirty` alone, so a
+computed document that has never actually been edited now closes on one click
+with **no prompt whatsoever** — the "extra prompt" cost above is gone for the
+per-document close, which is the point of the change. `neverSaved` itself is
+unchanged and still does everything else this entry describes: it still arms
+`hasUnsavedWork` (the quit guard's `projectDirtyCount`, the Save pill, and
+`saveDocument`'s no-op gate), so quitting with an unsaved `Remix N` still
+warns, and a computed document you *have* since edited (`dirty` as well as
+`neverSaved`) still prompts with the "Unsaved document" wording above before
+closing. What is now unprotected is the middle case this entry did not
+originally have to consider — a computed document with a finished analysis but
+no edit; see *closing a clean computed document silently drops its in-memory
+analyses*, above.
 
 Related, and by design rather than by omission: when a remix's SOURCE document
 is edited or closed, the session goes **stale and read-only** — the panel shows
@@ -631,7 +684,9 @@ The rendered audio is untouched and remains fully editable as an ordinary
 document; what is unavailable is re-planning it against a grid that no longer
 describes the source.
 
-**Intended behavior:** No further work planned — this is complete.
+**Intended behavior:** No further work planned on the flag itself — this is
+complete. The per-document close gate was revisited once, above, by explicit
+user request rather than by defect.
 
 ## Tempo detection makes octave errors; Match Tempo can follow a varying tempo, the remix still assumes a constant meter
 
@@ -1313,14 +1368,27 @@ every co-moving member's contribution (their captured positions are stale by
 the drag's own delta). Bar lines still add nothing to the target set even when
 they exist, and that is arithmetic rather than an omission: every bar line
 already *is* one of the beats. The editor's own set is still beats plus
-markers, flat; the multitrack ruler's seek and envelope keys snap against the
-flat union of the session set (a seeked cursor aims no clip edge, and its own
-old position as a dominant target would pin it in place). Split at Cursor is a
+markers, flat; the multitrack's clip drags and envelope keys still snap
+against the flat union of the session set, the cursor's own position
+included, unchanged. Split at Cursor is a
 point CONSUMER of the cursor rather than a gesture of its own, and so never
 re-snaps it: in the multitrack the session cursor is itself a tier-0 target, so
 a re-snap would be a guaranteed no-op, and in the editors the set has no cursor
 target at all, so a re-snap could only move the cut off the line the user is
 looking at.
+
+**2026-09-14 update (item 6) — the two gestures that MOVE the bar no longer
+snap to the bar's own position at all.** A seeked cursor never aimed at a
+clip edge, but its own OLD position stayed in the flat-union set as a
+non-dominant target — a milder version of the self-snap trap the ranking fix
+above (item 4) only partly closed: a small, deliberate nudge near the bar's
+own last position could still snap straight back to it. The multitrack
+ruler seek and the playhead handle drag (`src/components/Multitrack/
+sessionSnapTargets.ts`'s `includeCursor: false`) now exclude the cursor from
+their own target set entirely, so a press near the bar's last position lands
+there instead of snapping back. Every other consumer of the session set —
+clip drags, envelope keys, trims — keeps the cursor as a target, unchanged;
+only the two gestures that move the bar itself needed excluding it.
 
 **5. The Ctrl-drag nudge commits somewhere the preview does not show.** v1.8's
 "overlap nudge outranks the magnet" limitation resolved exactly as predicted:
@@ -2180,109 +2248,150 @@ up with it — the button goes back to reading **Preview**, and pressing it
 starts a fresh preview of the document you moved to instead of stopping the
 playback you just started there.
 
-**Mouse edits during Apply.** The same non-modal design holds while an effect
-is being **applied**: the module strip, the card's ✕ and Cancel are held and
-the global keys are suspended for the duration, but the mouse is never
-suspended — the edit pill, the Edit menu, File › Close and the Files panel
-stay live, exactly as they do during a running pipeline pass — with one
-exception, added in the final round: a menu command that would UNMOUNT the
-card mid-Apply is refused rather than obeyed, with the same "A pass is
-running" message a pipeline pass gives (it names the effect). That covers
-`Pipeline › Transcribe` on a take you have already transcribed, whose reveal
-path used to clear the module lock on its way to the Analysis panel. The
-runner
-resolves the target region when Apply starts and commits the processed audio
-to that same span when the worker returns (`src/services/effectRunner.ts`,
-`runEffectOnSelection`), so the card hands it a `shouldCancel` (T6-3's seam,
-asked once between the audio arriving and the commit): an Apply commits only
-to the document as you left it when you clicked — same document, same audio,
-still the active one. Edit it, switch to another document or close it in
-between and nothing is written; the card stays and says so, and Apply runs
-the effect again on the document as it is now. What remains: the pipeline
-tools that commit after a worker pass from their own services (the Vocal
-Chain, Align Lyrics) still carry that window — let their progress finish
-before editing.
+**Mouse AND keyboard edits during Apply — rewritten for the 2026-09-14 batch
+(items 3, 13).** The card's own ✕ and Cancel are still held during Apply
+(unchanged): Apply is never discarded from inside its own card. Everything
+else this entry used to say here has changed. **The module strip no longer
+greys, and switching module no longer refuses or unmounts anything** (item
+3, lot C) — it **backgrounds** the running Apply instead, which keeps
+computing behind whichever module you switch to and shows a running dot on
+the Effects strip icon until it lands. **The global keyboard is no longer
+suspended for the duration either** (item 13, lot M — this overturns N16's
+own keyboard hold, and is the exact seam this entry used to ask for below):
+`Space`, Undo/Redo, Delete, Split and every other key act on the live
+document exactly as they do with no pass running. What IS still refused,
+with a reason naming the running Apply, is *starting a second pass* —
+opening a different effect or pipeline tool while this one runs, including
+`Pipeline › Transcribe`'s reveal of an existing transcript, which is now just
+one more row gated by the shared pass lock rather than the old special-cased
+"don't unmount the card" guard — that guard is gone outright, because an
+effect card and a hosted tool are independently retained slots now (lot C's
+C5), so revealing a tool can no longer unmount the effect card at all. The
+runner resolves the target region when Apply starts and commits the
+processed audio to that same span when the worker returns
+(`src/services/effectRunner.ts`, `runEffectOnSelection`), so the card hands
+it a `shouldCancel` (T6-3's seam, asked once between the audio arriving and
+the commit): an Apply commits only to the document as you left it when you
+clicked — same document, same audio, still the active one, regardless of
+which module is on screen when it lands. Edit it, switch to another document,
+or close it in between and nothing is written; the card says so the next
+time you foreground it, and Apply can be run again on the document as it is
+now. What remains: the pipeline tools that commit after a worker pass from
+their own services (the Vocal Chain, Align Lyrics) still carry that window —
+let their progress finish before editing.
 
-**Intended behavior:** a narrower seam than the module lock — "hold the
-keyboard" without "hold the module column" — could route transport keys to the
-real document during a preview, or end the preview first. (`Escape` is the
-one key the effect card does answer, with its own dismissal and without taking
-any other key from the waveform — N18 — which is the shape that seam would
-take for the rest.) It is the same
-second seam the pipeline tools' lock already wants (see `App.tsx`,
-`refuseWhileRunning`) and is a change of its own. The Apply-time window is
-closed for effects at the card (`EffectDialog`'s `shouldCancel`); the pipeline
-services that commit after their own worker pass (`vocalChain.ts`,
-`alignLyricsService.ts`) want the same guard, and that is their change, not
-the card's.
+**Intended behavior:** Shipped, 2026-09-14 (lot M, item 13). The narrower
+seam this entry used to ask for — "hold the keyboard" without "hold the
+module column" — is now the app-wide rule for every pass, not only the
+effect card's own Preview: `hasOpenDialog()` (`src/services/dialogBus.ts`) no
+longer treats a running pass as a reason to suspend the keyboard, only an
+actual **modal** dialog does. One preview-only quirk is unaffected and was
+never part of this seam: `Space` during a **Preview** still pauses/resumes
+the preview rather than the real document, because the preview genuinely has
+replaced what the engine is playing — ending it (or Apply/✕/Cancel) is still
+the way back to the real document.
 
-## Merge Clips bakes the members into a new document
+## Join Clips bakes the members into a new document
 
-**Area:** Merge Clips (`src/multitrack/mergeClips.ts`, `src/services/menuActions.ts`
-`mergeSelectedClips` / `canMergeSelectedClips`, the edit pill's **Merge** button)
+**Area:** Join Clips, renamed from Merge Clips (`src/multitrack/mergeClips.ts`
+— the module and its internal names keep the old word, since nothing there
+is user-visible — `src/services/menuActions.ts` `mergeSelectedClips` /
+`canMergeSelectedClips`, the edit pill's **Join** button)
 
-**Current behavior:** a merge is a **render**, not a re-labelling. Every track
+**Current behavior:** a join is a **render**, not a re-labelling. Every track
 with two or more selected clips gets one new clip spanning
 `[min(start), max(start + length))`, and the audio behind it is a new
-`Merge N` document — `createDocument` + `addDocument`, the same computed
+`Join N` document — `createDocument` + `addDocument`, the same computed
 document Mix Down and the stem separator produce. Five consequences follow from
 that, all of them by design and all of them visible to the user:
 
 - **Clip gain and fades are inside the audio now.** Each member is written
   through the renderer's own path — `readClipSlice` × `dbToLinear(gainDb)` ×
-  the resolved fade gain — so the merged clip is created at gain 0 dB with no
+  the resolved fade gain — so the joined clip is created at gain 0 dB with no
   fade keys at all. The Properties panel therefore shows a clip that looks
   untouched over audio that is anything but, and a member's -6 dB or its
   fade-in can no longer be dialled back: the only way to reach them again is
-  to undo the merge.
+  to undo the join.
 - **Undo restores the clips; it does not un-mint the document.** The document
   is created outside the session gesture (the Mixdown pattern), so one
-  `Ctrl+Z` puts every member back with its original id while `Merge N` stays
-  open in the Files panel. It is `neverSaved`, so closing it asks first — an
-  undone merge leaves a file behind that you have to dismiss by hand. If the
-  user closes `Merge N` anyway and then REDOES the merge, the merged clip
-  comes back referencing a document that no longer exists: it plays silent
-  and is dropped from the next project save. `Ctrl+Z` recovers the members
-  again.
-- **A mono member in a stereo merge lands at -3.01 dB per side.** The merged
+  `Ctrl+Z` puts every member back with its original id while `Join N` stays
+  open in the Files panel — an undone join leaves a file behind that you have
+  to dismiss by hand. It is `neverSaved` but, since the 2026-09-14 batch
+  (item 2), that alone no longer prompts before closing it: `Join N` has
+  never been edited, so `closeDocumentFlow` closes it on one click with **no
+  confirmation at all** (only quitting the app still counts and warns about
+  it — see *closing a clean computed document silently drops its in-memory
+  analyses*, above). If the user closes `Join N` this way and then REDOES the
+  join, the joined clip comes back referencing a document that no longer
+  exists: it plays silent and is dropped from the next project save. `Ctrl+Z`
+  recovers the members again.
+- **A mono member in a stereo join lands at -3.01 dB per side.** The joined
   document is mono only when *every* member's document is mono; otherwise a
   mono member is written into both channels scaled by `Math.SQRT1_2`. That is
   the level the mono pan law gives a **centred** clip (`monoPanGains(0)` =
-  `cos(π/4)`), so a mono clip on a centred track merges at exactly the level it
+  `cos(π/4)`), so a mono clip on a centred track joins at exactly the level it
   played at. A hard-panned track does not: pan is a track property and is never
-  baked, so after the merge that track pans a **stereo** document and switches
+  baked, so after the join that track pans a **stereo** document and switches
   laws — `stereoBalanceGains(-1)` passes the left channel at 1.0 where
   `monoPanGains(-1)` gave the mono source 1.0 — and the member comes back up to
   3.01 dB quieter than it played. The same law switch also shifts the
   **stereo image** at any non-centre pan, not only at the hard extreme: a mono
   clip panned to +0.5 renders at `monoPanGains(0.5)` ≈ {0.383, 0.924} (L/R)
-  before the merge and at `Math.SQRT1_2 × stereoBalanceGains(0.5)` ≈ {0.500,
+  before the join and at `Math.SQRT1_2 × stereoBalanceGains(0.5)` ≈ {0.500,
   0.707} after it — the image audibly narrows even though the pan value
   itself never changed. This is not limited to a static pan: `autoPanGainsAt`
   and `autoSpatialGainsAt` both pick their gain law from the same `mono` flag,
-  so an automated pan or spatial sweep through a merged track shifts the same
+  so an automated pan or spatial sweep through a joined track shifts the same
   way.
 - **A crossfade with a clip outside the selection is torn in half.** Fade specs
   are resolved over the whole track — the renderer's own view — so the member's
-  side of a crossfade with an unselected neighbour is baked into the merged
+  side of a crossfade with an unselected neighbour is baked into the joined
   audio as a fade. Removing that member then disarms the neighbour's facing
-  fade, and the neighbour is left playing at full level under the merged clip's
+  fade, and the neighbour is left playing at full level under the joined clip's
   baked fade. The overlap stops being equal-power; select both sides of a
   crossfade, or expect to re-arm it afterwards.
-- **Unselected clips inside the span are overlapped, not merged.** A clip that
+- **Unselected clips inside the span are overlapped, not joined.** A clip that
   sits inside `[min(start), max(start + length))` but was not selected is
-  neither absorbed nor pushed aside. The merged clip simply lands on top of it,
+  neither absorbed nor pushed aside. The joined clip simply lands on top of it,
   exactly as a drop would — overlap is first-class in this session model — so
   both are heard.
 
 **Intended behavior:** unchanged by design for all five. The whole point of the
 verb is to turn several clips into one piece of audio, which means committing
-the per-clip level and shape that made them sound the way they did; a merge
-that kept gain and fades editable would be a group, not a merge. The mono
+the per-clip level and shape that made them sound the way they did; a join
+that kept gain and fades editable would be a group, not a join. The mono
 scaling is a deliberate choice of *which* level to preserve (centre) rather
-than a rounding error, and the crossfade and overlap cases follow from merging
+than a rounding error, and the crossfade and overlap cases follow from joining
 a **selection** rather than a region — widening either would silently change
 clips the user did not choose.
+
+## A one-frame slip on a Ctrl combo fires the wrong bare letter
+
+**Area:** the bare-letter accelerators (`src/services/shortcuts.ts`
+`SHORTCUT_TABLE`, `installShortcuts`) added beside `Ctrl+A`/`Ctrl+C`/`Ctrl+S`
+
+**Current behavior:** `C`, `A` and `S` are now bare-letter accelerators for
+Split at Cursor, Select All and Silence Selection, sharing their letter with
+an existing Ctrl combo (`Ctrl+C` Copy, `Ctrl+A` Select All, `Ctrl+S` Save
+project). If **Ctrl** is released a frame before the letter is — or the
+letter's own keydown lands a frame after Ctrl's keyup — the combo normalizes
+to the bare letter instead, and the bare-letter command runs in place of the
+Ctrl one. Concretely: a mistimed `Ctrl+S` can fire **Silence Selection**
+instead of Save; a mistimed `Ctrl+C` can fire **Split at Cursor** instead of
+Copy; a mistimed `Ctrl+A` fires **Select All** either way, which is harmless
+because both keys already run the same command. The auto-repeat guard added
+alongside these accelerators does not close this gap — it drops only a
+**repeated** bare-letter keydown (the shape a held combo repeats into once
+Ctrl lets go early while the letter is still held down), not the single,
+non-repeated keydown a one-off mistimed release produces.
+
+**Intended behavior:** accepted, not coded around — H5 is the user's own
+choice of scheme, and disambiguating "was Ctrl actually held for this key" at
+the browser's keyboard-event level would need timing heuristics this app does
+not otherwise use anywhere. The bound cost is small: `edit.silence` and
+`edit.split` are both ordinary undoable edits (`editOps.ts`), so one `U` or
+`Ctrl+Z` reverses either — a mistimed Save becomes an extra undo step, not
+lost work, and Save itself simply has to be pressed again.
 
 ## A selected gap is one gap, on one track, and no key selects it
 
@@ -2300,10 +2409,16 @@ starting at or after the gap's end moves left by the gap's length, in one
   single `{ trackId, startSample, endSample }`. There is no way to select the
   same stretch of time across several tracks and close it everywhere, and
   closing one lane's gap moves nothing in any other lane — "localized" is the
-  feature, not a shortfall of it. The multi-track version of this verb is
-  `Edit → Ripple Delete Time Selection`, which is greyed everywhere because
-  this app has no gesture for selecting a stretch of *time* in the multitrack
-  view (see the note in `menuActions.ts`).
+  feature, not a shortfall of it. This is unrelated to the multitrack time
+  range added since (`Shift`+drag a lane, see `USER_GUIDE.md`'s *Selecting a
+  stretch of time*) — that range drives Trim/Silence, not Close Gap, and does
+  not touch this per-gap model at all. The multi-track version of the
+  *ripple* verb, `Edit → Ripple Delete Time Selection`, is still greyed
+  everywhere, but no longer for lack of a gesture: the range now exists, and
+  what is still missing is the ripple's own scope and shift rules (which
+  tracks shift when clips are removed from all of them, and whether a track
+  the range never touches should shift too — see the note in
+  `menuActions.ts`).
 - **No keyboard shortcut selects a gap.** The pointer is the only way in. A key
   would have to guess which gap the user meant — there is no "current" gap the
   way there is a current clip — so none is bound, and `KEYBOARD_SHORTCUTS.md`
@@ -2328,9 +2443,13 @@ starting at or after the gap's end moves left by the gap's length, in one
   clip selection, and one selection on screen at a time outranks leaving the
   band where it was.
 
-**Intended behavior:** unchanged for all five in v1. A time-range selection
-spanning tracks is the feature that would subsume the first two, and it is not
-in this version.
+**Intended behavior:** unchanged for all five — the multitrack time-range
+selection shipped since this was written (`Shift`+drag a lane), but it is a
+*different* band from `selectedGap` and does not subsume Close Gap or either
+of the first two boundaries above. It does carry the non-rippling equivalent
+of the second boundary's absent verb (Trim/Silence act on the range with no
+keyboard gesture needed to place it), and it is what unblocks — without yet
+specifying — `Edit → Ripple Delete Time Selection`, which stays disabled.
 
 ## Voice + Backing reconstruct the source within float32 rounding, not bit-for-bit
 
@@ -2506,3 +2625,59 @@ above and its follow-up.
 **Intended behavior:** an oversampled true-peak limiter and the surround weights
 are both real features and neither is in this version. Until they are, the
 numbers are named for what they actually measure.
+
+## A mixed-rate clip's right edge drifts slightly on a range that crosses it twice
+
+**Area:** multitrack Trim/Silence on a mixed-rate clip
+(`src/multitrack/sessionStore.ts` `trimClip`/`splitClip`/`silenceClipsInRange`,
+item 10 / lot J)
+
+**Current behavior:** `offsetSample` indexes a clip's SOURCE document, at that
+document's own sample rate. `splitClip` knows this and converts a split point
+through `docRateOf`'s ratio before advancing it (its own comment names the
+reason: `readClipSlice` would otherwise read the wrong source samples).
+`trimClip`'s own edge-adjustment does not: it advances `offsetSample` by a raw
+SESSION-sample delta, correct only when the clip's source document shares the
+session's sample rate. This is pre-existing and was byte-identical at this
+batch's merge base — no one had reached it on a mixed-rate clip before. Lot J's
+multitrack Trim and Silence now can, on a clip whose swept range crosses BOTH
+its start and its end (Silence: split at the range's start, then
+`trimClip('start', …)` carves the surviving piece back to the range's end).
+The split step converts correctly; the follow-up `trimClip` step does not, so
+the final `offsetSample` is off by the un-converted remainder of that second
+step's delta. `menuActions.mtTrim.test.ts`'s "converts a mixed-rate spanning
+clip's right half" test pins the CURRENT (partially inconsistent) output
+rather than a value verified correct against the source document — see that
+test's own comment.
+
+**Intended behavior:** `trimClip` should convert its own edge delta through the
+same `docRateOf` ratio `splitClip` already uses, on both edges. Not fixed in
+this batch: it is a real behaviour change to a function four other call sites
+share (`ClipView.tsx`'s drag-trim, `mergeClips`/`clipEdges` sizing, and the
+range-crossing paths above), and none of those call sites currently have a
+`docRate` to pass it — plumbing one through is more than a documentation pass.
+
+## The quit guard does not consult the app-wide pass lock
+
+**Area:** the native close/quit guard (`src/App.tsx`'s `onCloseRequested`
+handler, `src/services/passLock.ts`)
+
+**Current behavior:** quitting the app asks each of several PER-SERVICE busy
+counters — `getInFlightSaveCount`, `isProjectSaveInFlight`,
+`getStemBusyCount`, `getTranscribeBusyCount`, `getDiarizeBusyCount`,
+`getVoiceBusyCount`, `getAlignBusyCount` — and only warns about work in
+flight if one of THOSE says so. Item 13's app-wide pass lock
+(`src/services/passLock.ts`, `isPassRunning()`) is the one place that can
+actually answer "is anything running" for every pass kind — an effect Apply,
+a hosted pipeline tool, a Mix Down, `tempo.detect` — but the quit guard was
+never wired to it, so it is exactly the "five parallel flags" shape
+`passLock.ts`'s own docblock was written to replace, still standing at the
+one remaining door. An effect Apply or a tempo/regrid worker running when the
+window closes reports a busy count of 0 to the native Quit/Cancel prompt, so
+the app can quit silently while that work is discarded mid-flight.
+
+**Intended behavior:** the busy count passed to `respondCloseRequest` should
+OR in `isPassRunning()`. Not fixed in this batch: recorded here rather than
+folded into the lock-sweep fixes above because it changes the native
+close-guard contract (`electron/closeGuard.cjs`) rather than a single UI
+control, and deserves its own verification pass across a real quit.

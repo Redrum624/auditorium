@@ -3,6 +3,7 @@ import { render } from '@testing-library/react';
 import { nextDialogToken, popDialog, pushDialog } from './dialogBus';
 import * as menuActionsModule from './menuActions';
 import { comboFromEvent, installShortcuts, SHORTCUT_TABLE } from './shortcuts';
+import { _resetPassLock, acquirePass } from './passLock';
 import DialogShell from '../components/Dialogs/DialogShell';
 
 // This file is .ts (not .tsx), so StrictMode-wrapped element trees below are
@@ -50,19 +51,32 @@ describe('comboFromEvent', () => {
 });
 
 describe('SHORTCUT_TABLE', () => {
+  // H5/X3 (lot H): 23 rows -> 31. The eight new bare-letter rows are the
+  // user's own chosen scheme, each an ADDITIONAL row beside the Ctrl combo it
+  // doubles (H6) — none replaces anything, so every row that stood here
+  // before still does.
   it('contains exactly the documented combo -> command mappings', () => {
+    expect(SHORTCUT_TABLE).toHaveLength(31);
     expect(SHORTCUT_TABLE).toEqual([
       { combo: 'space', commandId: 'transport.playPause' },
       { combo: 'ctrl+z', commandId: 'edit.undo' },
+      { combo: 'u', commandId: 'edit.undo' }, // H5
       { combo: 'ctrl+shift+z', commandId: 'edit.redo' },
       { combo: 'ctrl+y', commandId: 'edit.redo' },
+      { combo: 'r', commandId: 'edit.redo' }, // H5
       { combo: 'ctrl+k', commandId: 'edit.split' }, // item 8 (M1)
+      { combo: 'c', commandId: 'edit.split' }, // H3/H5 — the scissors, not Copy
+      { combo: 'j', commandId: 'multitrack.joinClips' }, // H1/H2/H5 — Join, renamed from Merge
       { combo: 'ctrl+x', commandId: 'edit.cut' },
       { combo: 'ctrl+c', commandId: 'edit.copy' },
       { combo: 'ctrl+v', commandId: 'edit.paste' },
       { combo: 'delete', commandId: 'edit.delete' },
+      { combo: 'd', commandId: 'edit.delete' }, // H5
       { combo: 'shift+delete', commandId: 'edit.rippleDelete' }, // K1
       { combo: 'ctrl+a', commandId: 'edit.selectAll' },
+      { combo: 'a', commandId: 'edit.selectAll' }, // H4/H5/H8 — new Select All button
+      { combo: 't', commandId: 'edit.trim' }, // H5
+      { combo: 's', commandId: 'edit.silence' }, // H5
       { combo: 'ctrl+arrowleft', commandId: 'multitrack.prevClipEdge' }, // K1
       { combo: 'ctrl+arrowright', commandId: 'multitrack.nextClipEdge' }, // K1
       { combo: 'home', commandId: 'transport.goToStart' },
@@ -72,10 +86,28 @@ describe('SHORTCUT_TABLE', () => {
       { combo: 'ctrl+n', commandId: 'file.new' },
       { combo: 'ctrl+shift+s', commandId: 'file.saveAs' }, // T4
       { combo: 'ctrl+w', commandId: 'file.close' },
-      { combo: 'm', commandId: 'marker.add' },
+      { combo: 'm', commandId: 'marker.add' }, // H2 — unchanged; Join took `j` instead
       { combo: 'ctrl+e', commandId: 'file.export' },
       { combo: 'escape', commandId: 'edit.deselect' },
     ]);
+  });
+
+  it('carries all eight of lot H\'s new bare-letter rows verbatim', () => {
+    // The general form of the exhaustive toEqual above, so a future edit that
+    // narrows the table's shape (e.g. de-duplicates by commandId) still has
+    // one assertion naming every new row explicitly.
+    for (const row of [
+      { combo: 'u', commandId: 'edit.undo' },
+      { combo: 'r', commandId: 'edit.redo' },
+      { combo: 'c', commandId: 'edit.split' },
+      { combo: 'j', commandId: 'multitrack.joinClips' },
+      { combo: 'd', commandId: 'edit.delete' },
+      { combo: 'a', commandId: 'edit.selectAll' },
+      { combo: 't', commandId: 'edit.trim' },
+      { combo: 's', commandId: 'edit.silence' },
+    ]) {
+      expect(SHORTCUT_TABLE).toContainEqual(row);
+    }
   });
 
   it('carries the Ctrl+W the File > Close menu row advertises', () => {
@@ -146,6 +178,12 @@ describe('SHORTCUT_TABLE', () => {
     expect(combos).toContain('ctrl+shift+s'); // 'Ctrl+Shift+S'
     expect(combos).toContain('ctrl+arrowleft'); // 'Ctrl+Left'
     expect(combos).toContain('shift+delete'); // 'Shift+Del'
+    // H5 acceptance #5 (lot H) — the three menu rows whose ONLY binding is a
+    // bare letter (Join's `J`, Trim's `T`, Silence's `S`) advertise it and the
+    // sweep proves it is not dead.
+    expect(combos).toContain('j'); // 'J' — multitrack.joinClips
+    expect(combos).toContain('t'); // 'T' — edit.trim
+    expect(combos).toContain('s'); // 'S' — edit.silence
   });
 
   it('…and the check would notice a label naming a key nothing binds', () => {
@@ -187,7 +225,7 @@ describe('installShortcuts', () => {
     window.dispatchEvent(keydown({ key: 'w', ctrlKey: true }));
 
     // `file.close` is `closeDocumentFlow`, which prompts before discarding
-    // unsaved work — the accelerator inherits that guard for free.
+    // unsaved EDITS (lot B) — the accelerator inherits that guard for free.
     expect(runCommandSpy).toHaveBeenCalledWith('file.close');
   });
 
@@ -198,6 +236,31 @@ describe('installShortcuts', () => {
     window.dispatchEvent(keydown({ key: ' ' }));
 
     expect(runCommandSpy).toHaveBeenCalledWith('transport.playPause');
+  });
+
+  // H-1 (final fix wave) — the SHORTCUT_TABLE assertion above only checks the
+  // declarative combo -> command mapping; nothing dispatched a real Ctrl+C /
+  // Ctrl+V / Ctrl+X keydown before. This is exactly the row a future edit
+  // gets wrong: bare `c` is Split (H3/H5), sitting right beside `Ctrl+C`, and
+  // lot L made `edit.copy` VIEW-ROUTED (waveform audio vs. multitrack clips),
+  // so a typo here would silently break Copy/Paste/Cut while leaving Split
+  // untouched — three assertions, one per accelerator.
+  it.each([
+    ['c', 'edit.copy', { ctrlKey: true }],
+    ['v', 'edit.paste', { ctrlKey: true }],
+    ['x', 'edit.cut', { ctrlKey: true }],
+    // Cosmetic (final fix wave, second round) — `commandId` moved to the
+    // SECOND array slot so the title's two `%s` placeholders (positional,
+    // in array order) actually print `key` then `commandId`; the old
+    // ordering fed the second `%s` the modifier object instead.
+  ])('dispatches Ctrl+%s to %s, distinct from the bare-letter Split row', (key, commandId, mods) => {
+    const runCommandSpy = jest.spyOn(menuActionsModule, 'runCommand').mockResolvedValue(undefined);
+    uninstall = installShortcuts(window);
+
+    window.dispatchEvent(keydown({ key, ...mods }));
+
+    expect(runCommandSpy).toHaveBeenCalledTimes(1);
+    expect(runCommandSpy).toHaveBeenCalledWith(commandId);
   });
 
   // K1 — the three new bindings, driven from a REAL keydown rather than from
@@ -236,6 +299,150 @@ describe('installShortcuts', () => {
     window.dispatchEvent(keydown({ key: 'Delete' }));
 
     expect(runCommandSpy).toHaveBeenCalledWith('edit.delete');
+  });
+
+  // Acceptance #2 / X3 (lot H) — every new bare-letter binding, dispatched
+  // from a REAL keydown (not read off the table), pairs each with the Ctrl
+  // combo it doubles where one exists, so a regression that broke the Ctrl
+  // row while "fixing" the bare one would still be caught. `c` is asserted
+  // against 'edit.split', not 'edit.copy' — H3's scissors, not the letter a
+  // user coming from another app might guess.
+  it.each([
+    ['u', {}, 'edit.undo'],
+    ['z', { ctrlKey: true }, 'edit.undo'],
+    ['r', {}, 'edit.redo'],
+    ['y', { ctrlKey: true }, 'edit.redo'],
+    ['c', {}, 'edit.split'],
+    ['k', { ctrlKey: true }, 'edit.split'],
+    ['j', {}, 'multitrack.joinClips'],
+    ['d', {}, 'edit.delete'],
+    ['a', {}, 'edit.selectAll'],
+    ['a', { ctrlKey: true }, 'edit.selectAll'],
+    ['t', {}, 'edit.trim'],
+    ['s', {}, 'edit.silence'],
+  ])('dispatches %s (mods %j) to %s', (key, mods, commandId) => {
+    const runCommandSpy = jest.spyOn(menuActionsModule, 'runCommand').mockResolvedValue(undefined);
+    uninstall = installShortcuts(window);
+
+    window.dispatchEvent(keydown({ key, ...mods }));
+
+    expect(runCommandSpy).toHaveBeenCalledTimes(1);
+    expect(runCommandSpy).toHaveBeenCalledWith(commandId);
+  });
+
+  // Acceptance #3, H7 (lot H) — the hole comboFromEvent's own docblock now
+  // names: before this fix, Meta+<letter> silently dropped Meta and ran the
+  // BARE letter's command, while Ctrl+<letter> and Alt+<letter> correctly did
+  // nothing (they normalize to combos no row binds).
+  describe('Meta is rejected outright (H7)', () => {
+    it('comboFromEvent normalizes Meta+D to the empty combo', () => {
+      expect(comboFromEvent(keydown({ key: 'd', metaKey: true }))).toBe('');
+    });
+
+    it('a Meta+D keydown runs nothing, but plain d still runs edit.delete', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      window.dispatchEvent(keydown({ key: 'd', metaKey: true }));
+      expect(runCommandSpy).toHaveBeenCalledTimes(0);
+
+      window.dispatchEvent(keydown({ key: 'd' }));
+      expect(runCommandSpy).toHaveBeenCalledTimes(1);
+      expect(runCommandSpy).toHaveBeenCalledWith('edit.delete');
+    });
+
+    it('a Meta+M keydown runs nothing either', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      window.dispatchEvent(keydown({ key: 'm', metaKey: true }));
+
+      expect(runCommandSpy).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  // Acceptance #4, H7 (lot H) — `isEditableTarget`'s type-blind INPUT check
+  // already covers a `<input type="range">` slider (every slider in the app
+  // is one), and the deliberate non-gate for a focused plain `<button>` is
+  // pinned here so a later "fix" does not quietly reintroduce the "d stops
+  // working right after a pill click" defect H7 rejected.
+  describe('a slider is gated, a focused button deliberately is not (H7)', () => {
+    it('a range input target swallows the bare d', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      const range = document.createElement('input');
+      range.type = 'range';
+      document.body.appendChild(range);
+      range.dispatchEvent(keydown({ key: 'd' }));
+      document.body.removeChild(range);
+
+      expect(runCommandSpy).toHaveBeenCalledTimes(0);
+    });
+
+    it('a plain button target still runs edit.delete', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      const btn = document.createElement('button');
+      document.body.appendChild(btn);
+      btn.dispatchEvent(keydown({ key: 'd' }));
+      document.body.removeChild(btn);
+
+      expect(runCommandSpy).toHaveBeenCalledTimes(1);
+      expect(runCommandSpy).toHaveBeenCalledWith('edit.delete');
+    });
+  });
+
+  // H7 Risk (lot H) — the auto-repeat hazard the brief names: hold Ctrl,
+  // press and hold a bound letter, release Ctrl a frame early. The repeat
+  // keydowns then arrive with ctrlKey: false, reading as the bare letter.
+  // `Ctrl+S` released early is the brief's own example — Silence Selection is
+  // destructive, so the repeat keydown must NOT run it.
+  describe('an auto-repeat keydown does not fire a bare-letter command (H7)', () => {
+    it('a repeat bare s does not run edit.silence', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      window.dispatchEvent(keydown({ key: 's', repeat: true }));
+
+      expect(runCommandSpy).toHaveBeenCalledTimes(0);
+    });
+
+    it('a NON-repeat bare s still runs edit.silence — the guard is repeat-only', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      window.dispatchEvent(keydown({ key: 's', repeat: false }));
+
+      expect(runCommandSpy).toHaveBeenCalledWith('edit.silence');
+    });
+
+    it('a repeat Ctrl+Z is NOT swallowed — the guard is scoped to bare letters, not every repeat', () => {
+      // Holding Ctrl+Z to undo repeatedly is ordinary editor behaviour; the
+      // hazard is specific to a combo that reduces to a BARE letter, not to
+      // key-repeat in general.
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+
+      window.dispatchEvent(keydown({ key: 'z', ctrlKey: true, repeat: true }));
+
+      expect(runCommandSpy).toHaveBeenCalledWith('edit.undo');
+    });
   });
 
   it('calls preventDefault on a matched combo', () => {
@@ -408,6 +615,47 @@ describe('installShortcuts', () => {
 
       window.dispatchEvent(keydown({ key: 'o', ctrlKey: true }));
       expect(runCommandSpy).toHaveBeenCalledWith('file.open');
+    });
+  });
+
+  // Acceptance 7, M6 — FAILS TODAY. `hasOpenDialog()` used to blanket-suspend
+  // every global shortcut while a hosted pass ran (`hostedToolRunning`,
+  // deleted from dialogBus.ts by this lot); that left the app mutely dead
+  // behind a BACKGROUNDED pass, with no dialog visible to explain why. The
+  // pass lock replaces it: the modal stack (what `hasOpenDialog()` means now)
+  // stays empty behind a hosted pass, so a plain keydown still runs.
+  describe('the pass lock does not suspend the keyboard (M6)', () => {
+    afterEach(() => {
+      _resetPassLock();
+    });
+
+    it('a space keydown still runs transport.playPause while a pass is running, with no dialog on the stack', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+      const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+
+      window.dispatchEvent(keydown({ key: ' ' }));
+
+      expect(runCommandSpy).toHaveBeenCalledWith('transport.playPause');
+      release!();
+    });
+
+    it('a modal dialog on the stack still suspends the keyboard, pass or no pass', () => {
+      const runCommandSpy = jest
+        .spyOn(menuActionsModule, 'runCommand')
+        .mockResolvedValue(undefined);
+      uninstall = installShortcuts(window);
+      const release = acquirePass({ id: 'effects.coverChain', label: 'Cover Chain', kind: 'pipeline' });
+      const token = nextDialogToken();
+      pushDialog(token);
+
+      window.dispatchEvent(keydown({ key: ' ' }));
+
+      expect(runCommandSpy).not.toHaveBeenCalled();
+      popDialog(token);
+      release!();
     });
   });
 });

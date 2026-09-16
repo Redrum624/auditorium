@@ -1,5 +1,6 @@
 import { type AudioDocument } from '../audio/AudioDocument';
 import { AUDIO_EXTENSIONS, openFilePath } from '../services/fileService';
+import { blockedByPassReason, isPassRunning } from '../services/passLock';
 import { useAppStore } from '../stores/appStore';
 import { documentClipLength } from './session';
 import { placeDocumentsOnTrack } from './sessionInsert';
@@ -106,8 +107,12 @@ function findDocument(docId: string): AudioDocument | undefined {
  * Returns the clip ids placed, newest last.
  *
  * Clips land VERBATIM at the requested position: overlap is first-class since
- * X5, and a programmatic placement writes no fade keys — the same contract
- * `insertActiveDocAsClip` and the recorder's punch-in follow.
+ * X5, and THIS placement path writes no fade keys — the same contract
+ * `insertActiveDocAsClip` and the recorder's punch-in follow. Lot L's Paste
+ * (`multitrack/clipClipboard.ts`) is the one `addClip` caller that DOES carry
+ * fade keys over from the copied clip — see `sessionStore.ts`'s overlap
+ * contract for the consequence, "a programmatic placement never writes
+ * fades" is no longer true of `addClip` callers in general.
  */
 export function placeDocumentClips(
   docIds: readonly string[],
@@ -164,6 +169,21 @@ export async function dropFilesOnTrack(
   trackId: string,
   startSample: number
 ): Promise<string[]> {
+  // Fix round 1 (item 5a) — a second, mouse-only `file.open` door: dropping
+  // files from Explorer runs the SAME `openFilePath` a `file.open` menu click
+  // does, `addDocument`-ing and ACTIVATING each one, which is exactly the
+  // hazard `file.open`'s own registry gate exists to close (M-c). The registry
+  // gate never saw this path because it is a drag-and-drop handler, not a
+  // `runCommand` door.
+  if (isPassRunning()) {
+    const reason = blockedByPassReason();
+    await window.electronAPI?.showMessageBox({
+      type: 'info',
+      title: 'Open failed',
+      message: reason ?? 'A pass is running.',
+    });
+    return [];
+  }
   const opened: string[] = [];
   for (const file of files) {
     // Electron 32 removed `File.path`; `webUtils.getPathForFile` (bridged as

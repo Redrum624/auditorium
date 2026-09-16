@@ -424,7 +424,7 @@ export default function SpectrogramView({ docId }: { docId: string }) {
           onPointerDown={gestures.onPointerDown}
           onPointerMove={gestures.onPointerMove}
           onPointerUp={gestures.onPointerUp}
-          onPointerCancel={gestures.onPointerUp}
+          onPointerCancel={gestures.onPointerCancel}
         />
         {computeFailed && (
           <div

@@ -7,10 +7,10 @@ import { multitrackRecorder } from '../../multitrack/multitrackRecord';
 import { applySessionZoom, useSessionStore } from '../../multitrack/sessionStore';
 import type { Session } from '../../multitrack/session';
 import { defaultSessionZoom } from '../../multitrack/sessionZoom';
-import { isCommandEnabled, runCommand, showEditorView } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, runCommand, showEditorView } from '../../services/menuActions';
+import { usePassLock } from '../../services/passLock';
 import { useHistoryVersion } from '../../services/undoHistory';
 import { toggleSnap, useSnapEnabled } from '../../services/snapPreference';
-import { canRecord } from '../../services/transportService';
 // F11-9: the zoom limits are the store's now, so the toolbar imports the one
 // resolver instead of re-stating MIN_SPP and a ceiling of its own.
 import { applyEditorZoom, defaultZoom, useAppStore } from '../../stores/appStore';
@@ -18,6 +18,8 @@ import { applyEditorZoom, defaultZoom, useAppStore } from '../../stores/appStore
 import { editorLaneWidth } from '../../services/editorViewport';
 import { sessionLaneWidth } from '../../multitrack/sessionViewport';
 import { anchoredZoom } from '../../services/zoomAnchor';
+// A1-A6: the page-flip playhead follow, shared by both position pumps below.
+import { createPlayheadFollow, watchPointerActivity } from '../../services/playheadFollow';
 import { ZOOM_FACTOR } from '../Editor/useEditorGestures';
 import { ChromePill } from '../UI/glass';
 
@@ -238,8 +240,8 @@ export default function Toolbar() {
   // MT1-1: the readout re-renders with the session's zoom and length.
   const session = useSessionStore((s) => s.session);
   const mtZoom = useSessionStore((s) => s.mtZoom);
-  // Subscribe to the armed set (value unused directly) so canRecord() below is
-  // re-evaluated whenever a track is armed/disarmed.
+  // Subscribe to the armed set (value unused directly) so `transport.record`'s
+  // enablement below is re-evaluated whenever a track is armed/disarmed.
   useSessionStore((s) => s.session.tracks.some((t) => t.armed));
 
   // Lot A: Save / Export read the PROJECT through the commands' own
@@ -248,6 +250,9 @@ export default function Toolbar() {
   // history's version counter (MenuBar does the same), or the Save pill would
   // never light after a session edit and never dim after a save.
   useHistoryVersion();
+  // Lot M: the pass lock is module state, not zustand — subscribe for the
+  // same freshness reason.
+  usePassLock();
 
   const hasDoc = doc !== null;
   // The Save pill's own enablement has to state the SAME condition as the
@@ -268,11 +273,16 @@ export default function Toolbar() {
 
   // Live punch-in recording state, mirrored from the multitrack recorder so the
   // Record button can pulse red while a take is running. Enablement comes from
-  // transportService.canRecord() — the same source the menu command uses — and
-  // is re-derived on every armed-set / view / recording-state render trigger.
+  // `isCommandEnabled('transport.record')` — the registry's OWN predicate,
+  // not a bare `canRecord()` (fix round 1: the bare call was a second mouse
+  // door that bypassed `transport.record`'s pass-lock gate the same way the
+  // Effects card's old `openEffectDialog` call bypassed `effect.<id>`'s —
+  // the button would have shown live while `runCommand` silently refused the
+  // click underneath it) — and is re-derived on every armed-set / view /
+  // recording-state / pass-lock render trigger.
   const [mtRecording, setMtRecording] = useState(() => multitrackRecorder.isRecording());
   useEffect(() => multitrackRecorder.onChange(setMtRecording), []);
-  const recordEnabled = canRecord();
+  const recordEnabled = isCommandEnabled('transport.record');
 
   // Load the active document into the engine whenever its identity (id),
   // audio data (channels array reference), or sample rate changes — but NOT on
@@ -311,27 +321,66 @@ export default function Toolbar() {
   }, []);
 
   // Waveform/spectral position pump (only while that view is playing).
+  // A1-A6: also runs the page-flip follow, so a playhead that scrolls off the
+  // right (or left, on a loop wrap) edge pages the view over instead of
+  // stalling out of sight.
   useEffect(() => {
     if (isMultitrack || playback.state !== 'playing') return;
+    const follow = createPlayheadFollow();
+    const pointer = watchPointerActivity();
     let raf = 0;
     const tick = () => {
-      useAppStore.getState().setPlayback({ positionSample: playbackEngine.getPositionSample() });
+      const positionSample = playbackEngine.getPositionSample();
+      useAppStore.getState().setPlayback({ positionSample });
+      const viewport = useAppStore.getState().zoom;
+      const next = follow.next({
+        positionSample,
+        viewport,
+        laneWidth: editorLaneWidth(),
+        pointerBusy: pointer.isDown(),
+      });
+      if (next !== null) {
+        applyEditorZoom({ samplesPerPixel: viewport.samplesPerPixel, scrollSample: next });
+        follow.committed(useAppStore.getState().zoom);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      pointer.dispose();
+    };
   }, [playback.state, isMultitrack]);
 
   // Multitrack position pump (only while the multitrack view is playing).
+  // A1-A6: the same page-flip follow as the editor pump above — see its
+  // comment; the two pumps move together (X2).
   useEffect(() => {
     if (!isMultitrack || mtPlayState !== 'playing') return;
+    const follow = createPlayheadFollow();
+    const pointer = watchPointerActivity();
     let raf = 0;
     const tick = () => {
-      useSessionStore.getState().setMtPlayheadSample(multitrackPlayer.getPositionSample());
+      const positionSample = multitrackPlayer.getPositionSample();
+      useSessionStore.getState().setMtPlayheadSample(positionSample);
+      const viewport = useSessionStore.getState().mtZoom;
+      const next = follow.next({
+        positionSample,
+        viewport,
+        laneWidth: sessionLaneWidth(),
+        pointerBusy: pointer.isDown(),
+      });
+      if (next !== null) {
+        applySessionZoom({ samplesPerPixel: viewport.samplesPerPixel, scrollSample: next });
+        follow.committed(useSessionStore.getState().mtZoom);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      pointer.dispose();
+    };
   }, [isMultitrack, mtPlayState]);
 
   // Live multitrack parameters: while the multitrack view is playing, push track
@@ -425,7 +474,7 @@ export default function Toolbar() {
 
         <PillButton
           label="Save"
-          title="Save Project (Ctrl+S)"
+          title={commandReason('file.save') ?? 'Save Project (Ctrl+S)'}
           disabled={!canSave}
           onClick={() => void runCommand('file.save')}
         >
@@ -433,7 +482,7 @@ export default function Toolbar() {
         </PillButton>
         <PillButton
           label="Export"
-          title="Export (Ctrl+E)"
+          title={commandReason('file.export') ?? 'Export (Ctrl+E)'}
           // Lot A (M5): in the multitrack view Export renders the session, so
           // the pill follows `file.export`'s own predicate (the session
           // subscription above keeps it fresh as clips come and go).
@@ -476,6 +525,7 @@ export default function Toolbar() {
           label={mtRecording ? 'Stop recording' : 'Record'}
           icon
           disabled={!recordEnabled}
+          title={commandReason('transport.record') ?? undefined}
           onClick={() => void runCommand('transport.record')}
         >
           <Circle

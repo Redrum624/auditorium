@@ -941,7 +941,10 @@ describe('merge clips hooks', () => {
 
     const merged = useAppStore.getState().documents[before];
     expect(clips[0].documentId).toBe(merged.id);
-    expect(merged.name).toMatch(/^Merge \d+$/);
+    // H1 (lot H): the minted document is named after the renamed command
+    // ("Join Clips", not "Merge Clips") — a stale "Merge N" name under a
+    // button labelled Join is exactly the defect this repo tracks.
+    expect(merged.name).toMatch(/^Join \d+$/);
     expect(merged.sampleRate).toBe(44100);
     expect(merged.channels[0]).toHaveLength(3000);
     // The gap between the members is silence; the members themselves are not.
@@ -1095,6 +1098,15 @@ describe('gap hooks', () => {
  * which is the part D4 added.
  */
 describe('separateVoiceLand (D4)', () => {
+  // Lot E: this suite's assertions on `session.tracks` length assume the
+  // 'replaced' arm (E3's gate is "the session already has clips", and this
+  // module-global store carries whatever an EARLIER describe block in this
+  // file left behind). Reset to a clean, empty session so every test here —
+  // old and new — starts from the same precondition its assertions assume.
+  beforeEach(() => {
+    useSessionStore.getState().newSession(44100);
+  });
+
   /** Distinct, non-trivial content per channel — a landing measured on silence
    *  would pass with every stem index swapped. */
   function addVoiceDoc(name = 'song.wav', channelCount = 2): AudioDocument {
@@ -1120,11 +1132,36 @@ describe('separateVoiceLand (D4)', () => {
     expect(summary.ok).toBe(true);
     expect(summary.documentNames).toEqual(['song.wav — Voice', 'song.wav — Backing']);
     expect(summary.trackNames).toEqual(['Voice', 'Backing']);
+    // Lot E: an empty session (this describe's own beforeEach) replaces
+    // wholesale, so `landedTrackNames` is every track — the same list — and
+    // `landingMode` says so explicitly.
+    expect(summary.landedTrackNames).toEqual(['Voice', 'Backing']);
+    expect(summary.landingMode).toBe('replaced');
     expect(summary.sessionName).toBe('song.wav — Voice + Backing');
     expect(summary.sampleRate).toBe(44100);
     expect(summary.lengthSamples).toBe(2048);
     expect(useSessionStore.getState().session.tracks).toHaveLength(2);
     expect(useAppStore.getState().view).toBe('multitrack');
+  });
+
+  it('lot E: landedTrackNames is just THIS landing when the open session already has other tracks — trackNames stays every track', () => {
+    const t = api();
+    const foreignDoc = addVoiceDoc('other.wav');
+    const foreignTrack = useSessionStore.getState().session.tracks[0];
+    useSessionStore
+      .getState()
+      .addClip(
+        foreignTrack.id,
+        createClip({ documentId: foreignDoc.id, startSample: 500, offsetSample: 0, lengthSample: 2048 })
+      );
+    addVoiceDoc('song.wav'); // addDocument makes this the active document
+
+    const summary = t.separateVoiceLand();
+
+    expect(summary.landingMode).toBe('appended');
+    expect(summary.landedTrackNames).toEqual(['Voice', 'Backing']);
+    expect(summary.trackNames.length).toBeGreaterThan(summary.landedTrackNames.length);
+    expect(summary.trackNames).toEqual(expect.arrayContaining(summary.landedTrackNames));
   });
 
   it('reports the measured Voice + Backing error against the source it started from', () => {
@@ -1361,6 +1398,12 @@ describe('getPlaybackState (D2)', () => {
  * the part D4 added, plus the hook's own JSON contract.
  */
 describe('separateSpeakersLand (D4/D6)', () => {
+  // Lot E: same reset as `separateVoiceLand` above, and for the same reason —
+  // this suite's `session.tracks` assertions assume the 'replaced' arm.
+  beforeEach(() => {
+    useSessionStore.getState().newSession(44100);
+  });
+
   /** 16 kHz samples a document of `seconds` at 44.1 kHz resamples to — the rate
    *  pair divides exactly (44100 / 16000 = 2.75625), so no rounding argument is
    *  needed to say which windows the fixture produces. */
@@ -1486,6 +1529,11 @@ describe('separateSpeakersLand (D4/D6)', () => {
       'talk.wav — Backing',
     ]);
     expect(summary.trackNames).toEqual(['Speaker 1', 'Speaker 2', 'Backing']);
+    // Lot E: an empty session (this describe's own beforeEach) replaces
+    // wholesale, so `landedTrackNames` is every track and `landingMode` says
+    // so explicitly.
+    expect(summary.landedTrackNames).toEqual(['Speaker 1', 'Speaker 2', 'Backing']);
+    expect(summary.landingMode).toBe('replaced');
     expect(summary.sessionName).toBe('talk.wav — Speakers');
     expect(summary.sampleRate).toBe(44100);
     expect(summary.lengthSamples).toBe(2 * 44100);
@@ -1505,6 +1553,26 @@ describe('separateSpeakersLand (D4/D6)', () => {
     // D4: a speaker split is not a partition of the source, so the landing
     // makes no exact-sum claim in either direction.
     expect(summary.exactSumHolds).toBeNull();
+  });
+
+  it('lot E: landedTrackNames is just THIS landing when the open session already has other tracks — trackNames stays every track', () => {
+    const t = api();
+    const foreignDoc = addSpeakerDoc('other.wav');
+    const foreignTrack = useSessionStore.getState().session.tracks[0];
+    useSessionStore
+      .getState()
+      .addClip(
+        foreignTrack.id,
+        createClip({ documentId: foreignDoc.id, startSample: 500, offsetSample: 0, lengthSample: 2 * 44100 })
+      );
+    addSpeakerDoc('talk.wav'); // addDocument makes this the active document
+
+    const summary = t.separateSpeakersLand(2);
+
+    expect(summary.landingMode).toBe('appended');
+    expect(summary.landedTrackNames).toEqual(['Speaker 1', 'Speaker 2', 'Backing']);
+    expect(summary.trackNames.length).toBeGreaterThan(summary.landedTrackNames.length);
+    expect(summary.trackNames).toEqual(expect.arrayContaining(summary.landedTrackNames));
   });
 
   it('a forced count of ONE is the Voice + Backing landing, not a one-speaker mask', () => {

@@ -20,6 +20,11 @@ import {
   type TempoRefusal,
 } from '../../services/tempoService';
 import { resolveRegion } from '../../services/selectionRegion';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`). */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { MIN_RATIO, MAX_RATIO } from '../../dsp/wsola';
 import { Gauge } from 'lucide-react';
@@ -173,6 +178,12 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   const [progress, setProgress] = useState(0);
   const [applyError, setApplyError] = useState<string | null>(null);
 
+  // Fix round 1 — subscribed (not a bare `isPassRunning()` call), called
+  // before the `if (!doc) return null;` below since hooks can't be
+  // conditional; see EffectDialog's identical comment for why this must be
+  // reactive.
+  const runningPass = usePassLock();
+
   const sourceInputRef = useRef<HTMLInputElement>(null);
 
   /**
@@ -288,15 +299,25 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   const variablePlan = variableCheck?.ok ? variableCheck.plan : null;
 
   const canApply =
-    correction === 'follow-beats'
+    runningPass === null &&
+    (correction === 'follow-beats'
       ? !busy && gridConfirmed && variablePlan !== null
-      : validSource && validTarget && !busy && ((check !== null && check.ok) || noOpWithMarkers);
+      : validSource && validTarget && !busy && ((check !== null && check.ok) || noOpWithMarkers));
 
+  // Final fix wave, second round — HOLDS the lock (`runExclusivePass`), not
+  // merely refuses on it: user-initiated tempo work, the same rule
+  // `tempo.detect`'s own menu row follows ("one of the three bodies that must
+  // take the lock itself rather than relying on a card's own
+  // `handleToolModuleLock` publish"). This dialog's own `DialogShell` carries
+  // no `moduleLock` prop, so it defaults to `!dismissable` (`busy`, Apply's
+  // own flag) — Detect never set that, so it had no lock participation at
+  // all before this.
   async function handleDetect() {
     if (!doc || detecting) return;
     setDetecting(true);
     try {
-      const result = await runTempoAnalysis(doc);
+      const result = await runExclusivePass(TEMPO_DETECT_PASS, () => runTempoAnalysis(doc));
+      if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
       // T6-3: an analysis that lands after the tool is gone is a warmed CACHE,
       // keyed by document — not an edit, not undoable, and correct for the
       // document it measured. So the run is deliberately left to finish, and
@@ -359,6 +380,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
   // binding). 'x2' halves periodFrames (higher tempo -> shorter period); '/2'
   // doubles it -- the exact convention PropertiesPanel's TempoSection (T5)
   // already established.
+  // Final fix wave, second round — same HOLD as `handleDetect` above.
   async function correctOctave(periodMultiplier: 2 | 0.5) {
     if (!doc || !docEntry || docEntry.bpm === null) return;
     setCorrectionFailed(false);
@@ -366,7 +388,8 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
     // confirmation described a grid that no longer exists (RULING 1).
     setGridConfirmed(false);
     const newPeriodFrames = docEntry.periodFrames / periodMultiplier;
-    const result = await regridTempo(doc.id, newPeriodFrames);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () => regridTempo(doc.id, newPeriodFrames));
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     // Same reading as `handleDetect`: a re-track writes the analysis cache for
     // the document it re-tracked, never the document itself. See the concern
     // recorded in the T6 report — the cache write itself is not cancellable from
@@ -542,7 +565,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
             <GlassButton
               data-testid="tempo-detect-button"
               onClick={() => void handleDetect()}
-              disabled={detecting}
+              disabled={detecting || runningPass !== null}
               className="mt-1"
               style={CHIP}
             >
@@ -557,6 +580,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
                   data-testid="tempo-double-button"
                   title="Double tempo (x2) — re-tracks the beat grid"
                   onClick={() => void correctOctave(2)}
+                  disabled={runningPass !== null}
                   style={CHIP}
                 >
                   x2
@@ -565,6 +589,7 @@ export default function TempoDialog({ onClose }: { onClose: () => void }) {
                   data-testid="tempo-halve-button"
                   title="Halve tempo (/2) — re-tracks the beat grid"
                   onClick={() => void correctOctave(0.5)}
+                  disabled={runningPass !== null}
                   style={CHIP}
                 >
                   /2

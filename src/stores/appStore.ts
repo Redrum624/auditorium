@@ -65,6 +65,20 @@ export interface AppState {
   zoom: { samplesPerPixel: number; scrollSample: number };
   playback: { state: 'stopped' | 'playing' | 'paused'; positionSample: number; loop: boolean };
   markers: Record<string, Marker[]>; // docId -> markers sorted by position
+  /**
+   * G6 (item 7) — the editor's "last cut point" anchor: which document and
+   * which marker position the previous `splitAtCursor` cut at, in its CURSOR
+   * arm (the selection arm sets no fresh marker position of its own to
+   * remember — it reads the resolved selection's own trailing edge; see
+   * `editOps.ts`). `null` when there is nothing to remember.
+   *
+   * Honoured by `splitAtCursor` only when the named document is still active
+   * AND a marker still stands at `positionSample` in the pre-split marker
+   * list, so an undo of the split that made it, the marker being moved or
+   * deleted, or a document switch (`activationReset` clears this field
+   * outright) all fall back to "no anchor" rather than reading stale.
+   */
+  lastSplitMarker: { documentId: string; positionSample: number } | null;
 }
 export interface AppActions {
   addDocument(doc: AudioDocument): void; // also makes it active, resets zoom/selection/cursor
@@ -80,6 +94,8 @@ export interface AppActions {
   removeMarker(docId: string, markerId: string): void;
   renameMarker(docId: string, markerId: string, name: string): void;
   setMarkersForDoc(docId: string, markers: Marker[]): void; // replaces the whole list, sorted by positionSample
+  /** G6 (item 7) — the raw setter for `lastSplitMarker`. */
+  setLastSplitMarker(v: AppState['lastSplitMarker']): void;
 }
 
 export function makeInitialState(): AppState {
@@ -92,6 +108,7 @@ export function makeInitialState(): AppState {
     zoom: { samplesPerPixel: 512, scrollSample: 0 },
     playback: { state: 'stopped', positionSample: 0, loop: false },
     markers: {},
+    lastSplitMarker: null, // G6 (item 7)
   };
 }
 
@@ -297,13 +314,18 @@ export function publishEditorLaneWidth(width: number): void {
 /** Reset applied whenever the active document changes. */
 function activationReset(doc: AudioDocument | null): Pick<
   AppState,
-  'selection' | 'cursorSample' | 'zoom' | 'playback'
+  'selection' | 'cursorSample' | 'zoom' | 'playback' | 'lastSplitMarker'
 > {
   return {
     selection: null,
     cursorSample: 0,
     zoom: doc ? defaultZoom(doc) : { samplesPerPixel: 512, scrollSample: 0 },
     playback: { state: 'stopped', positionSample: 0, loop: false },
+    // G6 (item 7) — a document switch, or the close of the active document,
+    // drops the "last cut point" anchor along with the selection it belongs
+    // to: `lastSplitMarker` names a document AND one of its markers, and
+    // neither is meaningful once activation moves on.
+    lastSplitMarker: null,
   };
 }
 
@@ -425,5 +447,9 @@ export const useAppStore = create<AppState & AppActions>()((set) => ({
       const list = [...markers].sort((a, b) => a.positionSample - b.positionSample);
       return { markers: { ...s.markers, [docId]: list } };
     });
+  },
+
+  setLastSplitMarker(v) {
+    set({ lastSplitMarker: v });
   },
 }));

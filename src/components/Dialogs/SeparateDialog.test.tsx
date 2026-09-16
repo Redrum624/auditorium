@@ -39,6 +39,10 @@ import {
   type Diarization,
   type DiarizationEvidence,
 } from '../../dsp/diarization';
+import { createClip, createTrack } from '../../multitrack/session'; // lot E
+import { useSessionStore } from '../../multitrack/sessionStore'; // lot E
+// Fix round 5 (lot D) — the pass lock gates Download Model(s).
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // The RemixDialog.test.tsx / ConvertDialog.test.tsx pattern: everything pure
 // (the label lists, the constants, the formatting) stays REAL via requireActual;
@@ -151,6 +155,11 @@ function makeLanding(overrides: Partial<StemLandingResult> = {}): StemLandingRes
     monoRoutedAsDualMono: false,
     sourcePeak: 0.8,
     exactSumHolds: true,
+    // Lot E: these mocked landings stand in for `landStems`/`landVoice`, which
+    // this dialog no longer reads for the arm — the dialog's own copy comes
+    // from the LIVE `planLanding` selector, not from the landing result.
+    landingMode: 'replaced',
+    landedStartSample: 0,
     ...overrides,
   };
 }
@@ -203,6 +212,7 @@ beforeEach(() => {
   mockSeparate.mockResolvedValue({ ok: true, output: makeOutput() });
   mockCancel.mockResolvedValue(true);
   mockLandStems.mockReturnValue(makeLanding());
+  _resetPassLock();
 });
 
 describe('SeparateDialog', () => {
@@ -272,6 +282,34 @@ describe('SeparateDialog', () => {
     );
     expect(screen.getByTestId('separate-error')).toHaveClass('text-[#e0a458]');
     expect(screen.getByRole('button', { name: 'Download Model' })).toBeEnabled();
+  });
+
+  // Fix round 5 (lot D) — the sweep's fourth sibling of the AlignLyricsDialog
+  // (fix round 4) / TranscribeDialog (fix round 5) Download-Model(s) gap:
+  // `handleSeparate` already carried `isPassRunning()` (fix round 1), but
+  // this dialog's OWN download start seam never did, and the button had no
+  // `disabled` prop of any kind, not even the local `downloading` flag.
+  it('4b. the pass lock gates Download Model — disables it, and a click starts nothing, while a foreign pass holds the lock', async () => {
+    seedDoc();
+    mockModelState.mockResolvedValue(MISSING);
+    await renderSettled();
+    const download = () => screen.getByRole('button', { name: 'Download Model' }) as HTMLButtonElement;
+    expect(download().disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(download().disabled).toBe(true);
+
+    fireEvent.click(download());
+    expect(mockEnsureModel).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(download().disabled).toBe(false);
   });
 
   it('5. the header follows the live active document', async () => {
@@ -1936,5 +1974,38 @@ describe('SeparateDialog — voice mode (D5, three stages)', () => {
     expect(mockLandStems).toHaveBeenCalledTimes(1);
     expect(mockDiarize).not.toHaveBeenCalled();
     expect(mockLandSpeakers).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lot E (acceptance 11) — the arm-aware copy. `sessionLanding` is deliberately
+// NOT mocked above (only `stemLanding`'s landing calls are): `planLanding` is
+// a handful of array scans, and mocking it would test the mock's return value
+// rather than the live selector `SeparateDialog` reads it through.
+// ---------------------------------------------------------------------------
+describe('lot E — the arm-aware copy', () => {
+  it('with the active document already on a clip in the open session, separate-produces says "in place of" and separate-guarantees adds the mix-down qualifier', async () => {
+    const doc = seedDoc('song.wav', 16 * SR);
+    const track = createTrack('Track 1');
+    track.clips = [
+      createClip({ documentId: doc.id, startSample: 5000, offsetSample: 0, lengthSample: 1000 }),
+    ];
+    useSessionStore.setState({ session: { name: 'My Session', sampleRate: SR, tracks: [track] } });
+
+    await renderSettled();
+
+    expect(screen.getByTestId('separate-produces')).toHaveTextContent('in place of');
+    expect(screen.getByTestId('separate-guarantees')).toHaveTextContent(
+      'Mixing the session down now gives you the whole session'
+    );
+  });
+
+  it('with an empty session, separate-produces still promises a new multitrack session (E3 unchanged)', async () => {
+    seedDoc('song.wav', 16 * SR);
+    useSessionStore.getState().newSession(SR);
+
+    await renderSettled();
+
+    expect(screen.getByTestId('separate-produces')).toHaveTextContent('in a new multitrack session');
   });
 });

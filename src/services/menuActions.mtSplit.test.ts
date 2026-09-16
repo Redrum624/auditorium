@@ -13,8 +13,14 @@ import * as snapPreference from './snapPreference';
  * the command's registration are item 8's and are not re-tested here; what
  * this file pins is the routing: in the multitrack view the command reads the
  * SESSION (the clip selection, the clips, `mtCursorSample`) and writes clips,
- * and the four region verbs beside it stay refused (M7) while the hidden
- * active document is not touched at all.
+ * while the hidden active document is not touched at all.
+ *
+ * X-4 (final fix wave): this used to say "the four region verbs beside it
+ * stay refused (M7)" — true at the time (Cut/Copy/Paste/Trim/Silence were all
+ * unconditionally disabled in multitrack), but lots J and L since gave
+ * Trim/Silence and Copy/Paste their own multitrack arms (see
+ * `menuActions.mtTrim.test.ts`, `clipClipboard.test.ts`). Only `edit.cut`
+ * (M7) still stays refused outright in this view.
  */
 
 const store = () => useSessionStore.getState();
@@ -38,6 +44,7 @@ function seed(
     session,
     selectedClipId: null,
     selectedClipIds: [],
+    lastSplit: null, // G6 (item 7) — every fixture starts with a clean anchor
     mtCursorSample: 0,
     mtPlayState: 'stopped',
     mtPlayheadSample: 0,
@@ -190,16 +197,44 @@ describe('edit.split in the Multitrack view — what it must NOT touch (M1/M7)',
     expect(clipsOn(0)).toHaveLength(2);
   });
 
-  it('3f keeps Cut / Copy / Paste / Trim / Silence refused in that same armed state', () => {
+  // Lot L (items 11/12, R25) — Copy's premise here is obsoleted: a clip IS
+  // selected in this fixture (`setSelectedClip` below), and `canCopyClips`
+  // now answers `true` for exactly that state, so Copy is no longer part of
+  // the refused set. What this test protects — that a hidden-document verb
+  // never silently reaches the armed document from the multitrack view — is
+  // unaffected and re-pinned for Cut and Paste; Copy's own new behaviour
+  // (it now edits the SESSION's clipboard, not the hidden document) is the
+  // whole subject of `menuActions.mtClipboard.test.ts`.
+  it('3f keeps Cut / Paste refused in that same armed state; Copy is live once a clip is selected (L1)', () => {
     armedInMultitrack();
     const { ids } = seed([[[1000, 3000]]], 'doc-1');
     store().setSelectedClip(ids[0][0]);
     store().setMtCursor(2000);
 
     expect(isCommandEnabled('edit.split')).toBe(true);
-    for (const id of ['edit.cut', 'edit.copy', 'edit.paste', 'edit.trim', 'edit.silence']) {
+    expect(isCommandEnabled('edit.copy')).toBe(true); // L1: a clip is selected
+    for (const id of ['edit.cut', 'edit.paste']) {
       expect(isCommandEnabled(id)).toBe(false);
     }
+  });
+
+  // Lot J (item 10) — Trim/Silence are view-routed now (`edit.trim`/
+  // `edit.silence`, `menuActions.ts`), not gated on the document view at
+  // all: refused here with NO multitrack time range standing, and live once
+  // one is — the sibling `menuActions.mtTrim.test.ts` owns the fuller
+  // enablement/scope suite; this is the narrow pin that keeps 3f's own
+  // fixture honest about what changed.
+  it('3f-j Trim/Silence: refused with no range, live with one, in this same armed state', () => {
+    armedInMultitrack();
+    seed([[[1000, 3000]]], 'doc-1');
+
+    expect(useSessionStore.getState().mtTimeRange).toBeNull();
+    expect(isCommandEnabled('edit.trim')).toBe(false);
+    expect(isCommandEnabled('edit.silence')).toBe(false);
+
+    store().setMtTimeRange({ startSample: 500, endSample: 2_500 });
+    expect(isCommandEnabled('edit.trim')).toBe(true);
+    expect(isCommandEnabled('edit.silence')).toBe(true);
   });
 
   it('3g never consults the snap preference (N1)', async () => {
@@ -227,5 +262,26 @@ describe('edit.split in the Multitrack view — what it must NOT touch (M1/M7)',
     // Fully armed for the multitrack arm, but no document is open, and item
     // 8's editor arm needs one.
     expect(isCommandEnabled('edit.split')).toBe(false);
+  });
+});
+
+describe('edit.split in the Multitrack view — item 7 (G1-G6): Delete narrows to the middle piece', () => {
+  it('3i after two cuts, edit.delete removes only the middle piece — FAILS TODAY', async () => {
+    // X3: startSample 6000 (never 0), lengthSample 30000, cuts at 16000/24000.
+    const { ids } = seed([[[6000, 30000]]]);
+    store().setSelectedClip(ids[0][0]);
+
+    store().setMtCursor(16000);
+    await runCommand('edit.split');
+    store().setMtCursor(24000);
+    await runCommand('edit.split');
+
+    expect(store().selectedClipIds).toHaveLength(1);
+
+    await runCommand('edit.delete');
+
+    const clips = clipsOn(0);
+    expect(clips.map((c) => c.startSample)).toEqual([6000, 24000]);
+    expect(clips.map((c) => c.lengthSample)).toEqual([10000, 12000]);
   });
 });

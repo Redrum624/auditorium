@@ -255,6 +255,42 @@ describe('PipelineToolHost — the card’s width is measured, not chosen', () =
     expect(1600 - COLUMN_MARGIN - (COLUMN_MARGIN + TOOL_HOST_WIDTH + COLUMN_MARGIN)).toBe(918);
   });
 
+  /**
+   * C-e (lot C, item 3) — the same hiding contract `EffectHost` carries (X2:
+   * one surface, one rule): `data-backgrounded`, the `hidden` attribute and
+   * inline `display:none` together, since the card's own Tailwind `flex`
+   * className would otherwise beat the UA `[hidden]` rule alone.
+   */
+  it('backgrounded: hides via data-backgrounded, the hidden attribute and inline display:none', () => {
+    act(() =>
+      useAppStore
+        .getState()
+        .addDocument(
+          createDocument({ name: 'a.wav', sampleRate: 44100, channels: [new Float32Array(4410)] })
+        )
+    );
+    const { rerender } = render(
+      <PipelineToolHost commandId="lyrics.align" onClose={() => {}} onModuleLockChange={() => {}} />
+    );
+    const visible = screen.getByTestId('tool-host');
+    expect(visible).not.toHaveAttribute('data-backgrounded');
+    expect(visible).not.toHaveAttribute('hidden');
+    expect(visible.style.display).not.toBe('none');
+
+    rerender(
+      <PipelineToolHost
+        commandId="lyrics.align"
+        backgrounded
+        onClose={() => {}}
+        onModuleLockChange={() => {}}
+      />
+    );
+    const hidden = screen.getByTestId('tool-host');
+    expect(hidden).toHaveAttribute('data-backgrounded', 'true');
+    expect(hidden).toHaveAttribute('hidden');
+    expect(hidden.style.display).toBe('none');
+  });
+
   it('mounts the tool with no backdrop and no modal role', () => {
     // Match Tempo renders nothing without an active document (TempoDialog's own
     // guard), so the state under test needs one.

@@ -10,10 +10,12 @@ import {
   runCommand,
 } from '../../services/menuActions';
 import type { MenuCommand } from '../../services/menuActions';
-import { openEffectDialog } from '../../services/dialogBus';
 import { getPipelineGroups } from '../../services/pipelineTools';
+import { _resetPassLock, acquirePass } from '../../services/passLock';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { createDocument, type AudioDocument } from '../../audio/AudioDocument';
+import { createClip } from '../../multitrack/session';
+import { useSessionStore } from '../../multitrack/sessionStore';
 
 // The REAL registry — every predicate under test has to be the menu's own —
 // with only the runner spied: a click has to reach `runCommand(id)`, and
@@ -24,14 +26,6 @@ jest.mock('../../services/menuActions', () => {
   return { ...actual, runCommand: jest.fn(async () => {}) };
 });
 const mockRunCommand = runCommand as jest.MockedFunction<typeof runCommand>;
-
-// The effect rows above the Mix row open their card through the bus; spy on
-// that one opener so the click is observable without mounting App's column.
-jest.mock('../../services/dialogBus', () => {
-  const actual = jest.requireActual('../../services/dialogBus');
-  return { ...actual, openEffectDialog: jest.fn() };
-});
-const mockOpenEffectDialog = openEffectDialog as jest.MockedFunction<typeof openEffectDialog>;
 
 // The panel lists `getVisibleEffects()`, which is empty until the effects
 // register — App.tsx does both of these at startup, and MenuBar.test.tsx uses
@@ -97,7 +91,6 @@ function expectRowsMirrorTheRegistry(): void {
 beforeEach(() => {
   useAppStore.setState(makeInitialState());
   mockRunCommand.mockClear();
-  mockOpenEffectDialog.mockClear();
 });
 
 describe('EffectsPanel — the effect list stays first and untouched', () => {
@@ -115,15 +108,20 @@ describe('EffectsPanel — the effect list stays first and untouched', () => {
   // Item 6 (2026-08-18): "all effects open with a single click". The row used
   // to demand a double-click (a parameter set the user was about to fill in);
   // an effect now opens as a card in the module column, one click like a tool
-  // row, and the registry id is what reaches the bus.
+  // row. Lot M: the row is routed through `runCommand('effect.<id>')` now,
+  // not a direct `openEffectDialog` call — that direct call was the one
+  // caller left that bypassed `isCommandEnabled` (App.tsx's `openEffect`
+  // guard existed as defence in depth specifically for it), and going
+  // through the command is what lets the pass lock gate this row like every
+  // other door.
   it('opens an effect on a SINGLE click, never on a row without a document', () => {
     addDoc();
     render(<EffectsPanel />);
     const first = within(screen.getAllByTestId('effects-item')[0]).getByRole('button');
 
     fireEvent.click(first);
-    expect(mockOpenEffectDialog).toHaveBeenCalledTimes(1);
-    expect(mockOpenEffectDialog).toHaveBeenCalledWith(getVisibleEffects()[0].id);
+    expect(mockRunCommand).toHaveBeenCalledTimes(1);
+    expect(mockRunCommand).toHaveBeenCalledWith(`effect.${getVisibleEffects()[0].id}`);
   });
 
   it('keeps every effect row disabled with no document, so a click opens nothing', () => {
@@ -132,7 +130,7 @@ describe('EffectsPanel — the effect list stays first and untouched', () => {
     expect(first).toBeDisabled();
 
     fireEvent.click(first);
-    expect(mockOpenEffectDialog).not.toHaveBeenCalled();
+    expect(mockRunCommand).not.toHaveBeenCalled();
   });
 });
 
@@ -292,5 +290,79 @@ describe('EffectsPanel — the sections cost the card no size', () => {
       expect([id, cls.includes('w-[calc(100%-0.5rem)]')]).toEqual([id, true]);
     }
     expect(effect.className).toContain('truncate');
+  });
+});
+
+// Lot M, acceptance 10 — the effect row now reads the app-wide pass lock
+// through the registry (`effect.<id>`'s own `enabled`), not a parallel flag.
+describe('EffectsPanel — a running pass disables every effect row (lot M)', () => {
+  afterEach(() => {
+    _resetPassLock();
+  });
+
+  it('disables a row and names the running pass, without letting a click through', () => {
+    addDoc();
+    render(<EffectsPanel />);
+    const first = within(screen.getAllByTestId('effects-item')[0]).getByRole('button');
+    fireEvent.click(first);
+    expect(mockRunCommand).toHaveBeenCalledTimes(1);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({
+        id: 'edit.separateStems',
+        label: 'Separate into Stems',
+        kind: 'pipeline',
+      });
+    });
+
+    // Re-query: the row is the same button, but its own attributes change.
+    const row = within(screen.getAllByTestId('effects-item')[0]).getByRole('button');
+    expect(row).toBeDisabled();
+    expect(row.title).toContain('Separate into Stems');
+
+    fireEvent.click(row);
+    // A disabled button swallows the click natively — the counter a PRIOR
+    // enabled click already produced stays at exactly 1.
+    expect(mockRunCommand).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      release!();
+    });
+  });
+});
+
+// Lot D (item 4) — the same freshness pin `PipelinePanel.test.tsx` carries
+// (acceptance 10), for this card's identical two selectors: `hasPassTarget`'s
+// multitrack arm reads the SESSION store, which the pre-existing
+// `useAppStore((s) => s)` subscription cannot see on its own.
+describe('EffectsPanel — session-store freshness (lot D, item 4)', () => {
+  it('re-enables the first effect row the render after a clip is selected outside React', () => {
+    useSessionStore.getState().newSession(44100);
+    const doc = addDoc();
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+      useSessionStore.getState().addTrack();
+    });
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: doc.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    act(() => {
+      useSessionStore.getState().addClip(trackId, clip);
+    });
+
+    render(<EffectsPanel />);
+    const row = () => within(screen.getAllByTestId('effects-item')[0]).getByRole('button');
+    expect(row()).toBeDisabled();
+
+    act(() => {
+      useSessionStore.getState().setSelectedClips([clip.id]);
+    });
+
+    expect(row()).not.toBeDisabled();
   });
 });

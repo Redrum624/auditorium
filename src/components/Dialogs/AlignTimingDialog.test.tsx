@@ -7,6 +7,7 @@ import { getTempo, regridTempo } from '../../services/tempoAnalysis';
 import { applyTimingAlignment, suggestSyllableMarkers } from '../../services/timingAlignService';
 import { CONFIDENCE_LOW } from '../../dsp/tempoCore';
 import { DEFAULT_STRENGTH } from '../../dsp/timingWarp';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // `buildAlignPlan` stays REAL (requireActual) so the dialog's summary numbers
 // are the service's actual arithmetic and cannot drift from it; only the
@@ -84,6 +85,8 @@ beforeEach(() => {
   mockGetTempo.mockReturnValue(null);
   mockApply.mockResolvedValue({ ok: true, markersMoved: 3 });
   mockSuggest.mockReturnValue({ added: 12, truncated: false, analysedSeconds: 12 });
+  // Final fix wave: module-level state, like the app store above.
+  _resetPassLock();
 });
 
 function open(): void {
@@ -373,6 +376,63 @@ describe('AlignTimingDialog — octave correction', () => {
     expect(screen.getByTestId('align-grid-confirmed')).toBeChecked();
     fireEvent.click(screen.getByTestId('align-octave-double'));
     await waitFor(() => expect(screen.getByTestId('align-grid-confirmed')).not.toBeChecked());
+  });
+
+  // Final fix wave (item 13) — `regridTempo` spawns the same Worker
+  // `tempo.detect` runs behind `runExclusivePass`; this door had no gate
+  // before this wave. Same shape as `AlignLyricsDialog.test.tsx`'s "the pass
+  // lock gates Record and Download Model".
+  it('disables x2/÷2 while a foreign pass holds the lock, and a click on either starts nothing', () => {
+    const doc = seedDoc();
+    offBeatMarkers(doc.id, 1500);
+    mockGetTempo.mockReturnValue({ periodFrames: 40, bpm: 120 } as never);
+    open();
+    expect(screen.getByTestId('align-octave-double')).not.toBeDisabled();
+    expect(screen.getByTestId('align-octave-half')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(screen.getByTestId('align-octave-double')).toBeDisabled();
+    expect(screen.getByTestId('align-octave-half')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('align-octave-double'));
+    fireEvent.click(screen.getByTestId('align-octave-half'));
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('align-octave-double')).not.toBeDisabled();
+    expect(screen.getByTestId('align-octave-half')).not.toBeDisabled();
+  });
+
+  // Second round — the IMPERATIVE layer, isolated from the reactive
+  // `disabled` binding above. `acquirePass` is deliberately NOT wrapped in
+  // `act()`: the lock is genuinely held (module state, read directly by
+  // `runExclusivePass` inside `correctOctave`), but React has not yet
+  // re-rendered in response, so the DOM still shows the controls enabled —
+  // "dispatch on an enabled control with the lock held". A plain "click
+  // while disabled" test cannot tell the reactive layer from the imperative
+  // one (deleting the imperative hold leaves that test green); this only
+  // stays green if the handler itself holds the lock.
+  it('the imperative hold refuses x2/÷2 before React re-renders them disabled', () => {
+    const doc = seedDoc();
+    offBeatMarkers(doc.id, 1500);
+    mockGetTempo.mockReturnValue({ periodFrames: 40, bpm: 120 } as never);
+    open();
+    const double = screen.getByTestId('align-octave-double') as HTMLButtonElement;
+    const half = screen.getByTestId('align-octave-half') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(double.disabled).toBe(false);
+    expect(half.disabled).toBe(false);
+    fireEvent.click(double);
+    fireEvent.click(half);
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    release!();
   });
 });
 

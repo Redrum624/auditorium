@@ -22,6 +22,13 @@ import {
   type TempoEntry,
 } from '../../services/tempoAnalysis';
 import { CONFIDENCE_LOW, MIN_ANALYSIS_SECONDS } from '../../dsp/tempoCore';
+import { PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** The SAME descriptor `tempo.detect`'s menu command acquires
+ * (`menuActions.ts`'s `registerTempoCommands`) — reused rather than a second
+ * one, so the running-pass label reads "Detect Tempo" everywhere this work
+ * can be started from, not once per door. */
+const TEMPO_DETECT_PASS = { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' } as const;
 
 const GAIN_MIN = -24;
 const GAIN_MAX = 24;
@@ -119,6 +126,11 @@ function formatTempoValue(entry: TempoEntry, analyzedSeconds: number): string {
  */
 function TempoSection({ doc }: { doc: AudioDocument }) {
   useTempoVersion();
+  // Final fix wave (item 13) — this file never imported `passLock` at all:
+  // Detect Tempo / Re-analyze and the x2/÷2 buttons below spawned the same
+  // Worker `tempo.detect` runs behind `runExclusivePass` at the menu, with
+  // nothing gating this door.
+  const runningPass = usePassLock();
   const [correctionFailed, setCorrectionFailed] = useState(false);
   // `regridTempo`'s own promise resolving is this component's most direct
   // signal that the correction it just requested has settled — rather than
@@ -131,9 +143,19 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
   const running = isTempoRunning(doc.id);
   const entry = getTempo(doc);
 
+  // Final fix wave, second round — HOLDS the lock (`runExclusivePass`), not
+  // merely refuses on it: this is user-initiated tempo work, exactly the
+  // `tempo.detect` menu row's own comment describes ("one of the three
+  // bodies that must take the lock itself rather than relying on a card's
+  // own `handleToolModuleLock` publish"). Distinguish this from RemixDialog's
+  // deliberately-UNheld mount analysis (`runRemixAnalysis`, `:135-158`
+  // there) — that one is automatic, started by opening the dialog, not by a
+  // press; nothing here runs without the user clicking Detect/Re-analyze/
+  // x2/÷2 first.
   async function correct(newPeriodFrames: number): Promise<void> {
     setCorrectionFailed(false);
-    const result = await regridTempo(doc.id, newPeriodFrames);
+    const result = await runExclusivePass(TEMPO_DETECT_PASS, () => regridTempo(doc.id, newPeriodFrames));
+    if (result === PASS_REFUSED) return; // defence in depth — the button is already disabled for this
     setCorrectionFailed(result === null);
     forceRerender((n) => n + 1);
   }
@@ -143,7 +165,7 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
   // correction-failed notice so it can't linger over an unrelated fresh run.
   function detectOrReanalyze(): void {
     setCorrectionFailed(false);
-    void runTempoAnalysis(doc);
+    void runExclusivePass(TEMPO_DETECT_PASS, () => runTempoAnalysis(doc));
   }
 
   return (
@@ -173,7 +195,8 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
                     data-testid="tempo-halve-button"
                     title="Halve tempo (/2) — re-tracks the beat grid"
                     onClick={() => void correct(entry.periodFrames * 2)}
-                    className="rounded border border-[#3a3a42] px-1 text-[#d4d4d8] hover:border-[#26c6da]"
+                    disabled={runningPass !== null}
+                    className="rounded border border-[#3a3a42] px-1 text-[#d4d4d8] hover:border-[#26c6da] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     /2
                   </button>
@@ -182,7 +205,8 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
                     data-testid="tempo-double-button"
                     title="Double tempo (x2) — re-tracks the beat grid"
                     onClick={() => void correct(entry.periodFrames / 2)}
-                    className="rounded border border-[#3a3a42] px-1 text-[#d4d4d8] hover:border-[#26c6da]"
+                    disabled={runningPass !== null}
+                    className="rounded border border-[#3a3a42] px-1 text-[#d4d4d8] hover:border-[#26c6da] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     x2
                   </button>
@@ -206,11 +230,21 @@ function TempoSection({ doc }: { doc: AudioDocument }) {
             </div>
           )}
           {entry.stale && (
-            <PanelActionButton testId="tempo-reanalyze-button" label="Re-analyze" onClick={detectOrReanalyze} />
+            <PanelActionButton
+              testId="tempo-reanalyze-button"
+              label="Re-analyze"
+              onClick={detectOrReanalyze}
+              disabled={runningPass !== null}
+            />
           )}
         </>
       ) : (
-        <PanelActionButton testId="tempo-analyze-button" label="Detect Tempo" onClick={detectOrReanalyze} />
+        <PanelActionButton
+          testId="tempo-analyze-button"
+          label="Detect Tempo"
+          onClick={detectOrReanalyze}
+          disabled={runningPass !== null}
+        />
       )}
     </div>
   );

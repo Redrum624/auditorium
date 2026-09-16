@@ -1,6 +1,8 @@
 import { getPipelineGroups } from '../../services/pipelineTools';
-import { isCommandEnabled, runCommand } from '../../services/menuActions';
+import { commandReason, isCommandEnabled, runCommand } from '../../services/menuActions';
+import { usePassLock } from '../../services/passLock';
 import { useAppStore } from '../../stores/appStore';
+import { useSessionStore } from '../../multitrack/sessionStore';
 import { SectionLabel } from '../UI/glass';
 
 /**
@@ -35,6 +37,17 @@ export default function PipelinePanel() {
   // subscription, for the same reason: these tools are gated on more than the
   // active document id (most also need audio in it).
   useAppStore((s) => s);
+  // Lot M: the pass lock is module state, not zustand — subscribe so a row's
+  // reason/greying is recomputed the instant the lock moves.
+  usePassLock();
+  // Lot D (item 4) — `hasPassTarget`'s multitrack arm reads the SESSION
+  // store's `session`/`selectedClipIds` (`clipPassTarget()`), which the
+  // `useAppStore` subscription above cannot see: without these two, a row
+  // would grey/un-grey one render LATE the instant a clip is selected —
+  // acceptance 10's freshness pin. Narrow selectors, not the whole session
+  // store: `EditToolbar.tsx`'s identical precedent for the same reason.
+  useSessionStore((s) => s.session);
+  useSessionStore((s) => s.selectedClipIds);
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
   const hasDoc = activeDocumentId !== null;
   const groups = getPipelineGroups();
@@ -64,9 +77,10 @@ export default function PipelinePanel() {
                       title={
                         enabled
                           ? `Click to run ${label}`
-                          : hasDoc
-                            ? `${label} — not available for this file right now`
-                            : 'Open a file first'
+                          : (commandReason(id) ??
+                            (hasDoc
+                              ? `${label} — not available for this file right now`
+                              : 'Open a file first'))
                       }
                       className={ROW_BUTTON_CLASS}
                     >

@@ -18,6 +18,12 @@ import { registerDialogSetters } from '../../services/dialogBus';
 import { createDocument } from '../../audio/AudioDocument';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { stageById } from '../../services/vocalChain';
+// Fix round 3 (review findings 2/3) — the target re-assertion at Run/Replace.
+import { useSessionStore } from '../../multitrack/sessionStore';
+import { createClip } from '../../multitrack/session';
+import { beginClipWork, clipWorkTargetId, _resetClipWork } from '../../services/clipPass';
+// Fix round 4 (finding 1) — the Record/Download-Model pass-lock gate.
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // ---------------------------------------------------------------------------
 // Fixture — the same construction the service test uses, kept small: three
@@ -317,6 +323,7 @@ afterEach(() => {
   jest.restoreAllMocks();
   _resetAlignmentsForTest();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  _resetPassLock();
 });
 
 // ---------------------------------------------------------------------------
@@ -832,6 +839,151 @@ describe('AlignLyricsDialog — model, run and refusals', () => {
     });
     await settle();
     expect(screen.getByTestId('align-lyrics-dropped-words')).toHaveTextContent('24');
+  });
+});
+
+// Lot D fix round 3 (review findings 2/3) — `canAlign`/`canReplace` re-assert
+// the clip-work target at Run/Replace, not only at open. This is what makes
+// it SAFE for `App.tsx`'s drift watcher to DEFER closing this dialog when it
+// holds unrecoverable input (typed lyrics, a recorded take) rather than
+// silently discarding it: even left open and stale, it cannot itself commit
+// a wrong-document write.
+describe('target re-assertion at Run (lot D fix round 3, findings 2/3)', () => {
+  afterEach(() => {
+    _resetClipWork();
+  });
+
+  it('disables Align once the clip-work target drifts away from the active document', async () => {
+    const docId = seedDoc();
+    useSessionStore.getState().newSession(SR);
+    useSessionStore.getState().addTrack();
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({
+      documentId: docId,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 4096,
+    });
+    useSessionStore.getState().addClip(trackId, clip);
+    useSessionStore.getState().setSelectedClips([clip.id]);
+    useAppStore.getState().setView('multitrack');
+
+    // Mirrors `App.tsx`'s `openTool`: mints a working copy and activates it
+    // BEFORE the dialog ever mounts — the ordinary, correctly-scoped case.
+    beginClipWork('lyrics.align');
+    const workId = clipWorkTargetId('tool');
+    expect(workId).not.toBeNull();
+    expect(useAppStore.getState().activeDocumentId).toBe(workId);
+
+    open();
+    await settle();
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
+    expect(screen.getByTestId('align-lyrics-run')).not.toBeDisabled();
+
+    // The drift: some other writer (a Files-panel row, in the real app)
+    // moves the active document away from this dialog's own working copy —
+    // exactly the state `App.tsx`'s drift watcher would otherwise close this
+    // host over, deferred here because it holds typed lyrics.
+    act(() => {
+      useAppStore.getState().setActiveDocument(docId);
+    });
+
+    expect(screen.getByTestId('align-lyrics-run')).toBeDisabled();
+  });
+
+  it('stays enabled outside multitrack regardless of clipWorkTargetId (D1 unchanged)', async () => {
+    seedDoc();
+    // Never entered multitrack — `view` stays 'waveform' (makeInitialState's
+    // default) — so `clipWorkTargetId('tool')` is irrelevant by construction.
+    open();
+    await settle();
+    fireEvent.change(screen.getByTestId('align-lyrics-text'), { target: { value: 'la la la' } });
+
+    expect(screen.getByTestId('align-lyrics-run')).not.toBeDisabled();
+  });
+});
+
+// Lot D fix round 4 (finding 1) — M1: a foreign pass already holding
+// `passLock.ts`'s app-wide lock must refuse the Record and Download-Model
+// doors exactly as it refuses every other pass-start door in the app.
+// `busy` (this dialog's own local flag) said nothing about a lock held
+// elsewhere — the same "real start seam" `handleAlign` already had.
+describe('the pass lock gates Record and Download Model (fix round 4, finding 1)', () => {
+  it('disables Record replacement while a foreign pass holds the lock, even with a word selected', async () => {
+    seedDoc();
+    open(new FakeEngine());
+    await settle();
+    await alignIn();
+    fireEvent.click(screen.getByTestId('align-lyrics-word-1'));
+    expect((screen.getByTestId('align-lyrics-record') as HTMLButtonElement).disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+
+    expect((screen.getByTestId('align-lyrics-record') as HTMLButtonElement).disabled).toBe(true);
+
+    act(() => {
+      release!();
+    });
+    expect((screen.getByTestId('align-lyrics-record') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a click on a disabled Record button starts nothing — the microphone is never acquired', async () => {
+    seedDoc();
+    const engine = new FakeEngine();
+    open(engine);
+    await settle();
+    await alignIn();
+    fireEvent.click(screen.getByTestId('align-lyrics-word-1'));
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    fireEvent.click(screen.getByTestId('align-lyrics-record'));
+
+    // A disabled button swallows the click natively; the defence-in-depth
+    // check inside `handleRecord` covers a direct call bypassing the button.
+    // Either way, the visible outcome is the same: no Stop button appeared.
+    expect(screen.queryByTestId('align-lyrics-stop-record')).toBeNull();
+    expect(engine.started).toHaveLength(0);
+
+    act(() => {
+      release!();
+    });
+  });
+
+  it('disables Download Model while a foreign pass holds the lock', async () => {
+    const docId = seedDoc();
+    bridge.alignModelState.mockResolvedValue({
+      downloaded: false,
+      bytes: null,
+      expectedBytes: ALIGN_MODEL_BYTES,
+    });
+    open();
+    await settle();
+    expect(screen.getByTestId('align-lyrics-model-missing')).toBeInTheDocument();
+    const download = () => screen.getByRole('button', { name: 'Download Model' }) as HTMLButtonElement;
+    expect(download().disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(download().disabled).toBe(true);
+
+    fireEvent.click(download());
+    // Nothing started — the download-progress UI never appears.
+    expect(screen.queryByTestId('align-lyrics-download-status')).toBeNull();
+
+    act(() => {
+      release!();
+    });
+    expect(download().disabled).toBe(false);
+    void docId;
   });
 });
 

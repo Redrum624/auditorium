@@ -423,7 +423,11 @@ export type ApplyMeasuredOffsetResult =
     }
   | { applied: false; reason: string };
 
-function locate(tracks: readonly Track[], documentId: string): { track: Track; clip: Clip } | null {
+/** Lot E — exported so `sessionLanding.planLanding` can find the anchor clip
+ * for a document without writing a second copy of this scan. First match in
+ * TRACK order, then in each track's own `clips` array order — the same
+ * "first in track then clip order" a landing's anchor uses. */
+export function locate(tracks: readonly Track[], documentId: string): { track: Track; clip: Clip } | null {
   for (const track of tracks) {
     const clip = track.clips.find((c) => c.documentId === documentId);
     if (clip) return { track, clip };

@@ -29,6 +29,7 @@ import {
   guessKind,
 } from '../../services/coverPlacement';
 import { clearHistory, pushUndo } from '../../services/undoHistory';
+import { _resetPassLock, acquirePass } from '../../services/passLock';
 
 // The STAGE TABLE stays real (requireActual): the dialog's whole contract is
 // that it lists what the engine will actually run, in the engine's order, with
@@ -126,6 +127,11 @@ beforeEach(() => {
     fadeOutSample: 1200,
     cursorSample: 0,
   });
+  _resetPassLock();
+});
+
+afterEach(() => {
+  _resetPassLock();
 });
 
 function open(): void {
@@ -228,6 +234,34 @@ describe('CoverChainDialog — the two inputs', () => {
     open();
     choose();
     expect(screen.queryByTestId('cover-journey-not-ready')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cover-chain-apply')).not.toBeDisabled();
+  });
+
+  // Fix round 3 (item 3) — a real defect fix round 1 introduced: `ready`
+  // (inputs chosen AND the lock free) fed BOTH the amber hint and the
+  // button, so with two valid documents already picked but a FOREIGN pass
+  // holding the lock, the hint stayed up and told the user to "choose two
+  // different documents" — a claim about the pickers that was false. The
+  // hint must speak only to the inputs; the button alone speaks to both.
+  it('does NOT show the "choose two different documents" hint when the inputs are valid but a foreign pass holds the lock', () => {
+    open();
+    choose();
+    expect(screen.queryByTestId('cover-journey-not-ready')).not.toBeInTheDocument();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'edit.transcribe', label: 'Transcribe', kind: 'pipeline' });
+    });
+
+    // The button reflects the lock…
+    expect(screen.getByTestId('cover-chain-apply')).toBeDisabled();
+    // …but the hint, which is about the PICKERS, must not reappear — the
+    // inputs are still exactly as valid as they were before the lock.
+    expect(screen.queryByTestId('cover-journey-not-ready')).not.toBeInTheDocument();
+
+    act(() => {
+      release!();
+    });
     expect(screen.getByTestId('cover-chain-apply')).not.toBeDisabled();
   });
 

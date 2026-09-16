@@ -6,6 +6,7 @@ import { getTempo, regridTempo, runTempoAnalysis } from '../../services/tempoAna
 import { applyTempoChange, detectRegionTempo } from '../../services/tempoService';
 import type { TempoEntry } from '../../services/tempoAnalysis';
 import type { TempoChangeOutcome } from '../../services/tempoService';
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 // Real tempoAnalysis/tempoService (checkTempoChange, tempoRatio, tempoQualityBand,
 // the exported ratio constants, MAX_BEAT_MARKERS) stay REAL via requireActual so
@@ -70,6 +71,9 @@ beforeEach(() => {
   mockRunTempoAnalysis.mockResolvedValue(null);
   mockDetectRegionTempo.mockReturnValue(null);
   mockApplyTempoChange.mockResolvedValue({ ok: true });
+  // Final fix wave: module-level state, like the app store above — a test
+  // that leaves the lock held would wedge every test after it.
+  _resetPassLock();
 });
 
 describe('TempoDialog', () => {
@@ -106,6 +110,39 @@ describe('TempoDialog', () => {
     expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled(); // Source still empty
 
     fireEvent.change(screen.getByTestId('tempo-source'), { target: { value: '100' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+  });
+
+  // X-1 (final fix wave) — evidence for the branch decision on the C5/
+  // multitrack ruling: `canApply` has no target-liveness re-check of its own
+  // (no `clipWorkTargetId`/frozen-id comparison anywhere in this file, unlike
+  // `EffectDialog.canApply` / `AlignLyricsDialog.canAlign`'s `targetStillLive`).
+  // Rendered directly (bypassing `App.tsx`'s clip-work drift watcher, which is
+  // the thing that actually protects this dialog in the real app today) to
+  // isolate the dialog's OWN gate. Proves that relaxing the watcher so it no
+  // longer closes a host on a sibling clip-work mint would NOT be safe for
+  // `tempo.match` — Apply would stay enabled and silently target whatever
+  // document is now active.
+  it('X-1: Apply stays enabled against a NEW active document with no re-check — this dialog alone cannot police the multitrack target', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(makeEntry({ bpm: null, confidence: 0, beatSamples: Int32Array.from([]) }));
+    render(<TempoDialog onClose={jest.fn()} />);
+
+    fireEvent.change(screen.getByTestId('tempo-target'), { target: { value: '110' } });
+    fireEvent.change(screen.getByTestId('tempo-source'), { target: { value: '100' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+
+    // The drift: a second document becomes active while this dialog stays
+    // mounted, exactly what a sibling effect-card/tool mint does in
+    // multitrack before the App-level watcher would unmount this dialog.
+    const docB = createDocument({ name: 'other.wav', sampleRate: 44100, channels: [new Float32Array(44100)] });
+    act(() => {
+      useAppStore.getState().addDocument(docB); // also makes it active
+    });
+    expect(useAppStore.getState().activeDocumentId).toBe(docB.id);
+
+    // No refusal: this dialog has nothing that would catch the drift on its
+    // own, which is exactly why `App.tsx` still closes it instead.
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
   });
 
@@ -234,7 +271,13 @@ describe('TempoDialog', () => {
 
     await waitFor(() => expect(mockApplyTempoChange).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByTestId('tempo-apply-error')).toBeInTheDocument();
+    // `waitFor` above resolves as soon as the mock has been CALLED, which
+    // happens synchronously inside the click handler. The error element only
+    // appears once that promise SETTLES and React re-renders, so a synchronous
+    // `getByTestId` here is a race: it wins on an idle machine and loses under
+    // a loaded `--maxWorkers=14` run (observed failing once, then passing 45/45
+    // in isolation). `findByTestId` retries instead of asserting once.
+    expect(await screen.findByTestId('tempo-apply-error')).toBeInTheDocument();
   });
 
   it('9. Escape does not close while busy, but does once idle', async () => {
@@ -836,5 +879,100 @@ describe('TempoDialog — a walk-away commits nothing (T6-3)', () => {
     // of React 19 a setState after unmount is a silent no-op, so deleting it
     // changes nothing observable. It is stated here rather than pinned, because
     // a test that cannot fail is worse than a sentence that is true.
+  });
+});
+
+// Final fix wave (item 13) — Detect and the x2/÷2 controls spawn the same
+// Worker `tempo.detect` runs behind `runExclusivePass` at the menu; this
+// dialog had no gate on either door before this wave. Same shape as
+// `AlignLyricsDialog.test.tsx`'s "the pass lock gates Record and Download
+// Model": disabled while a FOREIGN pass holds the lock, re-enabled once it
+// releases, and a click while disabled starts nothing.
+describe('the pass lock gates Detect and x2/÷2 (final fix wave)', () => {
+  it('disables Detect while a foreign pass holds the lock, and a click on it starts nothing', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(null);
+    render(<TempoDialog onClose={jest.fn()} />);
+    expect(screen.getByTestId('tempo-detect-button')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(screen.getByTestId('tempo-detect-button')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('tempo-detect-button'));
+    expect(mockRunTempoAnalysis).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('tempo-detect-button')).not.toBeDisabled();
+  });
+
+  it('disables x2/÷2 while a foreign pass holds the lock, and a click on either starts nothing', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(makeEntry({ bpm: 120, confidence: 0.8 }));
+    render(<TempoDialog onClose={jest.fn()} />);
+    expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
+    expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(screen.getByTestId('tempo-double-button')).toBeDisabled();
+    expect(screen.getByTestId('tempo-halve-button')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('tempo-double-button'));
+    fireEvent.click(screen.getByTestId('tempo-halve-button'));
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByTestId('tempo-double-button')).not.toBeDisabled();
+    expect(screen.getByTestId('tempo-halve-button')).not.toBeDisabled();
+  });
+
+  // Second round — the IMPERATIVE layer, isolated from the reactive
+  // `disabled` binding above. `acquirePass` is deliberately NOT wrapped in
+  // `act()`: the lock is genuinely held (module state, read directly by
+  // `runExclusivePass` inside `handleDetect`/`correctOctave`), but React has
+  // not yet re-rendered in response, so the DOM still shows the controls
+  // enabled — "dispatch on an enabled control with the lock held". A plain
+  // "click while disabled" test cannot tell the reactive layer from the
+  // imperative one (deleting the imperative hold leaves that test green);
+  // these only stay green if the handlers themselves hold the lock.
+  it('the imperative hold refuses Detect before React re-renders it disabled', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(null);
+    render(<TempoDialog onClose={jest.fn()} />);
+    const button = screen.getByTestId('tempo-detect-button') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(button.disabled).toBe(false); // still stale — proves this reaches the handler, not the DOM gate
+    fireEvent.click(button);
+    expect(mockRunTempoAnalysis).not.toHaveBeenCalled();
+
+    release!();
+  });
+
+  it('the imperative hold refuses x2/÷2 before React re-renders them disabled', () => {
+    seedDoc();
+    mockGetTempo.mockReturnValue(makeEntry({ bpm: 120, confidence: 0.8 }));
+    render(<TempoDialog onClose={jest.fn()} />);
+    const double = screen.getByTestId('tempo-double-button') as HTMLButtonElement;
+    const halve = screen.getByTestId('tempo-halve-button') as HTMLButtonElement;
+
+    const release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    expect(double.disabled).toBe(false);
+    expect(halve.disabled).toBe(false);
+    fireEvent.click(double);
+    fireEvent.click(halve);
+    expect(mockRegridTempo).not.toHaveBeenCalled();
+
+    release!();
   });
 });

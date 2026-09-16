@@ -172,10 +172,13 @@ describe('edit.trim / edit.silence (U1)', () => {
     );
   });
 
-  // The repo has just paid for two labels naming keys that did nothing
-  // (File > Close's Ctrl+W, and the Save pill's). Neither command has a combo
-  // in SHORTCUT_TABLE, so neither row may advertise one.
-  it('advertises no shortcut, because neither command has one bound', () => {
+  // H5/2c (lot H): the inverse of what this test used to assert. Trim and
+  // Silence now each have a real bare-letter combo in SHORTCUT_TABLE (`t`,
+  // `s`), so each advertises it — the repo has already paid twice for a label
+  // naming a key that did nothing (File > Close's Ctrl+W, the Save pill's),
+  // and a row that stayed silent about a key that now works would be the same
+  // defect pointing the other way.
+  it('advertises "T" / "S", because edit.trim / edit.silence now have bare-letter combos bound', () => {
     const edit = getMenuSections().find((s) => s.title === 'Edit')!;
     const rows = edit.items.filter(
       (item): item is MenuCommand =>
@@ -183,10 +186,12 @@ describe('edit.trim / edit.silence (U1)', () => {
     );
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.label)).toEqual(['Trim to Selection', 'Silence Selection']);
-    for (const row of rows) expect(row.shortcut).toBeUndefined();
+    expect(rows.map((r) => r.shortcut)).toEqual(['T', 'S']);
     const bound = SHORTCUT_TABLE.map((s) => s.commandId);
-    expect(bound).not.toContain('edit.trim');
-    expect(bound).not.toContain('edit.silence');
+    expect(bound).toContain('edit.trim');
+    expect(bound).toContain('edit.silence');
+    expect(SHORTCUT_TABLE).toContainEqual({ combo: 't', commandId: 'edit.trim' });
+    expect(SHORTCUT_TABLE).toContainEqual({ combo: 's', commandId: 'edit.silence' });
   });
 
   it('greys both rows in the menu until there is a selection', () => {
@@ -211,8 +216,35 @@ describe('edit.trim / edit.silence (U1)', () => {
 // history, which cannot undo a document edit. The toolbar greyed three of them
 // and left Trim/Silence lit; the keyboard left all five live. The gate belongs
 // on the COMMAND, so every surface inherits it at once.
+//
+// Lot J (item 10) OVERTURNS this for Trim/Silence specifically (named per
+// R25): they are now VIEW-ROUTED (`menuActions.ts`'s `edit.trim`/
+// `edit.silence`), not gated on `isDocumentEditView`/`canEditRegion` at all in
+// multitrack — `canTrimMtRange`/`canSilenceMtRange` answer there instead. That
+// they still read `false` in every test below is COINCIDENCE, not the F1
+// gate: this fixture never sweeps a multitrack time range, so the NEW
+// predicate also refuses, for an entirely different reason. Trim/Silence get
+// their own enablement suite in `menuActions.mtTrim.test.ts`.
+//
+// Lot L (items 11/12) OVERTURNS this for Copy/Paste too, named per R25: they
+// are now VIEW-ROUTED (`canCopyClips`/`pasteBlockReason`,
+// `multitrack/clipClipboard.ts`), not gated on `isDocumentEditView`/
+// `canEditRegion` at all in multitrack. `REGION_VERBS` narrows to the ONE verb
+// F1 still actually governs — `edit.cut` (L1 names Copy and Paste only, so
+// Cut's own M7 gate is untouched). Copy/Paste still read `false` in
+// `armedInMultitrack` below too, but again by COINCIDENCE: no clip is ever
+// selected in that fixture (`canCopyClips` refuses) and the standing
+// clipboard holds AUDIO, not clips (`pasteBlockReason` refuses with
+// `PASTE_HOLDS_AUDIO_REASON`) — not because a hidden document is protected.
+// `menuActions.mtClipboard.test.ts` is where the NEW gate is actually proven,
+// including the case (a clip selected) where it now differs from F1 by
+// enabling the row this file's own trap would once have kept dark; the
+// invariant `armedInMultitrack` exists to protect — a hidden document must
+// never be edited from the multitrack view — is unaffected by either
+// carve-out, since neither Copy nor Paste written through the new gate ever
+// touches `s.selection`/`activeDocumentId` at all.
 describe('the region verbs are disabled in the Multitrack view (F1)', () => {
-  const REGION_VERBS = ['edit.cut', 'edit.copy', 'edit.paste', 'edit.trim', 'edit.silence'];
+  const REGION_VERBS = ['edit.cut'];
 
   /** The exact trap: a live document selection AND a full clipboard, carried
    * into the multitrack view the way switching views really does.
@@ -233,12 +265,12 @@ describe('the region verbs are disabled in the Multitrack view (F1)', () => {
     return doc;
   }
 
-  it('reports all five disabled in Multitrack even with a selection and a full clipboard', () => {
+  it('reports edit.cut disabled in Multitrack even with a selection and a full clipboard', () => {
     armedInMultitrack();
     for (const id of REGION_VERBS) expect(isCommandEnabled(id)).toBe(false);
   });
 
-  it('and all five live again in the waveform and spectral views', () => {
+  it('and edit.cut lives again in the waveform and spectral views', () => {
     armedInMultitrack();
     for (const view of ['waveform', 'spectral'] as const) {
       useAppStore.getState().setView(view);
@@ -246,13 +278,52 @@ describe('the region verbs are disabled in the Multitrack view (F1)', () => {
     }
   });
 
-  it('greys all five rows in the Edit MENU there too — one predicate, every surface', () => {
+  it('greys the edit.cut row in the Edit MENU there too — one predicate, every surface', () => {
     armedInMultitrack();
     const edit = getMenuSections().find((s) => s.title === 'Edit')!;
     for (const id of REGION_VERBS) {
       const row = edit.items.find((i): i is MenuCommand => i !== 'separator' && i.id === id)!;
       expect(row.enabled(useAppStore.getState())).toBe(false);
     }
+  });
+
+  // Lot J — coincidence, not the F1 gate (see the describe's own header
+  // comment): with NO multitrack time range swept, `canTrimMtRange`/
+  // `canSilenceMtRange` refuse regardless of the document selection or
+  // clipboard this trap arms.
+  it('Trim/Silence also read false here, but for the NEW reason (no range), not F1', () => {
+    armedInMultitrack();
+    expect(useSessionStore.getState().mtTimeRange).toBeNull();
+    expect(isCommandEnabled('edit.trim')).toBe(false);
+    expect(isCommandEnabled('edit.silence')).toBe(false);
+  });
+
+  // R25 — the invariant `armedInMultitrack` exists to protect (a hidden
+  // document with a live selection is never touched from the multitrack
+  // view) still holds for Trim/Silence once a range makes them ENABLED,
+  // which F1 alone can no longer prove now that they are view-routed.
+  it('once a range makes Trim/Silence live, they edit the SESSION and leave the hidden document untouched', async () => {
+    const doc = armedInMultitrack();
+    const before = useAppStore.getState().documents.find((d) => d.id === doc.id)!;
+    const beforeSamples = Array.from(before.channels[0]);
+
+    useSessionStore.getState().addTrack();
+    const trackId = useSessionStore.getState().session.tracks[0].id;
+    const clip = createClip({ documentId: 'x', startSample: 1_000, offsetSample: 0, lengthSample: 3_000 });
+    useSessionStore.getState().addClip(trackId, clip);
+    useSessionStore.getState().setMtTimeRange({ startSample: 2_000, endSample: 5_000 });
+    expect(isCommandEnabled('edit.trim')).toBe(true);
+
+    await runCommand('edit.trim');
+
+    const after = useAppStore.getState().documents.find((d) => d.id === doc.id)!;
+    expect(Array.from(after.channels[0])).toEqual(beforeSamples); // the hidden doc never moved
+    expect(useAppStore.getState().selection).toEqual({ start: 100, end: 400 }); // and its selection survives
+    // The SESSION is what actually changed.
+    expect(useSessionStore.getState().session.tracks[0].clips[0]).toMatchObject({
+      startSample: 2_000,
+      lengthSample: 2_000,
+    });
   });
 
   // installShortcuts dispatches through runCommand, which re-checks `enabled`
@@ -388,7 +459,7 @@ describe('getMenuSections', () => {
       'edit.undo',
       'edit.redo',
       'edit.split', // item 8 (M1): the row before Cut
-      'multitrack.mergeClips', // D6: Split's inverse, directly after it
+      'multitrack.joinClips', // D6: Split's inverse, directly after it; H1: renamed Join
       'edit.cut',
       'edit.copy',
       'edit.paste',
@@ -755,6 +826,78 @@ describe('edit.split / edit.cut / marker.add in the editor views (item 8)', () =
     expect(isCommandEnabled('marker.add')).toBe(false);
     useAppStore.getState().setView('spectral');
     expect(isCommandEnabled('marker.add')).toBe(true);
+  });
+});
+
+// Acceptance #8, H8 (lot H) — one view-routed command. X3: a 130000-sample
+// document and a non-zero standing selection {12000, 71000}, never the
+// identity `start: 0`, so the waveform assertion below is provably reading
+// `docLength`, not a default the fixture happened to start at.
+describe('edit.selectAll (H4/H8, new — lot H)', () => {
+  function openLongDoc() {
+    const doc = createDocument({ name: 'a', sampleRate: 44100, channels: [new Float32Array(130000)] });
+    useAppStore.getState().addDocument(doc);
+    useAppStore.getState().setSelection({ start: 12000, end: 71000 });
+    return doc;
+  }
+
+  it('in the waveform view sets selection to the whole document, growing past the standing selection', async () => {
+    openLongDoc();
+    expect(useAppStore.getState().selection).toEqual({ start: 12000, end: 71000 });
+
+    await runCommand('edit.selectAll');
+
+    expect(useAppStore.getState().selection).toEqual({ start: 0, end: 130000 });
+  });
+
+  it('in multitrack selects every clip on every track and leaves the document selection untouched (H8)', async () => {
+    openLongDoc();
+    // `newSession` (top beforeEach) already mints 4 empty tracks.
+    const [track1, track2] = useSessionStore.getState().session.tracks;
+    const clip1 = createClip({ documentId: 'x', startSample: 22050, offsetSample: 0, lengthSample: 2000 });
+    const clip2 = createClip({ documentId: 'x', startSample: 50000, offsetSample: 0, lengthSample: 1500 });
+    const clip3 = createClip({ documentId: 'x', startSample: 88200, offsetSample: 0, lengthSample: 1000 });
+    useSessionStore.getState().addClip(track1.id, clip1);
+    useSessionStore.getState().addClip(track1.id, clip2);
+    useSessionStore.getState().addClip(track2.id, clip3);
+    useAppStore.getState().setView('multitrack');
+
+    await runCommand('edit.selectAll');
+
+    expect(new Set(useSessionStore.getState().selectedClipIds)).toEqual(
+      new Set([clip1.id, clip2.id, clip3.id])
+    );
+    // H8 — multitrack Select All is a CLIP selection, not a time range: the
+    // document `selection` behind it (not on screen there) is left exactly
+    // where the standing fixture put it.
+    expect(useAppStore.getState().selection).toEqual({ start: 12000, end: 71000 });
+  });
+
+  // X-5 (final fix wave) — the PRIMARY clip, not just the set. `setSelectedClips`
+  // seats the LAST id in the array it is given as primary (last-id-wins,
+  // sessionStore.ts). The marquee (MultitrackView.tsx's `reversedHits`) and
+  // Paste (clipClipboard.ts's `pasteClipsAtCursor`) both reverse their
+  // reading-order id lists before calling it, so the topmost-track,
+  // earliest-start clip wins. `edit.selectAll` used to hand `setSelectedClips`
+  // reading order UNREVERSED, seating the bottom-most, latest clip instead —
+  // inconsistent with those other two entry points, and consequential because
+  // the primary drives the Properties panel, the Spatial panel and the
+  // clip-scoped pass target.
+  it('X-5: seats the topmost-track, earliest clip as primary — consistent with the marquee and Paste', async () => {
+    openLongDoc();
+    const [track1, track2] = useSessionStore.getState().session.tracks;
+    const clip1 = createClip({ documentId: 'x', startSample: 22050, offsetSample: 0, lengthSample: 2000 });
+    const clip2 = createClip({ documentId: 'x', startSample: 50000, offsetSample: 0, lengthSample: 1500 });
+    const clip3 = createClip({ documentId: 'x', startSample: 88200, offsetSample: 0, lengthSample: 1000 });
+    useSessionStore.getState().addClip(track1.id, clip1);
+    useSessionStore.getState().addClip(track1.id, clip2);
+    useSessionStore.getState().addClip(track2.id, clip3);
+    useAppStore.getState().setView('multitrack');
+
+    await runCommand('edit.selectAll');
+
+    // track1 (topmost) before track2, clip1 (earliest start) before clip2.
+    expect(useSessionStore.getState().selectedClipId).toBe(clip1.id);
   });
 });
 

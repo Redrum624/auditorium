@@ -22,7 +22,9 @@ export interface AudioDocument {
    * successful save ever clears it, and undo/redo never touch it.
    *
    * Read alongside `dirty` by everything that asks "would closing this lose
-   * work?" — `closeDocumentFlow` and the close guard's count (App.tsx).
+   * work?" — the close guard's count (App.tsx), `projectHasUnsavedWork` and
+   * the Save no-op gate. Since lot B, `closeDocumentFlow` does NOT read this
+   * flag: the per-document close prompts on `dirty` alone.
    */
   neverSaved: boolean;
   // Source-file provenance (Task F7, additive-optional). Drives format-faithful

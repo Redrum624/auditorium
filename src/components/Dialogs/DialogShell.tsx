@@ -49,6 +49,7 @@ export default function DialogShell({
   children,
   dismissable = true,
   moduleLock,
+  hasUnsavedInput = false,
 }: {
   title: string;
   /** Muted state subtitle under the title (e.g. "song.wav · 1:04"). */
@@ -74,6 +75,22 @@ export default function DialogShell({
    * Ignored entirely in the modal presentation.
    */
   moduleLock?: boolean;
+  /**
+   * Lot D fix round 3 (review finding 2), hosted only: `true` while this
+   * dialog holds local state that closing it would silently and permanently
+   * destroy — typed text, a raw recording — that no store backs and no Undo
+   * could ever restore. Defaults to `false`, right for every hosted dialog
+   * except `AlignLyricsDialog` (typed lyrics, a recorded take). Reported to
+   * the host via `DialogHostApi.onUnsavedInputChange`, which `App.tsx`'s
+   * clip-work drift watcher reads to defer (never silently discard) a close
+   * that would otherwise destroy it. Deliberately independent of
+   * `dismissable`/`moduleLock`: the ✕/Escape/backdrop still follow
+   * `dismissable` alone (an explicit close is the user's own choice to
+   * discard, unchanged) — this only gates the INVOLUNTARY close a drifting
+   * target would otherwise trigger. Ignored entirely in the modal
+   * presentation, which has no drift watcher to read it.
+   */
+  hasUnsavedInput?: boolean;
 }) {
   // U2-3: `null` unless something mounted this inside a DialogHostProvider.
   // Every conditional below branches on it; the hooks themselves are called
@@ -120,6 +137,17 @@ export default function DialogShell({
     host.onModuleLockChange(locked);
     return () => host.onModuleLockChange(false);
   }, [host, locked]);
+
+  // Lot D fix round 3 (review finding 2) — the SEPARATE unsaved-input report
+  // (see the prop's own docblock for why it is not folded into `locked`
+  // above). `?.` because most hosts never wire `onUnsavedInputChange` at all
+  // (only `PipelineToolHost` does, for the one dialog that ever passes
+  // `hasUnsavedInput`), and the modal presentation has no host to tell.
+  useEffect(() => {
+    if (!host) return;
+    host.onUnsavedInputChange?.(hasUnsavedInput);
+    return () => host.onUnsavedInputChange?.(false);
+  }, [host, hasUnsavedInput]);
 
   const dismissViaBackdrop = () => {
     if (dismissable) onClose();

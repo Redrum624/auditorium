@@ -18,6 +18,8 @@ import {
   type VoiceProfile,
   type VoiceProgress,
 } from '../../services/voiceService';
+// Fix round 5 (lot D) — the pass lock gates Download Model.
+import { acquirePass, _resetPassLock } from '../../services/passLock';
 
 const mockService = {
   getVoiceModelState: jest.fn(),
@@ -106,6 +108,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unregister?.();
+  _resetPassLock();
 });
 
 async function renderDialog(onClose = jest.fn()) {
@@ -231,6 +234,38 @@ describe('model state flow', () => {
     });
     expect(screen.getByTestId('voice-error').textContent).toBe('offline');
     expect(screen.getByText('Download Model')).toBeInTheDocument();
+  });
+
+  // Fix round 5 (lot D) — the sweep's fifth sibling of the AlignLyricsDialog
+  // (fix round 4) / TranscribeDialog / SeparateDialog (both fix round 5)
+  // Download-Model(s) gap: `handleSaveVoice`/`handleConvert` already carried
+  // `isPassRunning()` (fix round 1), but this dialog's OWN download start
+  // seam never did, and the button had no `disabled` prop at all.
+  test('the pass lock gates Download Model — disables it, and a click starts nothing, while a foreign pass holds the lock', async () => {
+    seedDoc();
+    mockService.getVoiceModelState.mockResolvedValue({
+      downloaded: false,
+      bytes: null,
+      expectedBytes: VOICE_MODEL_BYTES,
+    });
+    await renderDialog();
+    const download = () => screen.getByText('Download Model').closest('button') as HTMLButtonElement;
+    expect(download().disabled).toBe(false);
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+    expect(release).not.toBeNull();
+    expect(download().disabled).toBe(true);
+
+    fireEvent.click(download());
+    expect(mockService.ensureVoiceModels).not.toHaveBeenCalled();
+
+    act(() => {
+      release!();
+    });
+    expect(download().disabled).toBe(false);
   });
 
   test('a model-missing refusal from the service flips the dialog back to the download state', async () => {

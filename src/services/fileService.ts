@@ -34,9 +34,29 @@ import { invalidateLyricsAlignment } from './alignLyricsService';
 // Lot A (M4): Save is a PROJECT save. No cycle — sessionFile imports the
 // stores, sessionUndo, undoHistory, wavCodec and AudioDocument; none of those
 // import this module.
-import { useSessionStore } from '../multitrack/sessionStore';
+import { hasAnyClip, useSessionStore } from '../multitrack/sessionStore'; // lot E: hasAnyClip
 import { isSessionDirty } from '../multitrack/sessionUndo';
 import { saveProject } from '../multitrack/sessionFile';
+// Final fix wave (item 13 / M1): the close-confirmation dialog's own "Save
+// Project" button cannot be reactively disabled — it is a native message box,
+// already showing before any lock state can reach it — so the gate has to be
+// imperative, taken here with the SAME descriptor `file.save`'s own
+// `runProjectSave` (menuActions.ts) uses. Without it, `closeFree()` (below)
+// deliberately permitting a close during an EFFECT pass would let "Save
+// Project" run the full project encode concurrently with that pass — exactly
+// the concurrency `passFree()` on `file.save` exists to prevent.
+//
+// Acknowledged deviation from `passLock.ts`'s own M-a ("the lock is taken at
+// the START SEAM... never inside a service"): `closeDocumentFlow` below is a
+// SERVICE function, and M-a's whole reason is deadlock — a lock taken inside
+// a function that can itself be called from INSIDE an already-running pass
+// (the way `coverJourney.ts` calls `separateStems` from inside a Cover Chain
+// pass) would refuse the caller that is holding it. That risk does not reach
+// here: `closeDocumentFlow` has exactly two callers, `menuActions.ts`'s
+// `file.close` command and `FilesPanel.tsx`'s row ✕ — both direct UI start
+// seams, neither reachable from inside another pass's own body. Safe by
+// audit, not by the rule; recorded here rather than left a silent exception.
+import { runExclusivePass, blockedByPassReason, PASS_REFUSED } from './passLock';
 // Lot A (M5): Export in the multitrack view renders the session — the offline
 // mixdown is playback ground truth and is never diverged from here.
 import { mixdownSession } from '../multitrack/mixdown';
@@ -785,9 +805,24 @@ export function newDocument(opts: {
  * undo entry, so it is CLEAN from the moment it exists, and `dirty` cannot be
  * pressed into service to represent it (undoHistory re-derives `dirty` from
  * the save point, which would silently erase a stamped value on the first
- * undo — see AudioDocument.ts and docs/KNOWN_LIMITATIONS.md). */
+ * undo — see AudioDocument.ts and docs/KNOWN_LIMITATIONS.md).
+ *
+ * Three consumers still read this exact predicate: `saveDocument`'s no-op
+ * gate, `projectHasUnsavedWork` and `projectDirtyCount` (the quit guard's
+ * count). The per-document close path does NOT — since lot B it reads
+ * `closeNeedsPrompt` instead, which drops the `neverSaved` half. */
 export function hasUnsavedWork(doc: AudioDocument): boolean {
   return doc.dirty || doc.neverSaved;
+}
+
+/** True when closing THIS document must ask first (lot B, B1): unsaved EDITS
+ * only. `neverSaved` deliberately does NOT arm this — a computed document the
+ * user never touched (stem, Voice/Backing, speaker, Mix Down, `Remix N`,
+ * recording) closes on one click. The flag still arms the QUIT guard
+ * (`projectDirtyCount` → App.tsx), the Save pill and the Save no-op gate, so
+ * quitting with unsaved computed audio still warns (B4). */
+export function closeNeedsPrompt(doc: AudioDocument): boolean {
+  return doc.dirty;
 }
 
 // ---- lot A (M4) — the project predicates -----------------------------------
@@ -795,10 +830,7 @@ export function hasUnsavedWork(doc: AudioDocument): boolean {
 /** True when there is anything to put in a project file: an open document,
  * or a clip on any track. */
 export function projectHasContent(): boolean {
-  return (
-    store().documents.length > 0 ||
-    useSessionStore.getState().session.tracks.some((t) => t.clips.length > 0)
-  );
+  return store().documents.length > 0 || hasAnyClip(useSessionStore.getState().session);
 }
 
 /**
@@ -828,10 +860,12 @@ export function projectDirtyCount(): number {
 // ---- end lot A ---------------------------------------------------------------
 
 /**
- * Close a document, prompting to save first when closing would lose work —
- * unsaved edits (`dirty`) OR a document that has never been written to a file
- * at all (`neverSaved`, Task S4), which is how every computed document starts
- * out. Shared by the File > Close command and the Files panel's ✕ button.
+ * Close a document, prompting to save first when closing would discard
+ * unsaved EDITS (`dirty`). A never-saved document with no edits (a computed
+ * stem, Voice/Backing, speaker track, Mix Down, `Remix N` or recording) closes
+ * immediately with no prompt (lot B, B1) — the quit guard still counts it
+ * (`projectDirtyCount`, B4), so quitting with unsaved computed audio still
+ * warns. Shared by the File > Close command and the Files panel's ✕ button.
  * Guarantees the per-document undo history and peak cache are freed, playback
  * is stopped, and a noise profile captured FROM this document is cleared (Task
  * F8 — the print belongs to audio that no longer exists), so closing never
@@ -841,7 +875,7 @@ export async function closeDocumentFlow(docId: string): Promise<void> {
   const doc = findDoc(docId);
   if (!doc) return;
 
-  if (hasUnsavedWork(doc)) {
+  if (closeNeedsPrompt(doc)) {
     // Lot A (M4): the offer is a PROJECT save — the document has no file of
     // its own through Save any more (Export is how audio leaves the app). A
     // never-saved document isn't "changed", it exists only in this project;
@@ -857,13 +891,33 @@ export async function closeDocumentFlow(docId: string): Promise<void> {
     });
     if (choice === 2) return; // Cancel
     if (choice === 0) {
+      // Final fix wave (item 13): acquire the SAME 'file.save' pass lock
+      // `runProjectSave` takes for the menu's own Save, rather than calling
+      // `saveProject` unguarded. `closeFree()` below allows this whole flow to
+      // run while an EFFECT pass is still going (proven safe for the close
+      // itself); the encode this triggers is not that proven-safe case, so it
+      // gets refused exactly like every other project save would be. A refusal
+      // here reads as "the save didn't land" to the logic right below, which
+      // already aborts the close rather than discarding unsaved work.
+      const result = await runExclusivePass(
+        { id: 'file.save', label: 'Save Project', kind: 'save' },
+        () => saveProject({ as: false })
+      );
+      if (result === PASS_REFUSED) {
+        await api().showMessageBox({
+          type: 'warning',
+          title: 'Cannot save yet',
+          message: `${blockedByPassReason() ?? 'Another pass is running.'} The document was not closed — try again once it finishes.`,
+          buttons: ['OK'],
+        });
+        return;
+      }
       // Save the project, then close — but abort the close if the save didn't
       // actually land (a cancelled Save As dialog, a failed write): a
       // successful project save clears this document's flags; anything else
       // leaves them set.
-      await saveProject({ as: false });
       const afterSave = findDoc(docId);
-      if (afterSave && hasUnsavedWork(afterSave)) return;
+      if (afterSave && closeNeedsPrompt(afterSave)) return;
     }
     // choice === 1 ("Don't Save"): discard and close.
   }

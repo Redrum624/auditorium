@@ -5,8 +5,11 @@ import { useSessionStore } from './sessionStore';
 import { withSessionGesture } from './sessionUndo';
 
 /**
- * Merge Clips — the selected clips of one track become ONE clip spanning them,
- * with silence in the gaps and the audio baked into a new document.
+ * Join Clips (H1: renamed from "Merge Clips" — the module keeps this file
+ * name and every export's name, since neither is user-visible and renaming
+ * them would be pure churn) — the selected clips of one track become ONE
+ * clip spanning them, with silence in the gaps and the audio baked into a
+ * new document.
  *
  * Three pieces, deliberately separate: `mergeTargets` decides WHAT merges (pure,
  * so the command's enablement asks the same question the verb answers),
@@ -201,7 +204,7 @@ export function commitMergedClips(
     before.selectedClipId === null ? null : trackIdOfClip(before.session, before.selectedClipId);
 
   const made: { trackId: string; clipId: string }[] = [];
-  withSessionGesture('Merge clips', () => {
+  withSessionGesture('Join clips', () => {
     for (const { target, documentId } of doable) {
       const merged = createClip({
         documentId,

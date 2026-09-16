@@ -4,7 +4,7 @@ import type { AudioDocument } from '../../audio/AudioDocument';
 import { docLength } from '../../audio/AudioDocument';
 import { getPyramids } from '../../services/peaksCache';
 import { crossfadeGains, fadeInShape, fadeOutShape } from '../../dsp/fades';
-import type { Clip } from '../../multitrack/session';
+import { MIN_CLIP_SAMPLES, type Clip } from '../../multitrack/session';
 import { CROSSFADE_RHO, resolveClipFadeSpecs } from '../../multitrack/mixdown';
 import { moveClipsBy, useSessionStore } from '../../multitrack/sessionStore'; // K1
 import { clampGroupDelta, resolveGroupTrackDelta } from '../../multitrack/groupDrag'; // T5
@@ -25,7 +25,6 @@ import { sessionSnapTiers, type SessionSnapTiers } from './sessionSnapTargets';
 
 const HANDLE_PX = 6;
 const DRAG_THRESHOLD = 4;
-const MIN_LENGTH = 32;
 
 /** X4 — side of the square corner fade handles. Larger than the 6 px trim
  * band so the fade grab reads as its own affordance, and the handle sits at
@@ -213,6 +212,7 @@ export default function ClipView({
   const moveClip = useSessionStore((s) => s.moveClip);
   const trimClip = useSessionStore((s) => s.trimClip);
   const setSelectedClip = useSessionStore((s) => s.setSelectedClip);
+  const setCurrentTrack = useSessionStore((s) => s.setCurrentTrack); // K2
   // K1 — the extended selection is read from the STORE here rather than
   // threaded down through MultitrackView and TrackLane as a prop. Two reasons,
   // and the second is the load-bearing one: this component needs the set for
@@ -770,6 +770,12 @@ export default function ClipView({
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    // K2 — pointer contract row 7: a press on a CLIP also marks its track
+    // current, the same rule a background press applies (`TrackLane.tsx`'s
+    // own `onPointerDown`), so a copy-then-paste on the clip just pressed
+    // always has a target, and a group/trim drag that starts on a clip on
+    // another track leaves the mark on the track the pointer is actually on.
+    setCurrentTrack(trackId);
 
     // K1 — WHEN THE SELECTION IS COMMITTED, and why it is not always here.
     //
@@ -922,7 +928,7 @@ export default function ClipView({
       // validity second (the ordering v1.8 established; see pointerUp).
       const snappedEnd = snapBoundary(drag.origEnd + dxSamples, drag, alt);
       const target = Math.min(maxTrimEnd(), snappedEnd);
-      trimClip(clip.id, 'end', Math.round(Math.max(drag.origStart + MIN_LENGTH, target)));
+      trimClip(clip.id, 'end', Math.round(Math.max(drag.origStart + MIN_CLIP_SAMPLES, target)));
     }
   };
 

@@ -1,15 +1,19 @@
-import { createDocument, docLength, nextId } from '../audio/AudioDocument';
+import { createDocument, docLength, nextId, type AudioDocument } from '../audio/AudioDocument';
 import type { AppState, Marker } from '../stores/appStore';
 import { applyEditorZoom, useAppStore } from '../stores/appStore';
 import {
   applySessionZoom,
   closeGap, // D3
+  hasAnyClip, // lot E
   removeClips,
   rippleDeleteClips,
+  silenceClipsInRange, // lot J
   splitClipsAt,
   splitTargets,
+  trimClipsToRange, // lot J
   useSessionStore,
 } from '../multitrack/sessionStore';
+import { silenceTargets, trimTargets } from '../multitrack/timeRange'; // lot J
 import { clipBoundaries, nextClipEdge } from '../multitrack/clipEdges'; // K1
 import { sessionEndSample } from '../multitrack/sessionZoom'; // T5
 import { sessionLaneWidth } from '../multitrack/sessionViewport'; // T5
@@ -20,6 +24,7 @@ import { placeDocumentsOnTrack } from '../multitrack/sessionInsert';
 import { mixdownSession } from '../multitrack/mixdown';
 import { bakeMergedClip, commitMergedClips, mergeTargets } from '../multitrack/mergeClips';
 import { canRecord, transportPlayPause, transportRecord, transportStop } from './transportService';
+import { multitrackRecorder } from '../multitrack/multitrackRecord';
 import {
   cutSelection,
   copySelection,
@@ -34,7 +39,15 @@ import {
 import { cursorSegment } from './segments';
 import { canRedo, canUndo, redo, undo } from './undoHistory';
 import { canRedoSession, canUndoSession, redoSession, undoSession } from '../multitrack/sessionUndo';
-import { getClipboard } from './clipboard';
+import { getClipboard, getClipboardKind } from './clipboard';
+// Lot L (items 11/12) — the multitrack clip clipboard's verbs (the slot
+// itself lives in `./clipboard`).
+import {
+  copySelectedClips,
+  pasteBlockReason,
+  pasteClipsAtCursor,
+  PASTE_HOLDS_CLIPS_REASON,
+} from '../multitrack/clipClipboard';
 import { closeDocumentFlow, openFilesViaDialog, projectHasUnsavedWork } from './fileService';
 import { openSessionViaDialog, saveProject } from '../multitrack/sessionFile';
 import {
@@ -62,12 +75,39 @@ import { toggleSpectralScale } from './spectralScale';
 import { toggleBeatGrid } from './beatGridDisplay';
 import { toggleSnap } from './snapPreference';
 import { runTempoAnalysis } from './tempoAnalysis';
+// ---- lot M ----
+// Item 13 / M1/M3/M4: the app-wide single-pass lock. A leaf module — see
+// passLock.ts's own header for why it is safe to import from here.
+import {
+  PASS_REFUSED,
+  blockedByPassReason,
+  closeBlockedReason,
+  closeFree,
+  isPassRunning,
+  runExclusivePass,
+} from './passLock';
+// ---- /lot M ----
+// ---- lot D ----
+// Item 4 (D1) — the target-resolution rule for multitrack: `clipPassTarget()`
+// is the ONE place that answers "what document/window does a clip-scoped
+// pass act on"; `clipPassReason` is its refusal sentence (D2/D3/D4).
+import { clipPassReason, clipPassTarget } from './clipPass';
+// ---- /lot D ----
 
 export interface MenuCommand {
   id: string;
   label: string;
   shortcut?: string;
   enabled(s: AppState): boolean;
+  /**
+   * Lot M — an optional reason a DISABLED command is disabled, read against
+   * the live store exactly like `enabled`. `undefined` means "no reason to
+   * show" (an enabled command, or a disabled one with nothing worth saying
+   * beyond the greyed-out state). Shared with lots D2/D3, J and L3/L5: the
+   * field is added ONCE, here; a later-landed lot's own reasons compose onto
+   * the same field rather than inventing a second one.
+   */
+  reason?(s: AppState): string | undefined;
   run(): void | Promise<void>;
 }
 
@@ -117,6 +157,163 @@ export function isCommandEnabled(id: string): boolean {
   return cmd !== undefined && cmd.enabled(useAppStore.getState());
 }
 
+/**
+ * Lot M (M3) — the reason a DISABLED command is disabled, or `null` for an
+ * unregistered id or one that is currently enabled. Every gated surface reads
+ * this rather than composing its own sentence, so the tooltip and any future
+ * refusal always say the same thing the registry itself would.
+ */
+export function commandReason(id: string): string | null {
+  const cmd = registry.get(id);
+  if (!cmd) return null;
+  if (cmd.enabled(useAppStore.getState())) return null;
+  return cmd.reason?.(useAppStore.getState()) ?? null;
+}
+
+// ---- lot M ----
+/** True when no long-running pass holds the app-wide lock — the ONE gate
+ * every pass-start command's `enabled` predicate ANDs in (M1/M4). */
+function passFree(): boolean {
+  return !isPassRunning();
+}
+
+/** The ONE reason string every pass-gated command shows (M3) — `undefined`
+ * (not `null`) so it fits `MenuCommand.reason`'s return type directly. */
+function passReason(): string | undefined {
+  return blockedByPassReason() ?? undefined;
+}
+
+/**
+ * Fix round 1 (item 6) — `closeFree`'s actual policy now lives ONCE, in
+ * `passLock.ts` (`closeFree`/`closeBlockedReason`), because `FilesPanel.tsx`'s
+ * row ✕ needs the identical question answered and cannot route through
+ * `file.close` itself (that command always closes the ACTIVE document; a row
+ * can close any OTHER open one). This is the thin adapter fitting that shared
+ * answer to `MenuCommand.reason`'s `string | undefined` shape — see
+ * `passLock.ts`'s own docblock for the full argument.
+ */
+function closeReason(): string | undefined {
+  return closeBlockedReason() ?? undefined;
+}
+// ---- /lot M ----
+
+// ---- lot D ----
+/**
+ * D1 — whether a command that acts on "the document" has a valid target:
+ * waveform/spectral read the active document (unchanged — D1's non-multitrack
+ * arm); multitrack reads the single selected clip via `clipPassTarget()`
+ * (D2/D3/D4's refusals collapse to "no target" here).
+ */
+function hasPassTarget(s: AppState): boolean {
+  return s.view === 'multitrack' ? typeof clipPassTarget() !== 'string' : activeDoc(s) !== null;
+}
+
+/**
+ * The D2/D3/D4 refusal sentence for a command with no pass target — PURE
+ * (no pass-lock knowledge), matching the formula decisions.md/the brief state
+ * verbatim. `undefined` outside multitrack: D1's arm there is unchanged
+ * behaviour, so there is nothing new to say. Used directly by `noise.capture`,
+ * whose `enabled` does not gate on the pass lock at all (M-d: synchronous,
+ * mouse-only, never in lot M's start-path table) — composing `passReason()`
+ * into IT would show a "pass running" tooltip on a row whose disablement has
+ * nothing to do with the lock. Every OTHER gated row reads `pipelineReason`
+ * below instead, which composes the two.
+ */
+function passTargetReason(s: AppState): string | undefined {
+  if (s.view !== 'multitrack') return undefined;
+  const target = clipPassTarget();
+  return typeof target === 'string' ? clipPassReason(target) : undefined;
+}
+
+/**
+ * Reason precedence, composing lot D with lot M (Risk 2's "the precedence
+ * rule lives in `commandReason`, not in six surfaces" — every UI surface
+ * reads `commandReason(id)` and trusts what comes back rather than composing
+ * either reason itself; this is the one place that composition happens).
+ * A pass already RUNNING is the more urgent, app-wide fact — it blocks every
+ * pass-start door, not just this one — and a missing TARGET is only
+ * actionable once that pass ends, so the busy reason is checked first. Used
+ * by every row whose `enabled` also gates on `passFree()`: `effect.<id>`,
+ * `tempo.detect`, `tempo.match`, `timing.align`, `effects.vocalChain`,
+ * `effects.podcastChain`, `lyrics.align`.
+ */
+function pipelineReason(s: AppState): string | undefined {
+  return passReason() ?? passTargetReason(s);
+}
+
+/**
+ * R16 — the document one of the five whole-document, document-PRODUCING rows
+ * (`edit.separateStems`, `voice.separate`, `edit.transcribe`, `edit.remix`,
+ * `edit.voiceChanger`) targets. D2-a excludes these from `hasPassTarget`'s
+ * disabling (they mint a NEW document and cannot express "over that clip's
+ * span" — D1's window has nothing for them to absorb), but excluding them
+ * from DISABLING is not the same as excluding them from the WRONG-DOCUMENT
+ * defect: their dialogs resolve their input from `activeDocumentId`
+ * (unchanged by this lot — see each dialog's own `activeDoc` selector), and
+ * in multitrack that id is whatever was last active, which is not
+ * necessarily the SELECTED CLIP's own source document.
+ *
+ * In multitrack, prefers the selected clip's source document
+ * (`clipPassTarget()`'s `.doc` — the input `clipPassTarget()` resolves, never
+ * its window: these five cannot express a sub-document span) when one
+ * resolves; falls back to the active document otherwise — unchanged
+ * behaviour with no clip selected (D2-a's exemption: these five keep working
+ * right where a landing like `stemLanding.ts` leaves the user, with no clip
+ * selected and the freshly landed document active) or with an ambiguous
+ * selection (`multi-clip`/`orphan-clip`/`empty-window` — these five were
+ * never clip-aware before this lot, and D2-a did not ask them to start
+ * refusing on a selection they cannot act on anyway). Outside multitrack,
+ * identical to today: the active document, D1's arm unchanged.
+ *
+ * Fix round 1 (finding 5) — also `tempo.detect`'s own document resolution
+ * (folded into this shared function rather than a duplicate inline copy) and
+ * `TempoCard.tsx`'s: that card used to show the ACTIVE document's tempo entry
+ * unconditionally, which drifted from what a multitrack `tempo.detect` click
+ * would actually analyse the moment R16 wiring landed — a stale-parallel-
+ * variable defect (the exact class lot M spent a round removing). Exported so
+ * both can read the same answer to "which document does tempo.detect mean".
+ */
+export function multitrackToolDoc(s: AppState): AudioDocument | null {
+  if (s.view === 'multitrack') {
+    const target = clipPassTarget();
+    if (typeof target !== 'string') return target.doc;
+  }
+  return activeDoc(s);
+}
+
+/**
+ * R16 — call at the TOP of one of the five rows' `run()`, before the dialog
+ * opens. Makes the selected clip's source document active first (mirroring
+ * `showEditorView`'s identical "activate first, and only when it actually
+ * differs" guard — no gratuitous `activationReset` when it is already
+ * active), so the dialog's own `activeDocumentId` read resolves to the clip
+ * the user selected rather than whatever was active before. A no-op outside
+ * multitrack or with no resolvable clip target — see `multitrackToolDoc`'s
+ * docblock for when that is.
+ *
+ * Fix round 1 (finding 6) — exported so `TranscriptPanel.tsx`'s two
+ * "Transcribe again…" buttons can call it too. Those bypass the command
+ * registry entirely (`openTranscribeDialog()` directly — lot M's own report
+ * names this "the one surviving registry bypass", kept deliberately for
+ * `App.tsx`'s `refuseWhileRunning` defence in depth), so without this they
+ * never got R16's wiring: in multitrack they would open the dialog against
+ * whatever was merely active, the exact wrong-document defect R16 exists to
+ * close for the other five doors.
+ */
+export function primeMultitrackDocTarget(): void {
+  const target = clipPassTarget();
+  if (typeof target === 'string') return;
+  const app = useAppStore.getState();
+  if (app.activeDocumentId !== target.doc.id) app.setActiveDocument(target.doc.id);
+}
+
+/** D1 — `effects.coverChain`'s own multitrack refusal (verbatim, X3: not an
+ * identity value). See that command's own docblock for why it is disabled
+ * outright rather than gated on a clip target. */
+const COVER_CHAIN_MULTITRACK_REASON =
+  'Cover Chain builds a session of its own — switch to Waveform to run it.';
+// ---- /lot D ----
+
 /** Fixed section/item layout. Ids are resolved against the registry live at
  * `getMenuSections()` call time, so registering a command after this module
  * loads (e.g. a later task replacing a stub) is reflected immediately. */
@@ -159,7 +356,9 @@ const LAYOUT: { title: MenuSection['title']; itemIds: (string | 'separator')[] }
       'edit.split',
       // D6: Split's inverse, the row directly after it — the verb that cuts a
       // clip in two and the verb that makes two clips one read together.
-      'multitrack.mergeClips',
+      // H1 (lot H): "Merge Clips" renamed "Join Clips" everywhere the user
+      // can see it; the id follows the label.
+      'multitrack.joinClips',
       'edit.cut',
       'edit.copy',
       'edit.paste',
@@ -175,9 +374,10 @@ const LAYOUT: { title: MenuSection['title']; itemIds: (string | 'separator')[] }
       // rather than behind a separator of their own. Until now the floating
       // edit toolbar was their only surface — mouse-reachable and nowhere
       // else, so anyone who looked for them where every other edit verb lives
-      // found nothing. Neither carries a shortcut label: neither has a combo
-      // in SHORTCUT_TABLE, and this repo has just paid for two labels that
-      // named keys doing nothing.
+      // found nothing. X-4 (final fix wave): this comment used to say
+      // "Neither carries a shortcut label" — stale since lot H bound `T`
+      // (`edit.trim`) and `S` (`edit.silence`) in SHORTCUT_TABLE; both rows
+      // do carry a label now, correctly.
       'edit.trim',
       'edit.silence',
       'separator',
@@ -404,11 +604,20 @@ function registerSelectionAndTransportCommands(): void {
       id: 'edit.selectAll',
       label: 'Select All',
       shortcut: 'Ctrl+A',
-      enabled: (s) => (s.view === 'multitrack' ? sessionHasClips() : activeDoc(s) !== null),
+      enabled: (s) => (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : activeDoc(s) !== null),
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           const { session, setSelectedClips } = useSessionStore.getState();
-          setSelectedClips(session.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+          // X-5 (final fix wave): `flatMap` here reads in reading order —
+          // topmost track first, earliest start first within a track — but
+          // `setSelectedClips` seats the LAST id in the array as primary
+          // (`sessionStore.ts`'s last-id-wins rule), so passing reading order
+          // straight through seated the BOTTOM-most, LATEST clip as primary,
+          // unlike the marquee (`MultitrackView.tsx`'s `reversedHits`) and
+          // Paste (`clipClipboard.ts`'s `pasteClipsAtCursor`), which both
+          // reverse first so the topmost/earliest clip wins instead. Reversed
+          // here too, for the same primary the other two entry points pick.
+          setSelectedClips(session.tracks.flatMap((t) => t.clips.map((c) => c.id)).reverse());
           return;
         }
         const { documents, activeDocumentId, setSelection } = useAppStore.getState();
@@ -432,15 +641,21 @@ function registerSelectionAndTransportCommands(): void {
       // except a press INSIDE the band's own span on its own lane, which is
       // the first half of the double-click that would re-select it. Escape is
       // the way out that works from anywhere, including from inside that span.
+      //
+      // Lot J: a standing TIME RANGE arms it too, and Escape clears that as
+      // well — the third kind of multitrack "selection" this menu action now
+      // answers for.
       enabled: (s) =>
         s.view === 'multitrack'
           ? useSessionStore.getState().selectedClipId !== null ||
-            useSessionStore.getState().selectedGap !== null
+            useSessionStore.getState().selectedGap !== null ||
+            useSessionStore.getState().mtTimeRange !== null
           : s.selection !== null,
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           useSessionStore.getState().setSelectedClip(null);
           useSessionStore.getState().setSelectedGap(null);
+          useSessionStore.getState().setMtTimeRange(null);
           return;
         }
         useAppStore.getState().setSelection(null);
@@ -478,14 +693,14 @@ function registerSelectionAndTransportCommands(): void {
     {
       // T5 — "the end" of a SESSION is the end of its last clip, across every
       // track (`sessionEndSample`, the same number the zoom's fit is stated
-      // in). Gated on `sessionHasClips()` rather than on the view alone: with
-      // no clips the end IS the start, and a key that lands where the cursor
+      // in). Gated on `hasAnyClip` rather than on the view alone: with no
+      // clips the end IS the start, and a key that lands where the cursor
       // already is should say so by being disabled, exactly as the clip-edge
       // pair does.
       id: 'transport.goToEnd',
       label: 'Go to End',
       shortcut: 'End',
-      enabled: (s) => (s.view === 'multitrack' ? sessionHasClips() : activeDoc(s) !== null),
+      enabled: (s) => (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : activeDoc(s) !== null),
       run: async () => {
         if (useAppStore.getState().view === 'multitrack') {
           const { session, mtZoom, setMtCursor } = useSessionStore.getState();
@@ -556,7 +771,20 @@ function registerSelectionAndTransportCommands(): void {
       // so the menu and the transport Toolbar share one source of truth.
       id: 'transport.record',
       label: 'Record',
-      enabled: () => canRecord(),
+      // Fix round 1 (item 5b) — overturns M-d's original exclusion. A
+      // recording — in either view — ends with `addDocument`, minting a new
+      // ACTIVE document exactly like `file.new`/`file.open` do; the user's
+      // own words ("never run more than one pipeline or PROCESS at a time")
+      // name a recording as one. M-d's reasoning still holds for keeping the
+      // RUNNING session itself unlocked (RecordDialog is a modal, so
+      // `hasOpenDialog()`'s stack already excludes every other pass-start
+      // while it is open) — only STARTING one is gated here. The
+      // `multitrackRecorder.isRecording()` clause keeps the multitrack
+      // punch-in STOP transition reachable unconditionally — this command
+      // is that button's only door (Toolbar.tsx), and a take already in
+      // progress must always be stoppable, lock or no lock.
+      enabled: () => canRecord() && (multitrackRecorder.isRecording() || passFree()),
+      reason: passReason,
       run: async () => transportRecord(),
     },
     stub('marker.add', 'Add Marker', 'M'),
@@ -591,6 +819,14 @@ function registerEditCommands(): void {
    *
    * `edit.delete` is deliberately NOT in this set — it already routes to clip
    * removal in the multitrack view, so it is view-aware by design.
+   *
+   * X-4 (final fix wave): read this as F1's ORIGINAL five-verb rule, not as
+   * a live description of all five today. Lots J (Trim/Silence) and L
+   * (Copy/Paste) each added their own multitrack arm since, on their OWN
+   * predicates (`canTrimMtRange`/`canSilenceMtRange`,
+   * `canCopyClips`/`pasteBlockReason` — see those four commands below), not
+   * on `canEditRegion`. Only `edit.cut` is still gated on `canEditRegion`
+   * unconditionally, in every view.
    */
   const isDocumentEditView = (s: AppState) => s.view !== 'multitrack';
   const canEditRegion = (s: AppState) => isDocumentEditView(s) && hasSelection(s);
@@ -663,19 +899,51 @@ function registerEditCommands(): void {
         (s.selection !== null || cursorSegment(s) !== null),
       run: async () => cutSelection(),
     },
+    // Lot L (items 11/12) — narrows the M7/F1 gate for these two verbs ONLY.
+    // F1's argument was that all five region verbs edit a region of the
+    // ACTIVE DOCUMENT, which the multitrack view does not show, and whose
+    // Undo (routed to the session) cannot reverse. That argument no longer
+    // applies to Copy/Paste once a clip clipboard exists (L1-L5): the
+    // multitrack arm addresses the SESSION — the surface on screen, whose
+    // history the neighbouring Undo already routes to — exactly the same
+    // narrowing lot J made for Trim/Silence just above. Cut stays on
+    // `isDocumentEditView` (M7, unchanged) — L1 names Copy and Paste only.
     {
       id: 'edit.copy',
       label: 'Copy',
       shortcut: 'Ctrl+C',
-      enabled: canEditRegion,
-      run: async () => copySelection(),
+      enabled: (s) => (s.view === 'multitrack' ? canCopyClips() : canEditRegion(s)),
+      reason: (s) =>
+        s.view === 'multitrack' && !canCopyClips() ? 'select a clip first' : undefined,
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          copySelectedClips();
+          return;
+        }
+        copySelection();
+      },
     },
     {
       id: 'edit.paste',
       label: 'Paste',
       shortcut: 'Ctrl+V',
-      enabled: (s) => isDocumentEditView(s) && activeDoc(s) !== null && getClipboard() !== null,
-      run: async () => pasteAtCursor(),
+      enabled: (s) =>
+        s.view === 'multitrack'
+          ? pasteBlockReason() === undefined
+          : isDocumentEditView(s) && activeDoc(s) !== null && getClipboard() !== null,
+      reason: (s) =>
+        s.view === 'multitrack'
+          ? pasteBlockReason()
+          : getClipboardKind() === 'clips'
+            ? PASTE_HOLDS_CLIPS_REASON
+            : undefined,
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          pasteClipsAtCursor();
+          return;
+        }
+        pasteAtCursor();
+      },
     },
     {
       // In the multitrack view, Delete removes the selected clip; elsewhere it
@@ -694,6 +962,18 @@ function registerEditCommands(): void {
       // D3: a GAP arms it too, and closes instead of removing. The store keeps
       // the two selections mutually exclusive, so this reads the gap first and
       // never has to arbitrate.
+      //
+      // Lot M — deliberately NOT gated on `passFree()`. This is an EDIT, not a
+      // pass-start (M1 does not name it), and it is already reachable via
+      // mouse during a background pass today — `EditToolbar.tsx`'s Delete
+      // button reads only `isCommandEnabled('edit.delete')`, with no
+      // `hasOpenDialog`/`toolRunning` check anywhere in that file or here.
+      // M6 removing the blanket keyboard suspension makes the bare `d`
+      // shortcut match that pre-existing mouse behaviour, not a new hazard —
+      // gating every mutating command was considered and rejected (M-c).
+      // The lot-H bare letter is intended to fire mid-pass exactly like the
+      // toolbar button already does; whatever the running pass is writing to
+      // is protected by ITS OWN staleness/cancel-ref guard, not by this gate.
       enabled: (s) =>
         s.view === 'multitrack'
           ? useSessionStore.getState().selectedClipId !== null ||
@@ -750,30 +1030,33 @@ function registerEditCommands(): void {
     },
     {
       /**
-       * T5 — RIPPLE DELETE OF A TIME RANGE: listed, and disabled everywhere,
-       * because there is nothing in this app that can name the range.
+       * T5 — RIPPLE DELETE OF A TIME RANGE: listed, and disabled everywhere.
        *
-       * The ask was "with a time selection active in the multitrack, remove
-       * that span from ALL tracks and close the gap everywhere". The multitrack
-       * view has no time selection to be active. Its state is a CURSOR and a
-       * clip selection and nothing else (`SessionState`); the ruler it renders
-       * is the editor's `TimelineRuler`, whose pointer drag SEEKS rather than
-       * sweeping a range; `.audm` persists no range; the transport's only
-       * loop plumbing belongs to the single-document engine; and
-       * `appStore.selection` is the DOCUMENT's region, which `edit.deselect`
-       * above already documents as not being on screen in this view.
-       * `adoptSessionRate`'s invariant states the same fact from the other
-       * side, having had to enumerate every session-sample value that exists:
-       * "there is no multitrack selection or loop range to carry (only the
-       * cursor exists)".
+       * Lot J (item 10) BUILT the range-sweep gesture this note used to say
+       * did not exist — a promise the code no longer kept is a documentation
+       * defect (R26), so this is rewritten rather than left stale. The
+       * multitrack view NOW has a time range (`Shift`+drag a lane;
+       * `SessionState.mtTimeRange`), and `edit.silence` above is its
+       * NON-RIPPLING form: it clears the range on the scoped tracks and
+       * leaves the hole, exactly like plain Delete leaves a gap
+       * (`menuActions.ts`'s own `edit.delete`, and `sessionStore.closeGap`
+       * for the single-gap case).
        *
-       * Building the range-sweep gesture — anchor, rendering, snapping,
-       * persistence, and what it means for the cursor — is a feature of its
-       * own, not the tail of this one. What ships is the row, so the verb is
-       * where a user goes looking for it, and this note, so the next editor
-       * knows the blocker is upstream of the ripple arithmetic rather than in
-       * it. `mergeSpans` and the shift loop in `rippleDeleteClips` are the
-       * whole computation once a range exists.
+       * WHAT IS ACTUALLY MISSING is narrower than "no gesture": a RIPPLING
+       * time-range delete needs its own scope and shift semantics that were
+       * never specified —
+       *  - which tracks shift: every track in the session regardless of
+       *    scope (a ripple is inherently cross-track — item 13's phrasing,
+       *    "remove that span from ALL tracks and close the gap everywhere"),
+       *    or only `mtRangeScopeTrackIds()`'s selection-scoped set (J2's own
+       *    rule for the non-rippling verbs)?
+       *  - whether a track the range does not touch at all (no clip
+       *    overlapping it) still shifts, the same "gap is bounded on both
+       *    sides" question `gaps.ts`'s own header answers for the single-gap
+       *    case but which a MULTI-track ripple has never had to answer.
+       * `mergeSpans` and the shift loop in `rippleDeleteClips` are still the
+       * whole computation once those two questions have rulings — this verb
+       * is unblocked by lot J but not thereby specified.
        *
        * NO ACCELERATOR, deliberately: `installShortcuts` claims a matched combo
        * before it consults `enabled`, so a key bound here would be swallowed in
@@ -799,18 +1082,57 @@ function registerEditCommands(): void {
     // already require and return early without.
     // M1: both are in the Edit menu's LAYOUT too now, next to Delete — U1 left
     // the menu alone as out of its scope, which left the toolbar their only
-    // surface. Neither gets a `shortcut`, because neither has a real one.
+    // surface.
+    // H5 (lot H): each now has a real bare-letter combo in SHORTCUT_TABLE
+    // (`T`, `S`), so each advertises it — the "neither gets a `shortcut`"
+    // note above was true only while neither had a bound key; leaving the
+    // label off now would be the same dead-accelerator defect this repo has
+    // already paid for twice (Ctrl+W, Ctrl+Shift+S).
+    //
+    // Lot J (item 10) — VIEW-ROUTED, in `edit.split`'s own shape above. This
+    // OVERTURNS F1's five-verb set (`isDocumentEditView`/`canEditRegion`,
+    // this file's own note just above them) for these two members:
+    // F1's argument was that Cut/Copy/Paste/Trim/Silence all edit a REGION OF
+    // THE ACTIVE DOCUMENT, which the multitrack view does not show and whose
+    // Undo (routed to the session) cannot reverse. That argument no longer
+    // applies to Trim/Silence once a multitrack time range exists (J1-J9):
+    // the multitrack arm edits the SESSION, not the hidden document, and the
+    // adjacent Undo already addresses exactly that history
+    // (`edit.undo` above routes to `undoSession()` in this view).
+    //
+    // X-4 (final fix wave): this comment used to say Cut/Copy/Paste all
+    // "stay on `canEditRegion`... so F1 still governs three of the five" —
+    // true only until lot L (item 12) shipped the multitrack clip clipboard
+    // and view-routed `edit.copy`/`edit.paste` the same way (see those two
+    // commands below: `s.view === 'multitrack' ? canCopyClips() /
+    // pasteBlockReason() : canEditRegion(s)`). Only `edit.cut` still stays on
+    // `canEditRegion` unconditionally ("Still never in multitrack (M7)", its
+    // own comment below) — F1 now governs exactly ONE of the five.
     {
       id: 'edit.trim',
       label: 'Trim to Selection',
-      enabled: canEditRegion,
-      run: async () => trimToSelection(),
+      shortcut: 'T',
+      enabled: (s) => (s.view === 'multitrack' ? canTrimMtRange() : canEditRegion(s)),
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          trimMtRange();
+          return;
+        }
+        trimToSelection();
+      },
     },
     {
       id: 'edit.silence',
       label: 'Silence Selection',
-      enabled: canEditRegion,
-      run: async () => silenceSelection(),
+      shortcut: 'S',
+      enabled: (s) => (s.view === 'multitrack' ? canSilenceMtRange() : canEditRegion(s)),
+      run: async () => {
+        if (useAppStore.getState().view === 'multitrack') {
+          silenceMtRange();
+          return;
+        }
+        silenceSelection();
+      },
     },
   ]);
 }
@@ -836,14 +1158,20 @@ function registerFileCommands(): void {
       id: 'file.new',
       label: 'New',
       shortcut: 'Ctrl+N',
-      enabled: () => true,
+      // M-c: one of the four document-lifecycle doors gated while the pass
+      // lock is held — the keyboard-reachable replacement for the F10 guard
+      // M6 removes (a new document could become the one a running pass is
+      // pinned to, and the pass's own commit resolves it live).
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => openNewFileDialog(),
     },
     {
       id: 'file.open',
       label: 'Open…',
       shortcut: 'Ctrl+O',
-      enabled: () => true,
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => {
         await openFilesViaDialog();
       },
@@ -858,8 +1186,11 @@ function registerFileCommands(): void {
       // dirty, or a never-written project with content), so "the app would
       // warn me about losing this" and "Save does something" stay one
       // condition rather than two that can disagree (O1-2's rule, lifted from
-      // the document to the project).
-      enabled: () => projectHasUnsavedWork(),
+      // the document to the project). M-e: Save also holds the pass lock
+      // itself (`runProjectSave` below) — this is the START gate, refusing a
+      // save while some OTHER pass already holds it.
+      enabled: () => projectHasUnsavedWork() && passFree(),
+      reason: passReason,
       run: async () => {
         await runProjectSave(false);
       },
@@ -871,7 +1202,8 @@ function registerFileCommands(): void {
       // An explicit "write this project to a file I am about to name"
       // gesture — meaningful with nothing open and nothing dirty, the same
       // reasoning the document Save As had.
-      enabled: () => true,
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => {
         await runProjectSave(true);
       },
@@ -885,14 +1217,26 @@ function registerFileCommands(): void {
       // document. Known, accepted staleness: MenuBar does not subscribe to the
       // session store, so an OPEN File menu re-greys this on the next
       // appStore/history change — the same as `multitrack.mixdown` today.
-      enabled: (s) => (s.view === 'multitrack' ? sessionHasClips() : hasDoc(s)),
+      // Lot M: this only OPENS the dialog — the pass itself is
+      // `ExportDialog.doExport`'s own `runExclusivePass` call, the second seam
+      // a modal needs because it publishes no `moduleLock`.
+      enabled: (s) =>
+        (s.view === 'multitrack' ? hasAnyClip(useSessionStore.getState().session) : hasDoc(s)) &&
+        passFree(),
+      reason: passReason,
       run: async () => openExportDialog(),
     },
     {
       id: 'file.close',
       label: 'Close',
       shortcut: 'Ctrl+W',
-      enabled: hasDoc,
+      // M-c / the lot-B close duty (ledger R14): gated on `passLock.ts`'s
+      // `closeFree()`, NOT the blanket `passFree()` every other door here
+      // uses — see that function's own docblock (fix round 1, item 6: it is
+      // exported from there ONCE now, shared with `FilesPanel.tsx`'s row ✕,
+      // rather than reimplemented in both places).
+      enabled: (s) => hasDoc(s) && closeFree(),
+      reason: closeReason,
       run: async () => {
         const id = activeId();
         if (id) await closeDocumentFlow(id);
@@ -909,12 +1253,19 @@ function registerFileCommands(): void {
  * MenuBar's onClick. A hoisted declaration, so `registerFileCommands` above
  * reaches it the way it reaches `sessionHasClips` below. */
 async function runProjectSave(as: boolean): Promise<void> {
-  try {
-    await saveProject({ as });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await window.electronAPI?.showMessageBox({ type: 'error', title: 'Save Project failed', message });
-  }
+  // Lot M (M-e): Save holds the pass lock for the encode's duration — the
+  // command's own `enabled` already checked `passFree()`, so a PASS_REFUSED
+  // return here means a different pass won a race after that check and
+  // before this ran; there is nothing further to do; the command re-greys on
+  // the next render either way.
+  await runExclusivePass({ id: 'file.save', label: 'Save Project', kind: 'save' }, async () => {
+    try {
+      await saveProject({ as });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await window.electronAPI?.showMessageBox({ type: 'error', title: 'Save Project failed', message });
+    }
+  });
 }
 // ---- end lot A ----
 
@@ -934,7 +1285,10 @@ function registerSessionCommands(): void {
     {
       id: 'session.open',
       label: 'Open Project…',
-      enabled: () => true,
+      // M-c: has no combo of its own, added for the menu's sake — the same
+      // document-lifecycle gate the other three carry.
+      enabled: () => passFree(),
+      reason: passReason,
       run: async () => {
         try {
           await openSessionViaDialog();
@@ -966,7 +1320,12 @@ export function registerEffectCommands(): void {
     cmds.push({
       id: `effect.${effect.id}`,
       label: effect.name,
-      enabled: (s) => activeDoc(s) !== null,
+      // D1/D2 — was `activeDoc(s) !== null`, which in multitrack read
+      // whatever document happened to be active regardless of any clip
+      // selection: exactly the invisible-edit defect v1.36 removed,
+      // reintroduced by a different door. `hasPassTarget` restores D1's rule.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openEffectDialog(effect.id),
     });
   }
@@ -1035,9 +1394,28 @@ function registerNoiseAndViewCommands(): void {
     {
       id: 'noise.capture',
       label: 'Capture Noise Print',
-      enabled: (s) => activeDoc(s) !== null && s.selection !== null,
+      // D1/D2 — multitrack has no `selection` concept of its own (F1); a
+      // resolved clip target stands in for it there, so the OR's multitrack
+      // arm needs nothing further once `hasPassTarget` already confirmed one.
+      enabled: (s) => hasPassTarget(s) && (s.view === 'multitrack' || s.selection !== null),
+      // M-d: NOT gated on the pass lock — synchronous, mouse-only, never in
+      // lot M's start-path table — so this reads the PURE target reason, not
+      // `pipelineReason` (which would misattribute a disablement that has
+      // nothing to do with the lock to "a pass is running").
+      reason: passTargetReason,
       run: async () => {
-        captureNoiseProfile();
+        // R16-adjacent (D1) — pass the resolved clip window straight through
+        // in multitrack rather than letting `captureNoiseProfile()` re-derive
+        // it from `activeDocumentId`/`selection`, neither of which multitrack
+        // maintains for this purpose.
+        const s = useAppStore.getState();
+        if (s.view === 'multitrack') {
+          const target = clipPassTarget();
+          if (typeof target === 'string') return; // enabled() already refused this
+          captureNoiseProfile({ doc: target.doc, start: target.start, end: target.end });
+        } else {
+          captureNoiseProfile();
+        }
         void window.electronAPI?.showMessageBox({
           type: 'info',
           title: 'Noise Print',
@@ -1112,11 +1490,6 @@ function registerDocumentToolCommands(): void {
   ]);
 }
 
-/** True when the current session has at least one clip on any track. */
-function sessionHasClips(): boolean {
-  return useSessionStore.getState().session.tracks.some((t) => t.clips.length > 0);
-}
-
 /** Inserts the entire active document as a clip at the multitrack cursor. The
  * target track is the one holding the selected clip, else the first track. The
  * placement itself — the doc-rate/session-rate conversion, an empty session
@@ -1143,7 +1516,19 @@ function insertActiveDocAsClip(): void {
 async function mixdownToNewFile(): Promise<void> {
   const session = useSessionStore.getState().session;
   const docs = new Map(useAppStore.getState().documents.map((d) => [d.id, d]));
-  const { channels, sampleRate } = mixdownSession(session, docs);
+  // Lot M: `mixdownSession` is SYNCHRONOUS — nothing here ever actually
+  // awaits — so this hold releases in the same tick it is taken. It is
+  // still taken (rather than skipped) so `multitrack.mixdown` enumerates
+  // correctly among the app's other pass-start doors and reports its own
+  // label while `getRunningPass()` is read anywhere during that tick; it
+  // buys no mutual exclusion a synchronous body couldn't already give for
+  // free (`multitrack.mixdown`'s own `enabled` already checked `passFree()`).
+  const result = await runExclusivePass(
+    { id: 'multitrack.mixdown', label: 'Mix Down', kind: 'mixdown' },
+    async () => mixdownSession(session, docs)
+  );
+  if (result === PASS_REFUSED) return;
+  const { channels, sampleRate } = result;
 
   if (channels[0].length === 0) {
     await window.electronAPI?.showMessageBox({
@@ -1175,6 +1560,13 @@ function selectedTrackIds(): string[] {
   return session.tracks.filter((t) => t.clips.some((c) => member.has(c.id))).map((t) => t.id);
 }
 
+/** L1 — `edit.copy`'s multitrack predicate: at least one clip is selected.
+ * Reads the session store directly, as `canSplitAtMtCursor` below and
+ * `edit.delete` do. */
+export function canCopyClips(): boolean {
+  return useSessionStore.getState().selectedClipIds.length > 0;
+}
+
 /** `edit.split`'s multitrack predicate: some clip on a selected track would be
  * cut at `mtCursorSample` - the EDIT cursor, never `mtPlayheadSample` (N5).
  * Reads the session store directly, exactly as `edit.delete` does, and asks
@@ -1195,10 +1587,60 @@ export function splitSelectedTracksAtMtCursor(): string[] {
   const rates = new Map(useAppStore.getState().documents.map((d) => [d.id, d.sampleRate]));
   return splitClipsAt(selectedTrackIds(), mtCursorSample, (id) => rates.get(id));
 }
+
+// ---- lot J ----
+/** J2 + amendment J2-a — Trim/Silence's OWN scope resolver, deliberately NOT
+ * shared with `selectedTrackIds`/`canSplitAtMtCursor` above: J2's ruling text
+ * ("the selected clips' tracks, or all tracks when nothing is selected")
+ * binds, and `selectedTrackIds()` returns `[]` on empty — which is exactly
+ * what makes `edit.split` grey with nothing selected rather than widen. Two
+ * rules that differ (`edit.split` greys; Trim/Silence widen) must not share
+ * one function, or a future edit to one silently changes the other. */
+export function mtRangeScopeTrackIds(): string[] {
+  const ids = selectedTrackIds();
+  return ids.length > 0 ? ids : useSessionStore.getState().session.tracks.map((t) => t.id);
+}
+
+/** `edit.trim`'s multitrack predicate: a range is standing AND `trimTargets`
+ * would actually change something on the scoped tracks — the `canSplitAtMtCursor`
+ * precedent, so the row greys for exactly what the store would refuse (J9:
+ * a whole-timeline range emits no target and greys here, rather than running
+ * as a silent no-op). */
+export function canTrimMtRange(): boolean {
+  const { session, mtTimeRange } = useSessionStore.getState();
+  return mtTimeRange !== null && trimTargets(session, mtRangeScopeTrackIds(), mtTimeRange).length > 0;
+}
+
+/** `edit.trim`'s multitrack run: J1 (keeps the range where it is) via the
+ * store's own `trimClipsToRange`, over the swept range and the scope above. */
+export function trimMtRange(): void {
+  const { mtTimeRange } = useSessionStore.getState();
+  if (mtTimeRange === null) return;
+  trimClipsToRange(mtRangeScopeTrackIds(), mtTimeRange);
+}
+
+/** `edit.silence`'s multitrack predicate — the `canTrimMtRange` shape over
+ * `silenceTargets` (J4). */
+export function canSilenceMtRange(): boolean {
+  const { session, mtTimeRange } = useSessionStore.getState();
+  return mtTimeRange !== null && silenceTargets(session, mtRangeScopeTrackIds(), mtTimeRange).length > 0;
+}
+
+/** `edit.silence`'s multitrack run: J4 (clears the range on the scoped
+ * tracks, leaves the hole) via `silenceClipsInRange`, passing document rates
+ * the way `splitSelectedTracksAtMtCursor` does above (N3) for the split arm
+ * a spanning clip may need. */
+export function silenceMtRange(): void {
+  const { mtTimeRange } = useSessionStore.getState();
+  if (mtTimeRange === null) return;
+  const rates = new Map(useAppStore.getState().documents.map((d) => [d.id, d.sampleRate]));
+  silenceClipsInRange(mtRangeScopeTrackIds(), mtTimeRange, (id) => rates.get(id));
+}
+// ---- end lot J ----
 // ---- end lot D ----
 
 // ---- merge clips ----
-/** `multitrack.mergeClips`' predicate (D1): the clip selection holds TWO OR
+/** `multitrack.joinClips`' predicate (D1): the clip selection holds TWO OR
  * MORE clips on at least one track. Asks `mergeTargets` — the same question the
  * verb itself answers — so the row greys for precisely the selections the merge
  * would refuse, and reads the session store directly, exactly as
@@ -1233,11 +1675,15 @@ export function mergeSelectedClips(): string[] {
     // lookup cannot miss.
     const track = session.tracks.find((t) => t.id === target.trackId)!;
     const { channels, sampleRate } = bakeMergedClip(track, target, docs, session.sampleRate);
-    // D2 — `Merge N`, numbered off its own counter like `Mixdown N`. No
+    // D2 — `Join N`, numbered off its own counter like `Mixdown N`. No
     // `filePath`, so `createDocument` stamps `neverSaved` itself (S4's default);
     // passing the flag would restate a rule that already holds.
-    const n = nextId('merge').split('-')[1];
-    const doc = createDocument({ name: `Merge ${n}`, sampleRate, channels });
+    // H1 (lot H): renamed with the command's label — a `Merge 1` file under a
+    // button labelled Join would be the stale-label defect this repo tracks.
+    // Old `.audm` projects keep the name they stored; document names are data,
+    // not derived.
+    const n = nextId('join').split('-')[1];
+    const doc = createDocument({ name: `Join ${n}`, sampleRate, channels });
     useAppStore.getState().addDocument(doc);
     return { target, documentId: doc.id };
   });
@@ -1249,7 +1695,7 @@ export function mergeSelectedClips(): string[] {
 /** Registers the Task 22 multitrack commands: the real `view.multitrack`
  * toggle (always available — the multitrack view works with no open document),
  * `multitrack.addTrack`, `multitrack.insertDoc`, `multitrack.mixdown` and
- * `multitrack.mergeClips`. The action commands are enabled only while the
+ * `multitrack.joinClips`. The action commands are enabled only while the
  * multitrack view is active. */
 function registerMultitrackCommands(): void {
   registerCommands([
@@ -1274,17 +1720,24 @@ function registerMultitrackCommands(): void {
     {
       id: 'multitrack.mixdown',
       label: 'Mix Down to New File',
-      enabled: (s) => s.view === 'multitrack' && sessionHasClips(),
+      enabled: (s) =>
+        s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session) && passFree(),
+      reason: passReason,
       run: async () => mixdownToNewFile(),
     },
     {
       // D6 — Split's inverse, and the second command here that mints a
-      // document. No shortcut: nothing in `SHORTCUT_TABLE` claims a combo for
-      // it, and this repo has already paid for menu labels naming keys that do
-      // nothing. The predicate is the verb's own question (D1), so the row
+      // document. The predicate is the verb's own question (D1), so the row
       // greys for exactly the selections `mergeSelectedClips` would refuse.
-      id: 'multitrack.mergeClips',
-      label: 'Merge Clips',
+      // H1/H5 (lot H): renamed "Join Clips", id renamed to match (`joinClips`)
+      // — everywhere the user can see it — and it now advertises the bare `J`
+      // SHORTCUT_TABLE binds it to (H2: `M` stays Add Marker, so Join could
+      // not take it). `mergeSelectedClips`/`canMergeSelectedClips` and the
+      // `mergeClips.ts` module keep their names (not user-visible; renaming a
+      // module here would be pure churn).
+      id: 'multitrack.joinClips',
+      label: 'Join Clips',
+      shortcut: 'J',
       enabled: (s) => s.view === 'multitrack' && canMergeSelectedClips(),
       run: async () => {
         mergeSelectedClips();
@@ -1301,20 +1754,20 @@ function registerMultitrackCommands(): void {
     // is what makes them safe while playing, and it is a property of the
     // existing cursor contract rather than anything K1 added.
     //
-    // Enabled on `sessionHasClips()` — no clips, no edges, so the key would
-    // have nowhere to go and the menu row should say so.
+    // Enabled on `hasAnyClip` — no clips, no edges, so the key would have
+    // nowhere to go and the menu row should say so.
     {
       id: 'multitrack.prevClipEdge',
       label: 'Previous Clip Edge',
       shortcut: 'Ctrl+Left',
-      enabled: (s) => s.view === 'multitrack' && sessionHasClips(),
+      enabled: (s) => s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session),
       run: async () => moveCursorToClipEdge('prev'),
     },
     {
       id: 'multitrack.nextClipEdge',
       label: 'Next Clip Edge',
       shortcut: 'Ctrl+Right',
-      enabled: (s) => s.view === 'multitrack' && sessionHasClips(),
+      enabled: (s) => s.view === 'multitrack' && hasAnyClip(useSessionStore.getState().session),
       run: async () => moveCursorToClipEdge('next'),
     },
   ]);
@@ -1404,16 +1857,37 @@ function registerTempoCommands(): void {
     {
       id: 'tempo.detect',
       label: 'Detect Tempo',
-      enabled: (s) => activeDoc(s) !== null,
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => {
-        const d = activeDoc(useAppStore.getState());
-        if (d) await runTempoAnalysis(d);
+        // D1 — `tempo.detect` opens no hosted card (no `beginClipWork` seam
+        // to mint a working document for it), and it WRITES nothing to the
+        // document itself (it caches a per-document tempo analysis entry
+        // keyed by doc id): it needs the right document and no working copy.
+        // Multitrack reads the selected clip's own SOURCE document, not a
+        // copy — analysing the source is exactly what should be cached.
+        const d = multitrackToolDoc(useAppStore.getState());
+        if (!d) return;
+        // Lot M: `tempo.detect` runs with no hosted card behind it (no
+        // dialog, no `moduleLock`), so it is one of the three bodies that
+        // must take the lock itself rather than relying on a card's own
+        // `handleToolModuleLock` publish.
+        await runExclusivePass(
+          { id: 'tempo.detect', label: 'Detect Tempo', kind: 'pipeline' },
+          async () => runTempoAnalysis(d)
+        );
       },
     },
     {
       id: 'tempo.match',
       label: 'Match Tempo',
-      enabled: (s) => activeDoc(s) !== null,
+      // D1 — `tempo.match` IS a `CLIP_WORK_COMMANDS` member: `App.tsx`'s
+      // `openTool` mints and activates a working copy before `TempoDialog`
+      // ever renders, so the dialog's own `activeDoc` read (unchanged, per
+      // this lot's process) already resolves to the right document. Nothing
+      // to prime here.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openTempoDialog(),
     },
     {
@@ -1425,7 +1899,9 @@ function registerTempoCommands(): void {
       // `EffectDefinition.hidden`).
       id: 'timing.align',
       label: 'Align Vocal Timing',
-      enabled: (s) => activeDoc(s) !== null,
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openAlignTimingDialog(),
     },
   ]);
@@ -1446,11 +1922,20 @@ function registerRemixCommands(): void {
     {
       id: 'edit.remix',
       label: 'Auto-Remix',
+      // R16 — a document-PRODUCING row: D2-a excludes it from `hasPassTarget`
+      // (it mints a NEW document; D1's clip WINDOW is not a target it can
+      // express), but it still needs the RIGHT document, not whatever is
+      // merely active — `multitrackToolDoc` prefers the selected clip's
+      // source in multitrack.
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        const d = multitrackToolDoc(s);
+        return d !== null && docLength(d) > 0 && passFree();
       },
-      run: async () => openRemixDialog(),
+      reason: passReason,
+      run: async () => {
+        primeMultitrackDocTarget();
+        openRemixDialog();
+      },
     },
   ]);
 }
@@ -1470,11 +1955,16 @@ function registerStemCommands(): void {
     {
       id: 'edit.separateStems',
       label: 'Separate into Stems',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        const d = multitrackToolDoc(s);
+        return d !== null && docLength(d) > 0 && passFree();
       },
-      run: async () => openSeparateDialog('stems'),
+      reason: passReason,
+      run: async () => {
+        primeMultitrackDocTarget();
+        openSeparateDialog('stems');
+      },
     },
     // D4 — Separate Voice. The SAME separation run as the row above, landed as
     // two tracks (Voice + Backing) instead of five, so it is registered here
@@ -1486,11 +1976,16 @@ function registerStemCommands(): void {
     {
       id: 'voice.separate',
       label: 'Separate Voice',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        const d = multitrackToolDoc(s);
+        return d !== null && docLength(d) > 0 && passFree();
       },
-      run: async () => openSeparateDialog('voice'),
+      reason: passReason,
+      run: async () => {
+        primeMultitrackDocTarget();
+        openSeparateDialog('voice');
+      },
     },
   ]);
 }
@@ -1529,11 +2024,18 @@ function registerTranscribeCommands(): void {
     {
       id: 'edit.transcribe',
       label: 'Transcribe',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        const d = multitrackToolDoc(s);
+        return d !== null && docLength(d) > 0 && passFree();
       },
+      reason: passReason,
       run: async () => {
+        // R16 — primed BEFORE the existing-transcript check below, so in
+        // multitrack that check asks about the SELECTED CLIP's document too:
+        // unprimed, this reveal arm would read whatever was merely active,
+        // showing (or failing to show) the wrong document's transcript.
+        primeMultitrackDocTarget();
         const id = useAppStore.getState().activeDocumentId;
         if (id !== null && getTranscript(id) !== null) {
           focusTranscriptPanel();
@@ -1561,11 +2063,16 @@ function registerVoiceCommands(): void {
     {
       id: 'edit.voiceChanger',
       label: 'Voice Changer',
+      // R16 — see `edit.remix`'s identical comment.
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        const d = multitrackToolDoc(s);
+        return d !== null && docLength(d) > 0 && passFree();
       },
-      run: async () => openVoiceChangerDialog(),
+      reason: passReason,
+      run: async () => {
+        primeMultitrackDocTarget();
+        openVoiceChangerDialog();
+      },
     },
   ]);
 }
@@ -1587,7 +2094,9 @@ function registerVocalChainCommands(): void {
     {
       id: 'effects.vocalChain',
       label: 'Vocal Chain',
-      enabled: (s) => activeDoc(s) !== null,
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openVocalChainDialog(),
     },
   ]);
@@ -1608,7 +2117,18 @@ function registerCoverChainCommands(): void {
     {
       id: 'effects.coverChain',
       label: 'Cover Chain',
-      enabled: (s) => activeDoc(s) !== null,
+      // D1 — a THIRD case, disabled in multitrack OUTRIGHT rather than
+      // gated on a clip target: `runCoverJourney` replaces the WHOLE
+      // session (`coverJourney.ts`'s `useSessionStore.setState({session,…})`
+      // + `clearSessionHistory()` + `setView('multitrack')`), so there is no
+      // clip-scoped shape for it to express at all — D1 applied, not a
+      // deviation (F1's shape: a command that cannot express the target is
+      // refused). `passFree()` is KEPT here (a deliberate correction to the
+      // brief's literal `s.view !== 'multitrack' && activeDoc(s) !== null`,
+      // which drops it): dropping the pass-lock gate would let Cover Chain
+      // start while another pass runs, an M1 regression X1 forbids.
+      enabled: (s) => s.view !== 'multitrack' && activeDoc(s) !== null && passFree(),
+      reason: (s) => passReason() ?? (s.view === 'multitrack' ? COVER_CHAIN_MULTITRACK_REASON : undefined),
       run: async () => openCoverChainDialog(),
     },
   ]);
@@ -1629,7 +2149,9 @@ function registerPodcastChainCommands(): void {
     {
       id: 'effects.podcastChain',
       label: 'Podcast Chain',
-      enabled: (s) => activeDoc(s) !== null,
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      enabled: (s) => hasPassTarget(s) && passFree(),
+      reason: pipelineReason,
       run: async () => openPodcastChainDialog(),
     },
   ]);
@@ -1656,10 +2178,21 @@ function registerAlignLyricsCommands(): void {
     {
       id: 'lyrics.align',
       label: 'Align Lyrics',
+      // D1 — `CLIP_WORK_COMMANDS` member, same reasoning as `tempo.match`.
+      // The non-multitrack arm keeps its own `docLength(d) > 0` clause —
+      // `timing.align`'s `hasPassTarget` alone asks only for a document;
+      // this one hands the region to a model, and an empty document has
+      // nothing to align. The multitrack arm needs no separate check:
+      // `clipPassTarget()`'s `empty-window` refusal already covers it
+      // (D2/D4's "this clip reads nothing from its source file").
       enabled: (s) => {
-        const d = activeDoc(s);
-        return d !== null && docLength(d) > 0;
+        if (s.view !== 'multitrack') {
+          const d = activeDoc(s);
+          return d !== null && docLength(d) > 0 && passFree();
+        }
+        return hasPassTarget(s) && passFree();
       },
+      reason: pipelineReason,
       run: async () => openAlignLyricsDialog(),
     },
   ]);

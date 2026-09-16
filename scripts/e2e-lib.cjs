@@ -454,7 +454,7 @@ function ensureFixtures(specs) {
  */
 async function launchApp({ extraArgs = [] } = {}) {
   if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
-    throw new Error('dist/index.html missing — run `npm run build` first');
+    throw new Error('dist/index.html missing — run `pnpm build` first');
   }
   const app = await electron.launch({
     args: ['.', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', ...extraArgs],

@@ -46,7 +46,7 @@ describe('acquireMainWindow', () => {
   });
 
   test('recognises the dev-server window too', async () => {
-    // `npm run dev` loads http://localhost:3005 instead of dist/index.html, and
+    // `pnpm dev` loads http://localhost:3005 instead of dist/index.html, and
     // the same rigs are pointed at it by hand often enough to matter.
     const page = await acquireMainWindow(fakeApp([[SPLASH, DEV]]), { pollMs: 1 });
     expect(page.url()).toBe(DEV);

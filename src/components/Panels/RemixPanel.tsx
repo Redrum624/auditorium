@@ -21,6 +21,14 @@ import {
 } from '../../services/remixService';
 import { effectiveCrossfadeMs } from '../../dsp/remixRender';
 import type { JoinCostTerms } from '../../dsp/remixCost';
+import { isPassRunning, PASS_REFUSED, runExclusivePass, usePassLock } from '../../services/passLock';
+
+/** No prior menu-level equivalent exists to reuse (`edit.remix`'s own command
+ * only opens `RemixDialog`; the actual work there holds the lock through
+ * `DialogShell`'s `moduleLock` prop, plumbing this plain sidebar panel has
+ * no access to) — a new descriptor, `kind: 'pipeline'` to match every other
+ * non-effect, non-host-job pass. */
+const REMIX_ADJUST_PASS = { id: 'remix.adjust', label: 'Auto-Remix', kind: 'pipeline' } as const;
 
 /**
  * The Auto-Remix adjustment surface (Task T15) for the ACTIVE document's remix
@@ -235,6 +243,11 @@ export default function RemixPanel() {
   // FIRST — the session store is module state, not zustand (see the doc
   // comment). Nothing below re-renders without this.
   useRemixVersion();
+  // Final fix wave (item 13) — re-roll/reset/nudge/reject/crossfade all route
+  // through `runAdjustment` below, which previously gated only on its own
+  // local `busyRef`/`busy` and said nothing about a pass running elsewhere
+  // (a Save, an export, a mixdown, another pipeline tool).
+  const runningPass = usePassLock();
 
   const activeDocumentId = useAppStore((s) => s.activeDocumentId);
   const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
@@ -274,17 +287,24 @@ export default function RemixPanel() {
   const { plan, options, analysis, stale } = session;
   const joins = plan.joins;
   const remixDocId = session.remixDocId;
-  const adjustDisabled = stale || busy;
+  const adjustDisabled = stale || busy || runningPass !== null;
 
   /** One adjustment at a time: they are async (the DP may be in the session's
    * plan worker) and they rewrite the same document, so a second press while
-   * one is outstanding would race two `applyEdit`s onto the same remix. */
+   * one is outstanding would race two `applyEdit`s onto the same remix.
+   * Final fix wave (item 13, second round) — HOLDS the app-wide lock for the
+   * duration (`runExclusivePass`), not merely refuses on it: this is
+   * user-initiated work (a button the user clicked), the same rule
+   * `tempo.detect`'s own menu row follows. `isPassRunning()` stays as a
+   * pre-check too, so a foreign pass never even flashes `busy` before the
+   * acquire fails. */
   const runAdjustment = async (op: () => Promise<unknown>): Promise<void> => {
-    if (busyRef.current || stale) return;
+    if (busyRef.current || stale || isPassRunning()) return;
     busyRef.current = true;
     setBusy(true);
     try {
-      await op();
+      const result = await runExclusivePass(REMIX_ADJUST_PASS, op);
+      if (result === PASS_REFUSED) return; // defence in depth — the pre-check above already refused this
     } finally {
       busyRef.current = false;
       if (mountedRef.current) setBusy(false);

@@ -53,6 +53,10 @@
   --accent: #26c6da;
   --accent-soft: rgba(38, 198, 218, 0.14);
   --accent-ring: rgba(38, 198, 218, 0.35);
+  /* K3: the multitrack CURRENT track's lane mark. Deliberately NOT an accent
+     token — accent means "selected" on this surface, and the current track
+     (the paste target) is a different, weaker kind of highlight. */
+  --lane-current: rgba(255, 255, 255, 0.05);
 
   /* Glass surfaces: cards (panel/dialog cards) vs. chrome (toolbar, icon
      rail, status pill — smaller floating pills). */

@@ -21,6 +21,8 @@ import {
   speakerDocumentBytes,
   type StemLandingResult,
 } from '../../services/stemLanding';
+import { planLanding } from '../../multitrack/sessionLanding'; // lot E
+import { useSessionStore } from '../../multitrack/sessionStore'; // lot E
 import {
   DIARIZE_MODEL_BYTES,
   MEASURED_EMBED_MS_PER_S,
@@ -43,6 +45,7 @@ import {
   type DiarizationEvidence,
 } from '../../dsp/diarization';
 import type { SeparateMode } from '../../services/dialogBus';
+import { isPassRunning, usePassLock } from '../../services/passLock';
 import { GlassButton, GlassSelect, SectionLabel } from '../UI/glass';
 import DialogShell from './DialogShell';
 
@@ -208,6 +211,12 @@ export default function SeparateDialog({
   const voice = mode === 'voice';
   const doc = useAppStore((s) => s.documents.find((d) => d.id === s.activeDocumentId) ?? null);
   const length = doc ? docLength(doc) : 0;
+  // Lot E — which arm THIS run would take, read live so the copy below never
+  // promises a replacement (or an in-place/append) the run will not actually
+  // do. `useSessionStore` re-runs the selector on every session write, which
+  // is deliberately cheap here: `planLanding` is a handful of array scans over
+  // the open session's tracks, not a mixdown.
+  const landingMode = useSessionStore(() => planLanding(doc?.id ?? '').mode);
 
   const [stemModel, setStemModel] = useState<StemModelState | null>(null);
   const [speakerModel, setSpeakerModel] = useState<DiarizeModelState | null>(null);
@@ -230,6 +239,8 @@ export default function SeparateDialog({
 
   const running = stage !== 'idle';
   const busy = downloading || running;
+  // Fix round 1 — subscribed; see EffectDialog's identical comment.
+  const runningPass = usePassLock();
 
   // The unmount mirror (RemixDialog.tsx:124's cancelledRef): a ref, because the
   // cleanup must read the CURRENT value, not the one captured when the effect
@@ -297,6 +308,14 @@ export default function SeparateDialog({
   const downloadedBytes = Math.min(downloadedBase + received, downloadTotal);
 
   async function handleDownload(): Promise<void> {
+    // Fix round 5 (lot D) — the real start seam, defence in depth beside the
+    // Download Model(s) button's own `runningPass !== null` gate below. The
+    // third sibling of the same M1 breach: `AlignLyricsDialog`'s Download
+    // Model (fix round 4) and `TranscribeDialog`'s Download Models (fix
+    // round 5) both had it; `handleSeparate` right below already carries
+    // this same check (fix round 1) but this dialog's OWN download start
+    // seam never did.
+    if (isPassRunning()) return;
     setDownloading(true);
     setError(null);
     setReceived(0);
@@ -354,6 +373,10 @@ export default function SeparateDialog({
   }
 
   async function handleSeparate(): Promise<void> {
+    // Fix round 1 — the real start seam, defence in depth beside `canSeparate`
+    // (this function never re-checked its own button's gate, unlike the
+    // sibling dialogs' `handleApply`/`handleCreate`).
+    if (isPassRunning()) return;
     // Resolved from LIVE state, never captured at open.
     const live = liveDoc();
     if (!live) {
@@ -519,7 +542,10 @@ export default function SeparateDialog({
   const probed = stemModel !== null && (!voice || speakerModel !== null);
   const modelsReady = stemModel?.downloaded === true && (!voice || speakerModel?.downloaded === true);
   const modelMissing = probed && !modelsReady;
-  const canSeparate = !busy && notes === null && review === null && doc !== null && length > 0 && modelsReady;
+  // Fix round 1 — subscribed, so a FOREIGN pass starting while this card
+  // sits open and idle re-greys Separate immediately.
+  const canSeparate =
+    !busy && notes === null && review === null && doc !== null && length > 0 && modelsReady && runningPass === null;
   const message = error ?? (doc === null ? 'No document is open.' : null);
 
   // D5: the pre-run estimate sums stage 1 (Demucs, 1/1.52 x realtime) and the
@@ -574,8 +600,16 @@ export default function SeparateDialog({
 
             <p data-testid="separate-produces" className="text-xs" style={{ color: 'var(--glass-text-label)' }}>
               {voice
-                ? 'One track per speaker plus Backing. The voice is separated from everything else first, then each speaker’s turns land on their own track.'
-                : `Five tracks in a new multitrack session: ${TRACK_LIST} — the Residual holding everything the model could not place.`}
+                ? landingMode === 'in-place'
+                  ? `One track per speaker plus Backing, in place of ${doc?.name ?? 'the source file'} on your timeline. The voice is separated from everything else first, then each speaker’s turns land on their own track. Everything else in the session stays where it is.`
+                  : landingMode === 'appended'
+                    ? 'One track per speaker plus Backing, added to your open session. The voice is separated from everything else first, then each speaker’s turns land on their own track. Nothing already on the timeline is removed.'
+                    : 'One track per speaker plus Backing. The voice is separated from everything else first, then each speaker’s turns land on their own track.'
+                : landingMode === 'in-place'
+                  ? `Five tracks in place of ${doc?.name ?? 'the source file'} on your timeline: ${TRACK_LIST} — the Residual holding everything the model could not place. Everything else in the session stays where it is.`
+                  : landingMode === 'appended'
+                    ? `Five tracks added to your open session: ${TRACK_LIST} — the Residual holding everything the model could not place. Nothing already on the timeline is removed.`
+                    : `Five tracks in a new multitrack session: ${TRACK_LIST} — the Residual holding everything the model could not place.`}
             </p>
 
             {voice ? (
@@ -586,6 +620,8 @@ export default function SeparateDialog({
               >
                 Backing adds back to your original as before. Speaker tracks carry that speaker’s turns
                 with short fades at each edge, so they do not add back sample for sample.
+                {landingMode !== 'replaced' &&
+                  ' Mixing the session down now gives you the whole session, not this file on its own.'}
               </p>
             ) : (
               <p
@@ -596,6 +632,8 @@ export default function SeparateDialog({
                 The five tracks always add back up to your original, sample for sample — no audio is lost.
                 How cleanly the instruments are told apart is bounded by the model, so expect some bleed
                 between them; that is a limit of the separation, not a bug.
+                {landingMode !== 'replaced' &&
+                  ' Mixing the session down now gives you the whole session, not this file on its own.'}
               </p>
             )}
           </>
@@ -659,7 +697,11 @@ export default function SeparateDialog({
               </div>
             ) : (
               <div>
-                <GlassButton variant="primary" onClick={() => void handleDownload()}>
+                <GlassButton
+                  variant="primary"
+                  onClick={() => void handleDownload()}
+                  disabled={runningPass !== null}
+                >
                   {voice ? 'Download Models' : 'Download Model'}
                 </GlassButton>
               </div>

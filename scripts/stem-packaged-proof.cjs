@@ -9,7 +9,7 @@
 // silent electron-builder breaker — actually works in the shipped artifact,
 // not just the dev tree.
 //
-// Run AFTER `npm run build:win`:
+// Run AFTER `pnpm build:win`:
 //   node scripts/stem-packaged-proof.cjs
 //
 // Exit codes: 0 proof passed · 1 selftest failed · 2 prerequisites missing.
@@ -40,7 +40,7 @@ function fail(code, msg) {
   process.exit(code);
 }
 
-if (!fs.existsSync(EXE)) fail(2, `packaged app not found at ${EXE} — run npm run build:win first`);
+if (!fs.existsSync(EXE)) fail(2, `packaged app not found at ${EXE} — run pnpm build:win first`);
 if (!fs.existsSync(MODEL)) {
   fail(2, `model not found at ${MODEL} — run the integration test once (it downloads via the model manager)`);
 }

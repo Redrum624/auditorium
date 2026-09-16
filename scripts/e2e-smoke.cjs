@@ -6,7 +6,7 @@
 // full round trip: open a WAV, verify the decoded state and a rendered waveform,
 // export MP3, save-as WAV, screenshot. Exits 0 on success, 1 on any failure.
 //
-// Run: npm run build && npm run smoke
+// Run: pnpm build && pnpm smoke
 
 const path = require('node:path');
 const fs = require('node:fs');
@@ -593,8 +593,9 @@ async function main() {
     );
     assert(rec.rms > 0, `recording is non-silent (rms ${rec.rms.toFixed(4)} > 0)`);
     // Task S4: a take is COMPUTED audio that has never been on disk. It is
-    // created with no undo entry, so `dirty` is false — `neverSaved` is what
-    // makes closing it (or quitting) ask first instead of discarding it.
+    // created with no undo entry, so `dirty` is false. Since lot B the
+    // per-document close does NOT read `neverSaved` any more (a clean take
+    // closes with no prompt); `neverSaved` is what makes QUITTING ask first.
     const recSummary = await page.evaluate(() => window.__test.getStateSummary());
     assert(
       recSummary.neverSaved === true,
@@ -1038,7 +1039,8 @@ async function main() {
       `freshly opened document is clean before any edit (dirty=${cleanSummary.dirty})`
     );
     // Task S4: a document read off disk is NOT never-saved, so closing it
-    // asks nothing. (The computed-document half is asserted at step 5.)
+    // asks nothing — and since lot B the close prompt reads `dirty` alone, so
+    // this holds regardless. (The computed-document half is asserted at step 5.)
     assert(
       cleanSummary.neverSaved === false,
       `an opened file is not flagged never-saved (neverSaved=${cleanSummary.neverSaved})`
@@ -2349,8 +2351,8 @@ async function main() {
     console.log(`  edit pill buttons: ${JSON.stringify(editButtons)}`);
     assert(
       editButtons.map((b) => b.label).join(',') ===
-        'Split,Merge,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
-      `the edit pill carries the nine commands in the mockup's order (actual ${editButtons.map((b) => b.label).join(',')})`
+        'Select All,Split,Join,Copy,Paste,Delete,Trim,Silence,Undo,Redo',
+      `the edit pill carries the ten commands in the mockup's order (actual ${editButtons.map((b) => b.label).join(',')})`
     );
     assert(
       editButtons.filter((b) => ['Copy', 'Delete', 'Trim', 'Silence'].includes(b.label))
@@ -2360,6 +2362,13 @@ async function main() {
     assert(
       editButtons.some((b) => b.label === 'Split' && b.disabled === false),
       `Split needs only an open file, so it is lit with no selection (actual ${JSON.stringify(editButtons)})`
+    );
+    // H8 (lot H): Select All is a SELECTION verb, not an edit acting on one —
+    // it is lit with no selection, like Split, and must not join the
+    // disabled-verbs filter above.
+    assert(
+      editButtons.some((b) => b.label === 'Select All' && b.disabled === false),
+      `Select All needs only an open file, so it is lit with no selection (actual ${JSON.stringify(editButtons)})`
     );
     // Closing the card really hands its width to the waveform — the claim the
     // whole strip rearrangement exists for.
@@ -3430,6 +3439,19 @@ async function main() {
         `  source: ${stemSource.activeName}, ${audioSeconds.toFixed(2)}s, ` +
           `${stemSource.sampleRate} Hz, ${stemSource.channels} ch (docCount ${stemSource.docCount})`
       );
+      // Lot E fix round 1: this step's own assertions below (a five-track,
+      // five-clip session named after the source) are the REPLACED arm's
+      // shape, not the appended one — and by this point in the run the open
+      // session already has the clip `insertActiveDocAsClip(0, 0)` put there
+      // at line ~2601, with no `newSession`/clip-delete/session-load between
+      // there and here, so item 5's `hasAnyClip` gate would otherwise take
+      // the appended arm here too. The mixdown-identity check right after
+      // this step is what this step exists to prove end-to-end, and that is
+      // clearest read against a clean, five-track session — so the session
+      // is reset explicitly rather than rewriting these assertions around a
+      // dirty one; the appended/in-place arms are already exercised for real
+      // by the voice/speaker landings further down this file.
+      await page.evaluate((rate) => window.__test.newSession(rate), stemSource.sampleRate);
       const stems = await page.evaluate(() => window.__test.separateStems());
       const stemSeconds = stems.elapsedMs / 1000;
       console.log(`  separateStems: ${JSON.stringify(stems)}`);
@@ -3455,6 +3477,11 @@ async function main() {
       assert(
         afterSummary.docCount === stemSource.docCount + 5,
         `exactly five NEW documents were added (expected ${stemSource.docCount + 5}, actual ${afterSummary.docCount})`
+      );
+      assert(
+        stems.landingMode === 'replaced',
+        `the session reset above had no clips, so this landing must replace it (got ` +
+          `${JSON.stringify(stems.landingMode)})`
       );
       assert(
         stems.sessionName === `${stemSource.activeName} — Stems`,
@@ -4962,22 +4989,26 @@ async function main() {
       '  split at cursor: the pill and Ctrl+K both cut the clip in place; one Ctrl+Z each'
     );
 
-    // (e) Merge Clips — Split's inverse, through the pill.
+    // (e) Join Clips — Split's inverse, through the pill. H1 (lot H): renamed
+    // from "Merge Clips" everywhere the user can see it; `mergeClips`,
+    // `mergeSelectedClips`, `canMergeSelectedClips` and the other internal
+    // names below keep their names — not user-visible, renaming would be pure
+    // churn.
     //
-    // A merge is the one clip verb that writes BOTH stores in one act: it
-    // mints a document (`Merge N`, the Mixdown pattern — no undo entry of its
-    // own) and, in a single session gesture, adds the merged clip and removes
+    // A join is the one clip verb that writes BOTH stores in one act: it
+    // mints a document (`Join N`, the Mixdown pattern — no undo entry of its
+    // own) and, in a single session gesture, adds the joined clip and removes
     // its members. Nothing but the packaged app can show the two moving
     // together: the core's unit tests hand `mergeClips` a plain session and
     // never see the Files panel gain a file, and a component test renders the
     // pill with no session under it, so the button it draws is enabled by a
     // mock rather than by `canMergeSelectedClips`.
     //
-    // The step splits the lone clip in two, merges the halves back, then puts
-    // everything back the way it found it — both undos, the `Merge N`
+    // The step splits the lone clip in two, joins the halves back, then puts
+    // everything back the way it found it — both undos, the `Join N`
     // document closed and the previous active file re-activated — because
     // every later step reads the one-clip session (d) left.
-    console.log('Merge clips: pill, one minted document, one undo step...');
+    console.log('Join clips: pill, one minted document, one undo step...');
     const mergeBefore = await page.evaluate(() => window.__test.getStateSummary());
     const mergeWhole = (await page.evaluate(() => window.__test.getClipFadeState())).clips[0];
     await page.evaluate((id) => window.__test.selectClips([id]), mergeWhole.clipId);
@@ -4997,14 +5028,14 @@ async function main() {
       (ids) => window.__test.selectClips(ids),
       mergeHalves.map((c) => c.clipId)
     );
-    const mergeBtn = '[data-testid="edit-pill"] button[aria-label="Merge"]';
+    const mergeBtn = '[data-testid="edit-pill"] button[aria-label="Join"]';
     const mergeState = await page.evaluate((sel) => {
       const b = document.querySelector(sel);
       return { present: b !== null, disabled: b !== null && b.disabled === true };
     }, mergeBtn);
     assert(
       mergeState.present && mergeState.disabled === false,
-      `the pill's Merge button is present and LIVE with two clips of one track selected (${JSON.stringify(mergeState)})`
+      `the pill's Join button is present and LIVE with two clips of one track selected (${JSON.stringify(mergeState)})`
     );
     await page.click(mergeBtn);
     await page.waitForFunction(
@@ -5021,15 +5052,15 @@ async function main() {
     );
     assert(
       mergeHalves.every((h) => h.clipId !== merged.clips[0].clipId),
-      `the merged clip is a NEW clip over the minted document, not either half re-used (${merged.clips[0].clipId} vs ${JSON.stringify(mergeHalves.map((h) => h.clipId))})`
+      `the joined clip is a NEW clip over the minted document, not either half re-used (${merged.clips[0].clipId} vs ${JSON.stringify(mergeHalves.map((h) => h.clipId))})`
     );
     const mergeAfter = await page.evaluate(() => window.__test.getStateSummary());
     assert(
       mergeAfter.docCount === mergeBefore.docCount + 1,
-      `the merge minted exactly one document (docCount ${mergeBefore.docCount} -> ${mergeAfter.docCount})`
+      `the join minted exactly one document (docCount ${mergeBefore.docCount} -> ${mergeAfter.docCount})`
     );
     assert(
-      mergeAfter.activeName !== null && /^Merge \d+$/.test(mergeAfter.activeName),
+      mergeAfter.activeName !== null && /^Join \d+$/.test(mergeAfter.activeName),
       `and it is the active one, named like every other computed document (activeName ${mergeAfter.activeName})`
     );
 
@@ -5037,7 +5068,7 @@ async function main() {
     const afterMergeZ = await page.evaluate(() => window.__test.getClipFadeState());
     assert(
       afterMergeZ.clips.length === 2,
-      `ONE Ctrl+Z undid the whole merge — the add and both removes (${afterMergeZ.clips.length} clips)`
+      `ONE Ctrl+Z undid the whole join — the add and both removes (${afterMergeZ.clips.length} clips)`
     );
     await page.keyboard.press('Control+y');
     const afterMergeY = await page.evaluate(() => window.__test.getClipFadeState());
@@ -5046,7 +5077,7 @@ async function main() {
       `Ctrl+Y re-applied it (${afterMergeY.clips.length} clip)`
     );
 
-    // Back to what this step found: undo the merge, then the split above it.
+    // Back to what this step found: undo the join, then the split above it.
     await page.keyboard.press('Control+z');
     await page.keyboard.press('Control+z');
     const afterMergeUndone = await page.evaluate(() => window.__test.getClipFadeState());
@@ -5054,10 +5085,10 @@ async function main() {
       afterMergeUndone.clips.length === 1 &&
         afterMergeUndone.clips[0].startSample === 0 &&
         afterMergeUndone.clips[0].lengthSample === 88200,
-      `merge and split both undone, the session exactly as (d) left it (${JSON.stringify(afterMergeUndone.clips)})`
+      `join and split both undone, the session exactly as (d) left it (${JSON.stringify(afterMergeUndone.clips)})`
     );
     // Undo restores the members but never un-mints the document, and it does
-    // not move the active one either (D7), so `Merge N` is still open and
+    // not move the active one either (D7), so `Join N` is still open and
     // still active here. Closing it through the test-mode close path — the
     // plain store action, no save prompt to block headless — is what returns
     // the Files panel to its pre-step count.
@@ -5073,7 +5104,7 @@ async function main() {
       `the Files panel and the active document are back where the step found them (${JSON.stringify({ docCount: mergeRestored.docCount, activeName: mergeRestored.activeName })} vs ${JSON.stringify({ docCount: mergeBefore.docCount, activeName: mergeBefore.activeName })})`
     );
     console.log(
-      '  merge clips: the pill joined both halves over a new Merge document; one Ctrl+Z each, session restored'
+      '  join clips: the pill joined both halves over a new Join document; one Ctrl+Z each, session restored'
     );
 
     // (f) D3 — a GAP is selectable, and Delete closes it.
@@ -5287,6 +5318,231 @@ async function main() {
     console.log(
       '  gaps: the band covered the empty stretch; Delete and Shift+Del each closed it in one undo step'
     );
+
+    // Lot L (items 11/12) — Copy/Paste for multitrack CLIPS.
+    //
+    // Clicking a track's BACKGROUND to make it the CURRENT track (K2/K3) has
+    // no test hook for the GESTURE by design (the brief's own ruling: a hook
+    // would be a second, untested definition of a click Playwright can drive
+    // for real) — a real `page.mouse` press-and-release is the same argument
+    // the gap block's own double-click makes, run in the other direction.
+    // Ctrl+C/Ctrl+V are the real keys, exactly as the brief's Outputs section
+    // asks.
+    //
+    // Fix round 1 — `currentTrackId` is NOT part of `SessionSnapshot`, so
+    // nothing in this 5000-line walk has ever reset it, and lot K's own
+    // ruling (clicking a CLIP also sets it, R20) means it is already non-null
+    // from clip clicks earlier in this very script (the gap block right
+    // above sets it via `selectClips`-driven... no — via the REAL clip
+    // selections `TrackLane`/`ClipView` make on every clip press). The old
+    // `assert(trackBefore === null, ...)` assumed a precondition this walk
+    // can never actually meet. Captured, not assumed, and restored via
+    // `setCurrentTrack` (a save/restore hook only — never a substitute for
+    // the click below, see its own docblock in `testHooks.ts`).
+    //
+    // The session found here is the gap block's own restore: ONE clip over
+    // [0, 88200) on track 1 (index 0). Track 2 (index 1) is EMPTY — its
+    // background is exactly what item 12's "click anywhere on a visible part
+    // of the background" is about.
+    console.log(
+      "Copy/Paste (items 11/12): click track 2's background, Ctrl+C, Ctrl+V lands right of the bar..."
+    );
+    const clipboardBefore = await page.evaluate(() => window.__test.getClipFadeState());
+    const clipboardSource = clipboardBefore.clips[0];
+    assert(
+      clipboardBefore.clips.length === 1 &&
+        clipboardSource.startSample === 0 &&
+        clipboardSource.lengthSample === 88200,
+      `found the session where the gap block left it (${JSON.stringify(clipboardBefore.clips)})`
+    );
+    // The gap block's own restore left no CLIP selection standing — captured
+    // rather than assumed, so this sub-step's own restore below puts back
+    // whatever was ACTUALLY there rather than a guess. The CURRENT TRACK is
+    // captured the same way, for the same reason (fix round 1): whatever
+    // clip clicks earlier in the walk left it at, not `null`.
+    const clipSelectionBefore = clipboardBefore.selectedClipId;
+    const trackBefore = await page.evaluate(() => window.__test.getCurrentTrack());
+
+    const lane2 = await page.evaluate(() => {
+      const lane = document.querySelectorAll('[data-testid="track-lane"]')[1];
+      const r = lane.getBoundingClientRect();
+      return { x: r.x + r.width * 0.9, y: r.y + r.height / 2, trackId: lane.getAttribute('data-track-id') };
+    });
+    assert(lane2.trackId !== null, `track 2's lane carries its own id (${JSON.stringify(lane2)})`);
+    // Fix round 1 (addendum, HIGH) — the CLICK must land BEFORE the clip is
+    // (re-)selected, not after: `TrackLane.onPointerDown` clears the clip
+    // selection on a plain, no-modifier press (X6) — `if (!e.ctrlKey &&
+    // !e.shiftKey) setSelectedClip(null);` (`TrackLane.tsx`) — before this
+    // fix the hook-selected clip was wiped by the very next line's click, so
+    // `Control+c` fired with nothing selected, `canCopyClips()` was false,
+    // and the clipboard never actually became `'clips'`. The marquee
+    // capture-phase handler does not `stopPropagation`, so the lane handler
+    // genuinely runs underneath it. `setCurrentTrack` is untouched by
+    // `selectClips` (K's own field, written only by the three click sites),
+    // so selecting the clip back AFTER this click is safe and keeps the
+    // track this click just set.
+    await page.mouse.move(lane2.x, lane2.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    // A CAUSALITY check, not a "was it null" one: whatever `trackBefore` was,
+    // the click must land on track 2's own id specifically — a click that
+    // silently did nothing (or hit some other row) would leave it unchanged,
+    // and this is the assertion that would catch that, unlike waiting for
+    // merely "not null" against a value already non-null before the click.
+    const clickedTrack = await page
+      .waitForFunction(
+        (id) => window.__test.getCurrentTrack() === id,
+        lane2.trackId,
+        { timeout: 5000 }
+      )
+      .then(() => true)
+      .catch(() => false);
+    const currentTrackNow = await page.evaluate(() => window.__test.getCurrentTrack());
+    assert(
+      clickedTrack === true,
+      `clicking track 2's background made it current (expected ${lane2.trackId}, ` +
+        `got ${currentTrackNow}; was ${trackBefore} before the click)`
+    );
+    console.log(`  clicked track 2's background; current track is now ${lane2.trackId}`);
+
+    // NOW select the clip to copy — after the click, so the click's own
+    // deselect (X6) cannot wipe it before Ctrl+C ever fires.
+    await page.evaluate((id) => window.__test.selectClips([id]), clipboardSource.clipId);
+    const selectedBeforeCopy = await page.evaluate(() => window.__test.getClipFadeState().selectedClipId);
+    assert(
+      selectedBeforeCopy === clipboardSource.clipId,
+      `the source clip is selected right before Ctrl+C, surviving the click (${selectedBeforeCopy})`
+    );
+
+    await page.keyboard.press('Control+c');
+    const clipboardKind = await page.evaluate(() => window.__test.getClipboardKind());
+    assert(clipboardKind === 'clips', `Ctrl+C landed on the CLIP clipboard slot (${clipboardKind})`);
+
+    // Right of the bar (L2), past the source clip's own end — a NON-identity
+    // cursor, not sample 0.
+    const pasteCursor = clipboardSource.startSample + clipboardSource.lengthSample + 5000;
+    await page.evaluate((s) => window.__test.setMtCursor(s), pasteCursor);
+    await page.keyboard.press('Control+v');
+    await page.waitForFunction(
+      (n) => window.__test.getClipFadeState().clips.length === n,
+      2,
+      { timeout: 10000 }
+    );
+    const afterPaste = await page.evaluate(() => window.__test.getClipFadeState());
+    const pastedClip = afterPaste.clips.find((c) => c.clipId !== clipboardSource.clipId);
+    assert(
+      pastedClip !== undefined && afterPaste.clips.length === 2,
+      `paste minted exactly one new clip (${JSON.stringify(afterPaste.clips)})`
+    );
+    assert(
+      pastedClip.startSample === pasteCursor && pastedClip.lengthSample === clipboardSource.lengthSample,
+      `the pasted clip lands exactly at the bar (${JSON.stringify(pastedClip)} vs cursor ${pasteCursor})`
+    );
+    assert(
+      pastedClip.trackIndex === 1,
+      `the pasted clip landed on the CLICKED track (index 1), not the source's own ` +
+        `(${JSON.stringify(pastedClip)})`
+    );
+
+    await page.keyboard.press('Control+z');
+    const afterPasteUndo = await page.evaluate(() => window.__test.getClipFadeState());
+    assert(
+      afterPasteUndo.clips.length === 1 && afterPasteUndo.clips[0].clipId === clipboardSource.clipId,
+      `Ctrl+Z removed exactly the pasted clip — the session is where the gap block left it ` +
+        `(${JSON.stringify(afterPasteUndo.clips)})`
+    );
+    const clipboardAfterUndo = await page.evaluate(() => window.__test.getClipboardKind());
+    assert(
+      clipboardAfterUndo === 'clips',
+      'undoing the paste does not un-copy — the clipboard still holds the clip (L3)'
+    );
+    // Restore the clip selection AND the current track this sub-step found
+    // (fix round 1): `setCurrentTrack` is a save/restore-only harness seam,
+    // not a stand-in for the click above, which is what actually proved the
+    // K2/K3 gesture.
+    await page.evaluate(
+      (id) => window.__test.selectClips(id === null ? [] : [id]),
+      clipSelectionBefore
+    );
+    const currentTrackRestored = await page.evaluate(
+      (id) => window.__test.setCurrentTrack(id),
+      trackBefore
+    );
+    assert(
+      currentTrackRestored === trackBefore,
+      'restoring the current track after copy/paste actually landed — sessionStore.setCurrentTrack refuses silently if trackBefore names a track that no longer exists'
+    );
+    console.log(
+      "  copy/paste: a real click made track 2 current, Ctrl+C copied the clip, Ctrl+V dropped it right of the bar there"
+    );
+
+    // Lot J (item 10) — the multitrack TIME RANGE and Trim, wired.
+    //
+    // The sweep gesture itself (`Shift`+drag) is a real pointer drag over a
+    // real lane, unreachable from Playwright the way the gap's own
+    // double-click already is not (see (f)'s own header above) — same
+    // argument, same fix: `sweepMtRange` states the same OUTCOME through the
+    // resolver and setter the gesture itself calls (`orderTimeRange` +
+    // `setMtTimeRange`). What is left under test here is everything the hook
+    // does not do: the BAND the app paints, the pill's Trim button actually
+    // reaching the session, and the single undo entry it leaves.
+    //
+    // The session found here is (f)'s own restore: ONE clip over [0, 88200)
+    // on track 1.
+    console.log('Time range (item 10): sweep a range, Trim keeps it, Ctrl+Z restores...');
+    const rangeBefore = await page.evaluate(() => window.__test.getClipFadeState()).then((s) => s.clips[0]);
+    assert(
+      rangeBefore.startSample === 0 && rangeBefore.lengthSample === 88200,
+      `found the session where (f) left it (${JSON.stringify(rangeBefore)})`
+    );
+    const sweptRange = await page.evaluate(() => window.__test.sweepMtRange(20000, 50000));
+    assert(
+      sweptRange !== null && sweptRange.startSample === 20000 && sweptRange.endSample === 50000,
+      `the hook stored the range it was asked for (${JSON.stringify(sweptRange)})`
+    );
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-testid="mt-time-range"]').length === 1,
+      null,
+      { timeout: 5000 }
+    );
+    const bandPainted = await page.evaluate(
+      () => document.querySelectorAll('[data-testid="mt-time-range"]').length
+    );
+    assert(bandPainted === 1, `the time-range band is painted once the range is set (${bandPainted})`);
+
+    const trimBtn = '[data-testid="edit-pill"] button[aria-label="Trim"]';
+    const trimState = await page.evaluate((sel) => {
+      const b = document.querySelector(sel);
+      return { present: b !== null, disabled: b !== null && b.disabled === true };
+    }, trimBtn);
+    assert(
+      trimState.present && trimState.disabled === false,
+      `the pill's Trim button is present and LIVE once a time range is standing (${JSON.stringify(trimState)})`
+    );
+    await page.click(trimBtn);
+    await page.waitForFunction(
+      () => window.__test.getClipFadeState().clips[0].lengthSample === 30000,
+      null,
+      { timeout: 10000 }
+    );
+    const afterTrim = await page.evaluate(() => window.__test.getClipFadeState());
+    assert(
+      afterTrim.clips.length === 1 &&
+        afterTrim.clips[0].startSample === 20000 &&
+        afterTrim.clips[0].lengthSample === 30000,
+      `Trim kept exactly the swept range — the surviving clip's span equals what the hook returned ` +
+        `(${JSON.stringify(afterTrim.clips)} vs range ${JSON.stringify(sweptRange)})`
+    );
+
+    await page.keyboard.press('Control+z');
+    const afterRangeZ = await page.evaluate(() => window.__test.getClipFadeState());
+    assert(
+      afterRangeZ.clips.length === 1 &&
+        afterRangeZ.clips[0].startSample === 0 &&
+        afterRangeZ.clips[0].lengthSample === 88200,
+      `ONE Ctrl+Z restored the whole trim (${JSON.stringify(afterRangeZ.clips)})`
+    );
+    console.log('  time range: swept, Trim kept exactly it, one Ctrl+Z restored the session');
 
     // (g) D1 — Ctrl+wheel zooms toward the BAR, never toward the pointer.
     //
@@ -7423,10 +7679,17 @@ async function main() {
     const podcastBefore = await stateOf();
     /** Clicks the hosted tool's ✕ and waits for the host to go. Hosted tools
      * install no Escape handler and raise no backdrop, so Escape closes
-     * nothing — the walker learned this the same way. */
+     * nothing — the walker learned this the same way.
+     *
+     * Lot C (C5): scoped to `[data-testid="tool-host"]` — an idle tool and an
+     * idle effect can both be retained at once now, and `EffectHost` renders
+     * first in `App.tsx`'s DOM order, so an unscoped query would risk
+     * clicking the EFFECT card's ✕ instead whenever both are mounted. */
     const closeHostedTool = async () => {
       await page.evaluate(() => {
-        const b = document.querySelector('[data-testid="hosted-tool-close"]');
+        const b = document.querySelector(
+          '[data-testid="tool-host"] [data-testid="hosted-tool-close"]'
+        );
         if (!b || b.disabled) throw new Error('the hosted tool has no live ✕');
         b.click();
       });
@@ -7641,12 +7904,30 @@ async function main() {
     // because what it lands is one track PER SPEAKER plus Backing. An
     // `includes` pin would have survived the change with the sentence half
     // rewritten around it, so both paragraphs are compared whole.
+    //
+    // Lot E fix round 2: this is the APPENDED arm's copy, not the replaced
+    // arm's — deliberately, not by accident. The open session already has
+    // clips standing from earlier steps (no `newSession` between the
+    // split/merge/gap block and here — see the `landingMode !== 'replaced'`
+    // assertion on the landing hooks further down this same step, which
+    // depends on that exact same precondition), so `SeparateDialog`'s own
+    // live `planLanding` selector correctly renders the appended-arm text —
+    // confirmed against the real packaged app's own logged
+    // `separate-produces`/`separate-guarantees` text. Resetting the session
+    // here to force the replaced arm would only move the contradiction: the
+    // hook-based landings a few dozen lines down would still see a session
+    // with no clips added in between, so they would ALSO switch to
+    // `'replaced'` and break their own `landingMode !== 'replaced'` checks.
+    // This is the one place in the whole smoke that exercises the appended
+    // arm's live dialog copy, so it is kept rather than reset away.
     const VOICE_PRODUCES =
-      'One track per speaker plus Backing. The voice is separated from everything else first, ' +
-      'then each speaker’s turns land on their own track.';
+      'One track per speaker plus Backing, added to your open session. The voice is separated ' +
+      'from everything else first, then each speaker’s turns land on their own track. Nothing ' +
+      'already on the timeline is removed.';
     const VOICE_GUARANTEES =
       'Backing adds back to your original as before. Speaker tracks carry that speaker’s turns ' +
-      'with short fades at each edge, so they do not add back sample for sample.';
+      'with short fades at each edge, so they do not add back sample for sample. Mixing the ' +
+      'session down now gives you the whole session, not this file on its own.';
     assert(
       voiceDialog.produces === VOICE_PRODUCES,
       `it promises one track per speaker plus Backing, and says the voice is lifted out first ` +
@@ -7995,13 +8276,47 @@ async function main() {
     }
     await openModuleCard(page, 'Files');
 
+    // Lot E fix round 2 (addendum A): `[data-testid="track-header"]` /
+    // `[data-testid="clip"]` render ONLY under `MultitrackView`, and the last
+    // view write before this point is `setView('waveform')` several steps
+    // back — nothing in between reaches any `setView('multitrack')` site. A
+    // DOM snapshot taken here would silently read {tracks: 0, clips: 0}
+    // every time, which made the round-1 "fix" a no-op: it degenerated back
+    // to the same unsatisfiable absolute-count shape the landingMode
+    // assertion below already contradicts. Force the view the snapshot
+    // depends on before reading it, rather than trusting whatever view an
+    // earlier, unrelated step happened to leave on screen.
+    await page.evaluate(() => window.__test.setView('multitrack'));
+
+    // Lot E fix round 1: the DOM snapshot BEFORE this landing, because the
+    // open session already has clips (the split/merge/gap block's, still
+    // standing — see the landingMode note below) and this landing therefore
+    // APPENDS rather than replaces. A hardcoded post-landing track/clip count
+    // would contradict the very landingMode assertion two lines down; the
+    // correct invariant is "exactly two more of each", not an absolute count.
+    const mtBeforeVoice = await page.evaluate(() => ({
+      tracks: document.querySelectorAll('[data-testid="track-header"]').length,
+      clips: document.querySelectorAll('[data-testid="clip"]').length,
+    }));
+
     // --- the N <= 1 door: Voice + Backing, still the shipped `landVoice` ---
     const landed = await page.evaluate(() => window.__test.separateVoiceLand());
     console.log(`  separateVoiceLand: ${JSON.stringify(landed)}`);
     assert(landed.ok === true, `the landing ran (${JSON.stringify(landed)})`);
     assert(
-      JSON.stringify(landed.trackNames) === JSON.stringify(['Voice', 'Backing']),
-      `two tracks, Voice first (${JSON.stringify(landed.trackNames)})`
+      JSON.stringify(landed.landedTrackNames) === JSON.stringify(['Voice', 'Backing']),
+      `two tracks, Voice first (${JSON.stringify(landed.landedTrackNames)})`
+    );
+    // Lot E: this step's own tracks (the split/merge/gap block earlier in this
+    // run left clips standing and never called `newSession` since — no
+    // `newSession` between here and line ~4760) mean the open session already
+    // has clips, so E3's gate takes a non-replaced arm. The source document
+    // this step opened was never placed on the timeline, so there is no
+    // anchor clip to land in place of — the landing appends instead.
+    assert(
+      landed.landingMode !== 'replaced',
+      `the open session already has clips, so this landing must not replace it (got ` +
+        `${JSON.stringify(landed.landingMode)})`
     );
     assert(
       JSON.stringify(landed.documentNames) ===
@@ -8023,9 +8338,16 @@ async function main() {
       tracks: document.querySelectorAll('[data-testid="track-header"]').length,
       clips: document.querySelectorAll('[data-testid="clip"]').length,
     }));
+    // Lot E fix round 1: an APPENDED landing adds exactly two tracks (Voice,
+    // Backing) and two clips to whatever was already there — it does not
+    // reset the session to a two-track one. Matches the `landingMode !==
+    // 'replaced'` assertion above instead of contradicting it.
     assert(
-      voiceLanes.views === 1 && voiceLanes.tracks === 2 && voiceLanes.clips === 2,
-      `the app switched to a two-track session with one clip each (${JSON.stringify(voiceLanes)})`
+      voiceLanes.views === 1 &&
+        voiceLanes.tracks === mtBeforeVoice.tracks + 2 &&
+        voiceLanes.clips === mtBeforeVoice.clips + 2,
+      `the app stayed on the multitrack view and appended two tracks with one clip each ` +
+        `(before ${JSON.stringify(mtBeforeVoice)}, after ${JSON.stringify(voiceLanes)})`
     );
     // Voice + Backing reconstruct the source WITHIN FLOAT32 ROUNDING — summing
     // two tracks rounds where summing all five does not, so this is a bound on
@@ -8105,6 +8427,14 @@ async function main() {
       `…at the name, length and rate the step opened it with (${JSON.stringify(sourceAgain.activeName)}, ` +
         `${sourceAgain.length}@${sourceAgain.sampleRate} vs ${voiceBefore.length}@${voiceBefore.sampleRate})`
     );
+    // Lot E fix round 1: same reasoning as `mtBeforeVoice` above — this
+    // landing also appends, so the correct invariant is a DELTA against the
+    // DOM as it stood right before this call (which already includes the
+    // voice landing's own two appended tracks), not an absolute count.
+    const mtBeforeSpeakers = await page.evaluate(() => ({
+      tracks: document.querySelectorAll('[data-testid="track-header"]').length,
+      clips: document.querySelectorAll('[data-testid="clip"]').length,
+    }));
     const speakers = await page.evaluate(() => window.__test.separateSpeakersLand(2));
     console.log(`  separateSpeakersLand(2): ${JSON.stringify(speakers)}`);
     assert(speakers.ok === true, `the speaker landing ran (${JSON.stringify(speakers)})`);
@@ -8114,8 +8444,16 @@ async function main() {
         `(requested ${speakers.requestedSpeakerCount}, assembled ${speakers.speakerCount})`
     );
     assert(
-      JSON.stringify(speakers.trackNames) === JSON.stringify(['Speaker 1', 'Speaker 2', 'Backing']),
-      `three tracks: the speakers in order, Backing LAST (${JSON.stringify(speakers.trackNames)})`
+      JSON.stringify(speakers.landedTrackNames) === JSON.stringify(['Speaker 1', 'Speaker 2', 'Backing']),
+      `three tracks: the speakers in order, Backing LAST (${JSON.stringify(speakers.landedTrackNames)})`
+    );
+    // Lot E: same gate as the voice landing above — the open session already
+    // has clips, and this source document is still never placed on the
+    // timeline, so this landing must append rather than replace.
+    assert(
+      speakers.landingMode !== 'replaced',
+      `the open session already has clips, so this landing must not replace it (got ` +
+        `${JSON.stringify(speakers.landingMode)})`
     );
     assert(
       JSON.stringify(speakers.documentNames) ===
@@ -8126,9 +8464,17 @@ async function main() {
         ]),
       `each document is named after the source and its track (${JSON.stringify(speakers.documentNames)})`
     );
+    // Lot E fix round 1: an APPENDED landing never renames the session (only
+    // `'replaced'` does — `stemLanding.ts`'s `buildLandingSession`), and the
+    // voice landing above already proved this session is appending. The only
+    // honest oracle for "what is the session named right now" is the live
+    // session itself, captured through the voice landing's own echoed
+    // `sessionName` a few lines up — both landings leave it untouched, so the
+    // two must agree.
     assert(
-      speakers.sessionName === `${voiceBefore.activeName} — Speakers`,
-      `the session is named after the source (${JSON.stringify(speakers.sessionName)})`
+      speakers.sessionName === landed.sessionName,
+      `an appended landing does not rename the session — it should still read what the voice ` +
+        `landing saw (${JSON.stringify(landed.sessionName)}), actual ${JSON.stringify(speakers.sessionName)}`
     );
     assert(
       speakers.lengthSamples === voiceBefore.length && speakers.sampleRate === voiceBefore.sampleRate,
@@ -8145,10 +8491,17 @@ async function main() {
       tracks: document.querySelectorAll('[data-testid="track-header"]').length,
       clips: document.querySelectorAll('[data-testid="clip"]').length,
     }));
+    // Lot E fix round 1: an APPENDED landing adds exactly three tracks
+    // (Speaker 1, Speaker 2, Backing) and three clips to whatever was already
+    // there (which by this point already includes the voice landing's own
+    // two) — matches the `landingMode !== 'replaced'` assertion above instead
+    // of contradicting it.
     assert(
-      speakerLanes.views === 1 && speakerLanes.tracks === 3 && speakerLanes.clips === 3,
-      `the app switched to a three-track session with one clip each ` +
-        `(${JSON.stringify(speakerLanes)})`
+      speakerLanes.views === 1 &&
+        speakerLanes.tracks === mtBeforeSpeakers.tracks + 3 &&
+        speakerLanes.clips === mtBeforeSpeakers.clips + 3,
+      `the app stayed on the multitrack view and appended three tracks with one clip each ` +
+        `(before ${JSON.stringify(mtBeforeSpeakers)}, after ${JSON.stringify(speakerLanes)})`
     );
     // The mask, from BOTH sides — either alone is vacuous. A document silenced
     // end to end would satisfy "nothing outside the turns" and a document left

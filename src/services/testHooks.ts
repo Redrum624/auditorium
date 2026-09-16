@@ -16,6 +16,7 @@ import {
   DEFAULT_FADE_CURVE,
 } from '../multitrack/session';
 import { gapAt, type TrackGap } from '../multitrack/gaps'; // D3
+import { orderTimeRange, type TimeRange } from '../multitrack/timeRange'; // lot J
 import { placeDocumentsOnTrack } from '../multitrack/sessionInsert';
 import { useSessionStore } from '../multitrack/sessionStore';
 import { withSessionGesture } from '../multitrack/sessionUndo';
@@ -43,7 +44,7 @@ import {
   splitAtCursor,
   trimToSelection,
 } from './editOps';
-import { getClipboard } from './clipboard';
+import { getClipboard, getClipboardKind } from './clipboard';
 import { mergeSelectedClips as runMergeClips } from './menuActions';
 import { getSpectralScale, toggleSpectralScale, type SpectralScale } from './spectralScale';
 import { getBeatGrid, isDownbeat } from './beatGrid';
@@ -104,7 +105,7 @@ import {
   type VoiceProgress,
 } from './voiceService';
 import { formatSrt, formatWebVtt } from './subtitleFormat';
-import { landSpeakers, landStems, landVoice } from './stemLanding';
+import { landedTracksProbeSession, landSpeakers, landStems, landVoice } from './stemLanding';
 import type { SampleSpan } from '../dsp/spanMask';
 import {
   assembledFrameCount,
@@ -293,12 +294,46 @@ export interface TestApi {
   /** D3: reads the selected gap back (`getStateSummary` carries no session
    * selection). */
   getSelectedGap(): TrackGap | null;
-  /** Merge Clips (`multitrack.mergeClips`) on the current clip selection,
-   * through the menu action itself — so the harness sees the SAME baked
-   * document and the same single undo entry the menu row writes. Reports the
-   * merged clip ids (one per merged track, `[]` when nothing qualifies) and
-   * `documents.length` afterwards, since the merge mints one document per
-   * merged track. */
+  /** Lot J: sweeps the multitrack time range through the SAME resolver and
+   * setter the `Shift`+drag gesture uses (`orderTimeRange` + `setMtTimeRange`)
+   * — the harness cannot drag a real pointer, so this is the one production
+   * path both share. Returns the range it stored (a COPY, trap T16), or
+   * `null` for two raw samples that collapse to the same point. */
+  sweepMtRange(a: number, b: number): TimeRange | null;
+  /** Lot J: reads the range back (`getStateSummary` carries no session
+   * selection) — a COPY, for `getSelectedGap`'s own reason. */
+  getMtTimeRange(): TimeRange | null;
+  /** K2/K3: reads the CURRENT track id back — `getStateSummary` carries no
+   * session selection, and lot L's paste target has no other way in for the
+   * harness (no marquee hook exists either; Playwright drags the real lane,
+   * see the brief's own "no marquee hook" ruling). */
+  getCurrentTrack(): string | null;
+  /** Lot L fix round 1 — a SAVE/RESTORE seam, never a substitute for the real
+   * click the K2/K3 gesture needs: `currentTrackId` has no reset (it is not
+   * part of `SessionSnapshot`, so no Ctrl+Z ever moves it, and every prior
+   * click in a long walk leaves it non-null forever after). A smoke step that
+   * needs a specific current track for its own gesture-causality assertion —
+   * or that wants to leave the session exactly as it found it — captures
+   * `getCurrentTrack()` first and restores it through this setter afterward;
+   * it never uses this setter to ESTABLISH the state the click itself is
+   * supposed to prove. Harness-only (a save/restore hook, not a second
+   * definition of the gesture) — the same class as `selectClips` coexisting
+   * with real clip clicks elsewhere in this file. Returns the value read back
+   * from the store after the write, echoing `setMtCursor`'s own shape. */
+  setCurrentTrack(id: string | null): string | null;
+  /** Lot L (items 11/12): which shape the clipboard holds, or `null` when
+   * empty — a scalar, no store handle. The smoke presses the real
+   * `Control+c`/`Control+v` and reads the placed clip back through
+   * `getClipFadeState()`; this hook is what lets it assert Ctrl+C actually
+   * landed on the CLIP slot rather than silently doing nothing. */
+  getClipboardKind(): 'audio' | 'clips' | null;
+  /** Join Clips (`multitrack.joinClips`; H1 lot H — renamed from Merge Clips,
+   * this hook and `mergeSelectedClips`/`canMergeSelectedClips` keep their
+   * names) on the current clip selection, through the menu action itself —
+   * so the harness sees the SAME baked document and the same single undo
+   * entry the menu row writes. Reports the merged clip ids (one per merged
+   * track, `[]` when nothing qualifies) and `documents.length` afterwards,
+   * since the merge mints one document per merged track. */
   mergeSelectedClips(): { clipIds: string[]; docCount: number };
   mixdownSession(): { name: string; length: number; sampleRate: number; rms: number } | null;
   // --- v1.1 flows -------------------------------------------------------------
@@ -886,14 +921,20 @@ export interface TranscriptionSummary {
   phasesSeen: string[];
 }
 
-/** D4 — plain-JSON result of the `separateVoiceLand` hook. */
+/** D4 (lot E) — plain-JSON result of the `separateVoiceLand` hook. */
 export interface VoiceLandingSummary {
   /** False when there was no active document, or it held no audio. */
   ok: boolean;
   /** `['<source> — Voice', '<source> — Backing']`, in track order. */
   documentNames: string[];
-  /** The landed session's track names, in order. */
+  /** EVERY track in the landed session, in order — unchanged meaning; a
+   * non-replaced landing leaves the user's other tracks standing beside the
+   * two this hook just landed. */
   trackNames: string[];
+  /** Just the two tracks THIS landing created, in order. */
+  landedTrackNames: string[];
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: string;
   sessionName: string | null;
   sampleRate: number;
   lengthSamples: number;
@@ -905,15 +946,21 @@ export interface VoiceLandingSummary {
   worstAbsError: number | null;
 }
 
-/** D4/D6 — plain-JSON result of the `separateSpeakersLand` hook. */
+/** D4/D6 (lot E) — plain-JSON result of the `separateSpeakersLand` hook. */
 export interface SpeakerLandingSummary {
   /** False when there was no active document, or it held no audio. */
   ok: boolean;
   /** `['<source> — Speaker 1', …, '<source> — Backing']`, in track order —
    * or the two `landVoice` names when one speaker (or none) came out. */
   documentNames: string[];
-  /** The landed session's track names, in order. */
+  /** EVERY track in the landed session, in order — unchanged meaning; a
+   * non-replaced landing leaves the user's other tracks standing beside the
+   * ones this hook just landed. */
   trackNames: string[];
+  /** Just the tracks THIS landing created, in order. */
+  landedTrackNames: string[];
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: string;
   sessionName: string | null;
   /** Speakers the ASSEMBLY produced, which is what landed: `requested` and
    * this differ whenever a cluster fell under the share floor (D3). */
@@ -993,6 +1040,10 @@ export interface StemSeparationSummary {
   message: string | null;
   /** The five stem document names, in track order (Residual last). */
   documentNames: string[];
+  /** Lot E — just the five tracks THIS landing created, in order. */
+  landedTrackNames: string[];
+  /** Lot E — which of the three arms this landing took. */
+  landingMode: string;
   sessionName: string | null;
   lengthSamples: number;
   sampleRate: number;
@@ -1514,6 +1565,16 @@ function channelsPeak(channels: readonly Float32Array[]): number {
   return peak;
 }
 
+/** Lot E — `trackIds` (a landing's own `trackIds`, in track order) resolved to
+ * the live session's current track NAMES, so a caller can tell "the tracks
+ * this landing created" (`landedTrackNames`) apart from "every track in the
+ * session" (`trackNames`, unchanged meaning) without re-deriving the lookup
+ * three times. */
+function landedTrackNames(trackIds: readonly string[]): string[] {
+  const byId = new Map(useSessionStore.getState().session.tracks.map((t) => [t.id, t.name]));
+  return trackIds.map((id) => byId.get(id) ?? '(missing)');
+}
+
 /**
  * D4/D6 — the worst |sample| `channels` carry OUTSIDE `spans`: the head before
  * the first span, the gaps between them, and the tail after the last.
@@ -1957,7 +2018,31 @@ export function installTestHooks(): void {
       return gap === null ? null : { ...gap };
     },
 
-    // The menu action verbatim (not a re-implementation): one `Merge N`
+    // Lot J. `orderTimeRange` is the SAME resolver `MultitrackView`'s sweep
+    // calls (through `snappedMt`, which this hook has no pointer to drive);
+    // `setMtTimeRange` is the SAME raw setter. One production path, two ways
+    // in.
+    sweepMtRange: (a, b) => {
+      const range = orderTimeRange(a, b);
+      useSessionStore.getState().setMtTimeRange(range);
+      return range === null ? null : { ...range };
+    },
+
+    getMtTimeRange: () => {
+      const range = useSessionStore.getState().mtTimeRange;
+      return range === null ? null : { ...range };
+    },
+
+    getCurrentTrack: () => useSessionStore.getState().currentTrackId,
+
+    setCurrentTrack: (id) => {
+      useSessionStore.getState().setCurrentTrack(id);
+      return useSessionStore.getState().currentTrackId;
+    },
+
+    getClipboardKind: () => getClipboardKind(),
+
+    // The menu action verbatim (not a re-implementation): one `Join N`
     // document per merged track plus one undo entry, so the smoke asserts the
     // shipped path. `docCount` is read AFTER, which is how the harness sees
     // the minting without being handed the documents themselves.
@@ -2782,6 +2867,8 @@ export function installTestHooks(): void {
         ok: false,
         documentNames: [],
         trackNames: [],
+        landedTrackNames: [],
+        landingMode: '',
         sessionName: null,
         sampleRate: 0,
         lengthSamples: 0,
@@ -2820,6 +2907,8 @@ export function installTestHooks(): void {
         ok: true,
         documentNames: landed.map((d) => d?.name ?? '(missing)'),
         trackNames: useSessionStore.getState().session.tracks.map((t) => t.name),
+        landedTrackNames: landedTrackNames(landing.trackIds),
+        landingMode: landing.landingMode,
         sessionName: landing.sessionName,
         sampleRate: source.sampleRate,
         lengthSamples: length,
@@ -2853,6 +2942,8 @@ export function installTestHooks(): void {
         ok: false,
         documentNames: [],
         trackNames: [],
+        landedTrackNames: [],
+        landingMode: '',
         sessionName: null,
         speakerCount: 0,
         requestedSpeakerCount,
@@ -2905,6 +2996,8 @@ export function installTestHooks(): void {
         ok: true,
         documentNames: landed.map((d) => d?.name ?? '(missing)'),
         trackNames: useSessionStore.getState().session.tracks.map((t) => t.name),
+        landedTrackNames: landedTrackNames(landing.trackIds),
+        landingMode: landing.landingMode,
         sessionName: landing.sessionName,
         speakerCount: diarization.speakerCount,
         requestedSpeakerCount,
@@ -2942,6 +3035,8 @@ export function installTestHooks(): void {
         status: 'no-document',
         message: null,
         documentNames: [],
+        landedTrackNames: [],
+        landingMode: '',
         sessionName: null,
         lengthSamples: 0,
         sampleRate: 0,
@@ -2974,6 +3069,8 @@ export function installTestHooks(): void {
         ok: true,
         status: 'ok',
         documentNames: landing.documentIds.map((id) => byId.get(id)?.name ?? '(missing)'),
+        landedTrackNames: landedTrackNames(landing.trackIds),
+        landingMode: landing.landingMode,
         sessionName: landing.sessionName,
         lengthSamples: result.output.lengthSamples,
         sampleRate: result.output.sampleRate,
@@ -2991,7 +3088,11 @@ export function installTestHooks(): void {
       const live = byId.get(sourceId);
       if (!live) return summary;
 
-      const { channels: master } = renderMixdown(useSessionStore.getState().session, byId);
+      // Lot E: mixes only the tracks THIS landing created, through the same
+      // probe the exactness guarantee is now measured over
+      // (`landedTracksProbeSession`) — a whole-session mixdown would also sum
+      // whatever else this landing's arm left standing on the timeline.
+      const { channels: master } = renderMixdown(landedTracksProbeSession(landing.trackIds), byId);
       const length = Math.min(master[0]?.length ?? 0, live.channels[0]?.length ?? 0);
       let worst = 0;
       let peak = 0;

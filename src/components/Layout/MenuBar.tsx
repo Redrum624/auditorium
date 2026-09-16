@@ -4,6 +4,7 @@ import type { MenuCommand } from '../../services/menuActions';
 import { getMenuSections, runCommand } from '../../services/menuActions';
 import { useAppStore } from '../../stores/appStore';
 import { useHistoryVersion } from '../../services/undoHistory';
+import { usePassLock } from '../../services/passLock';
 
 // F11: the air kept between a clamped dropdown's bottom edge and the window
 // frame, so a scrolling menu never sits flush against it.
@@ -42,6 +43,10 @@ export default function MenuBar() {
   // also needs the history's own version counter. Document edits piggybacked
   // on appStore re-renders and never needed this.
   useHistoryVersion();
+  // Lot M: the pass lock is module state, not zustand — a command's
+  // `enabled`/`reason` reading it needs this subscription for the menu to
+  // re-render the instant the lock moves, exactly like the history version.
+  usePassLock();
   const sections = getMenuSections();
 
   useEffect(() => {
@@ -167,6 +172,11 @@ export default function MenuBar() {
                       key={item.id}
                       type="button"
                       disabled={!item.enabled(useAppStore.getState())}
+                      // Lot M — the first disabled-reason tooltip MenuBar has
+                      // ever shown: `item.reason` is `undefined` for an
+                      // enabled row or one with nothing to say, so this falls
+                      // through to no `title` at all in every other case.
+                      title={item.reason?.(useAppStore.getState())}
                       className="chrome-menu-item flex w-full items-center justify-between gap-6 text-left"
                       onClick={() => handleItemClick(item)}
                     >

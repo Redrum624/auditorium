@@ -6,6 +6,7 @@ import { registerAllEffects } from '../../effects/registerAll';
 import { runEffectOnSelection } from '../../services/effectRunner';
 import { deleteSelection } from '../../services/editOps';
 import { captureNoiseProfile, clearNoiseProfile } from '../../services/noiseProfile';
+import { _resetPassLock, acquirePass, getRunningPass } from '../../services/passLock';
 import { useAppStore, makeInitialState } from '../../stores/appStore';
 import { createDocument } from '../../audio/AudioDocument';
 import type { PlaybackEngine } from '../../audio/PlaybackEngine';
@@ -86,10 +87,62 @@ beforeEach(() => {
   clearNoiseProfile();
   mockRun.mockReset();
   mockRun.mockImplementation(realRun);
+  _resetPassLock();
 });
 
 afterEach(() => {
   clearNoiseProfile();
+  _resetPassLock();
+});
+
+// Fix round 1 (HIGH) — the real start seam. Before this fix, `canApply` never
+// consulted `passLock.ts`: an idle, open card's Apply button ran the effect
+// even while a DIFFERENT pass (Save, another hosted tool) already held the
+// app-wide lock, because `handleToolModuleLock`'s `acquirePass` failure was
+// silently discarded (the ref just stayed `null` — no lock leak, but no
+// refusal either). Reproduces the review's own scenario: open the card idle,
+// have something else take the lock, then try Apply.
+describe('the pass lock refuses Apply when a DIFFERENT pass already holds it (fix round 1)', () => {
+  it('does not run the effect, and the button is disabled, while a foreign pass holds the lock', async () => {
+    seedActiveDoc();
+    render(<EffectDialog effectId="amplify" onClose={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+
+    let release: (() => void) | null = null;
+    act(() => {
+      release = acquirePass({ id: 'file.save', label: 'Save Project', kind: 'save' });
+    });
+
+    const applyBtn = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+    expect(applyBtn).toBeDisabled();
+
+    fireEvent.click(applyBtn);
+    // Fix round 3 (item 4) — corrected: this proves ONLY the `disabled` prop,
+    // not `apply()`'s own `if (!canApply) return;` guard (EffectDialog.tsx:220).
+    // A DOM `disabled` button never dispatches a click for React's handler to
+    // see in the first place, so the assertion below cannot distinguish "the
+    // guard refused it" from "the click never arrived" — and it is the
+    // latter. Tried testing the guard directly by stripping the DOM
+    // `disabled` attribute before the click (so the native suppression would
+    // not apply) and firing again: React 19 still swallowed it, because its
+    // own click-suppression for disabled form elements (`shouldPreventMouseEvent`
+    // in react-dom's event system) reads the elements's LAST-RENDERED
+    // `disabled` PROP off the fiber, not the live DOM property — so mutating
+    // the DOM directly cannot exercise the handler either. Short of exporting
+    // `apply` for direct invocation (not done, to avoid widening the
+    // component's public surface for one test), this line is only ever going
+    // to prove the button is disabled — which the `toBeDisabled()` assertion
+    // above already does more directly. Left in for the `mockRun` sanity
+    // check; the comment previously here overclaimed what it covers.
+    expect(mockRun).not.toHaveBeenCalled();
+
+    expect(getRunningPass()?.label).toBe('Save Project');
+
+    act(() => {
+      release!();
+    });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+  });
 });
 
 describe('EffectDialog noise-reduction gating (Task F8: reactive hasNoiseProfile)', () => {
@@ -230,6 +283,40 @@ describe('hosted in the module column (item 6)', () => {
     expect(fake.stop).toHaveBeenCalled();
     expect(fake.load).toHaveBeenCalledWith(expect.objectContaining({ id: doc.id }));
     expect(screen.queryByTestId('effect-dialog')).not.toBeInTheDocument();
+  });
+
+  /**
+   * C-f (lot C, item 3) — backgrounding releases a running Preview (an
+   * invisible sound source with no reachable Stop button would otherwise
+   * keep playing) and nothing else: `params` survive untouched (C2), proven
+   * here by the gain field still reading the value set before backgrounding.
+   */
+  it('backgrounding stops an active Preview and hands the engine back, leaving params untouched (C-f)', () => {
+    const doc = seedActiveDoc();
+    const fake = new FakePlaybackEngine();
+    const { rerender } = render(
+      <DialogHostProvider onModuleLockChange={() => {}}>
+        <EffectDialog effectId="amplify" onClose={() => {}} engine={asEngine(fake)} />
+      </DialogHostProvider>
+    );
+    fireEvent.change(document.getElementById('effect-param-gainDb') as HTMLInputElement, {
+      target: { value: '-7.5' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.getByRole('button', { name: 'Stop Preview' })).toBeInTheDocument();
+    fake.stop.mockClear();
+    fake.load.mockClear();
+
+    rerender(
+      <DialogHostProvider onModuleLockChange={() => {}}>
+        <EffectDialog effectId="amplify" backgrounded onClose={() => {}} engine={asEngine(fake)} />
+      </DialogHostProvider>
+    );
+
+    expect(fake.stop).toHaveBeenCalledTimes(1);
+    expect(fake.load).toHaveBeenCalledWith(expect.objectContaining({ id: doc.id }));
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+    expect((document.getElementById('effect-param-gainDb') as HTMLInputElement).value).toBe('-7.5');
   });
 
   it('hosted: Preview publishes no lock', () => {
@@ -728,5 +815,66 @@ describe('the card names the region Apply will write (final round 3)', () => {
     render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
 
     expect(screen.queryByTestId('effect-scope')).toBeNull();
+  });
+
+  // Lot D (item 4), acceptance 11 — the multitrack scope line needs NO new
+  // code (brief §6): a clip-scoped working copy (`clipPass.ts`'s
+  // `beginClipWork`) is minted via `addDocument`, which makes it active AND
+  // clears `selection` — the exact state this dialog already reads via
+  // `resolveRegion(activeDocument, selection)`. Simulated directly here
+  // (rather than through the full working-copy lifecycle) because that state
+  // — an active document, no selection — is the whole of what this line
+  // depends on; `clipPass.test.ts` pins that `beginClipWork` actually
+  // produces it.
+  it('reads the whole working document once it is active, with no multitrack-specific code (acceptance 11)', () => {
+    const workingCopy = createDocument({
+      name: 'Clip Edit 1',
+      sampleRate: 44100,
+      channels: [new Float32Array(44100)],
+    });
+    act(() => {
+      useAppStore.getState().addDocument(workingCopy); // active; selection: null
+    });
+    render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
+
+    expect(scope()).toHaveTextContent('Whole file — 0:01.000');
+    expect(scope()).not.toHaveTextContent('Selection');
+  });
+});
+
+// Lot D fix round 3 (review finding 3) — the uncovered route to the same
+// user-visible outcome as the CRITICAL fix: open in Waveform (no clip-work
+// slot is ever minted — `beginClipWork` no-ops outside multitrack), switch
+// the view to Multitrack, Apply. `canApply` was not view-gated at all, so it
+// kept writing the document the card opened against, on THAT document's own
+// undo stack — unreachable from multitrack's Ctrl+Z. The drift watcher
+// (App.tsx) cannot see this case: it only reacts to a slot that EXISTS and
+// has moved, and this card never had one.
+describe('view re-assertion at Apply (lot D fix round 3, finding 3)', () => {
+  it('refuses Apply the moment the view becomes multitrack for a card with no clip-work slot', () => {
+    seedActiveDoc();
+    render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
+    expect(screen.getByRole('button', { name: 'Apply' })).not.toBeDisabled();
+
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+    });
+
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled();
+  });
+
+  it('re-enables Apply on switching back to Waveform/Spectral — D1’s non-multitrack arm is unaffected', () => {
+    seedActiveDoc();
+    render(<Hosted engine={asEngine(new FakePlaybackEngine())} />);
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+    });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled();
+
+    act(() => {
+      useAppStore.getState().setView('waveform');
+    });
+
+    expect(screen.getByRole('button', { name: 'Apply' })).not.toBeDisabled();
   });
 });

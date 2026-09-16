@@ -38,7 +38,12 @@ export interface PlacedClip {
  * visibly not where it was let go.
  *
  * Clips land VERBATIM at the requested position: overlap is first-class since
- * X5, and a programmatic placement writes no fade keys.
+ * X5, and THIS placement path writes no fade keys — `placeDocumentsOnTrack`
+ * mints a fresh clip with no source fades to carry. `multitrack/
+ * clipClipboard.ts`'s Paste (lot L) is a sibling `addClip` caller that DOES
+ * write fade keys (carried over from the copied clip), so "a programmatic
+ * placement never writes fades" is no longer true of `addClip` callers in
+ * general — see that module's own docblock for the overlap consequence.
  *
  * Returns the clips placed, newest last; `[]` for an unknown track or no
  * documents.

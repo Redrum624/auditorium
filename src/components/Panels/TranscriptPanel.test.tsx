@@ -409,3 +409,78 @@ describe('TranscriptPanel — export', () => {
     expect(written).not.toMatch(/Speaker 2/);
   });
 });
+
+// Lot D fix round 1 (finding 6) — R16's wiring extended to this panel's two
+// direct-bus buttons. Both bypass the `edit.transcribe` COMMAND entirely
+// (lot M's documented registry bypass), so without `primeMultitrackDocTarget`
+// they would open the dialog against whatever was merely active rather than
+// the selected clip's source — the wrong-document defect R16 exists to close
+// for the other five doors.
+describe('TranscriptPanel — R16 wiring for the direct-bus buttons (fix round 1, finding 6)', () => {
+  function selectForeignClip(clipSource: AudioDocument): void {
+    const clip = createClip({
+      documentId: clipSource.id,
+      startSample: 0,
+      offsetSample: 0,
+      lengthSample: 500,
+    });
+    const track = createTrack('Track 1');
+    track.clips = [clip];
+    const session: Session = { name: 'Prime', sampleRate: 48000, tracks: [track] };
+    useSessionStore.setState({
+      session,
+      selectedClipId: clip.id,
+      selectedClipIds: [clip.id],
+      mtCursorSample: 0,
+      mtPlayState: 'stopped',
+      mtPlayheadSample: 0,
+      mtEnvelope: null,
+    });
+    act(() => {
+      useAppStore.getState().setView('multitrack');
+    });
+  }
+
+  it('"Transcribe…" (no transcript yet) primes the selected clip’s source before opening', () => {
+    const doc = seedDoc();
+    const clipSource = createDocument({
+      name: 'ClipSource.wav',
+      sampleRate: 48000,
+      channels: [new Float32Array(1000)],
+    });
+    act(() => {
+      useAppStore.getState().addDocument(clipSource);
+      useAppStore.getState().setActiveDocument(doc.id);
+    });
+    selectForeignClip(clipSource);
+
+    render(<TranscriptPanel />);
+    fireEvent.click(screen.getByRole('button', { name: /Transcribe/ }));
+
+    expect(openTranscribe).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().activeDocumentId).toBe(clipSource.id);
+  });
+
+  it('"Transcribe again…" (an existing transcript) primes the selected clip’s source before opening', async () => {
+    const doc = seedDoc();
+    await act(async () => {
+      await seedTranscript(backend, doc.id, twoSpeakerSegments());
+    });
+    const clipSource = createDocument({
+      name: 'ClipSource.wav',
+      sampleRate: 48000,
+      channels: [new Float32Array(1000)],
+    });
+    act(() => {
+      useAppStore.getState().addDocument(clipSource);
+      useAppStore.getState().setActiveDocument(doc.id);
+    });
+    selectForeignClip(clipSource);
+
+    render(<TranscriptPanel />);
+    fireEvent.click(screen.getByTestId('transcript-retranscribe'));
+
+    expect(openTranscribe).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().activeDocumentId).toBe(clipSource.id);
+  });
+});

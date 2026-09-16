@@ -1,4 +1,4 @@
-import { createClip } from './session';
+import { createClip, createTrack } from './session';
 import { useSessionStore } from './sessionStore';
 import { SESSION_UNDO_KEY, _resetSessionUndo, canUndoSession, undoSession } from './sessionUndo';
 import { getHistory } from '../services/undoHistory';
@@ -815,5 +815,72 @@ describe('projectPath and renameSession (lot A)', () => {
     undoSession();
     expect(useSessionStore.getState().session.tracks[0].clips).toHaveLength(0);
     expect(useSessionStore.getState().projectPath).toBe('D:\p.audm');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lot E — insertTracks
+// ---------------------------------------------------------------------------
+describe('insertTracks', () => {
+  beforeEach(() => {
+    useSessionStore.getState().newSession(44100);
+    _resetSessionUndo(); // a clean stack — 'newSession' above must not count as a prior entry
+  });
+
+  it('splices pre-populated tracks in at atIndex, one "Add tracks" undo entry, mtZoom untouched by undo (ruling 3)', () => {
+    const store = useSessionStore.getState();
+    const a = createTrack('Landed A');
+    a.clips = [createClip({ documentId: 'doc-x', startSample: 500, offsetSample: 0, lengthSample: 200 })];
+    const b = createTrack('Landed B');
+    b.clips = [createClip({ documentId: 'doc-x', startSample: 900, offsetSample: 0, lengthSample: 200 })];
+
+    store.insertTracks([a, b], 1);
+
+    const afterInsert = useSessionStore.getState();
+    expect(afterInsert.session.tracks).toHaveLength(6);
+    expect(afterInsert.session.tracks[1].id).toBe(a.id);
+    expect(afterInsert.session.tracks[2].id).toBe(b.id);
+    // The other four originals kept their relative order around the splice.
+    expect(afterInsert.session.tracks.map((t) => t.name)).toEqual([
+      'Track 1',
+      'Landed A',
+      'Landed B',
+      'Track 2',
+      'Track 3',
+      'Track 4',
+    ]);
+    expect(getHistory(SESSION_UNDO_KEY)).toEqual({ done: ['Add tracks'], undone: [] });
+
+    // Ruling 3: mtZoom is not in the snapshot, so undo restores the tracks but
+    // leaves whatever zoom the insert's own re-fit arm landed on — the same
+    // pin `addClip` gets, not equality with the PRE-insert zoom.
+    const zoomAfterInsert = afterInsert.mtZoom;
+    undoSession();
+    const afterUndo = useSessionStore.getState();
+    expect(afterUndo.session.tracks).toHaveLength(4);
+    expect(afterUndo.mtZoom).toEqual(zoomAfterInsert);
+  });
+
+  it('appends at the end when atIndex is omitted', () => {
+    const c = createTrack('Landed C');
+    useSessionStore.getState().insertTracks([c]);
+    const tracks = useSessionStore.getState().session.tracks;
+    expect(tracks).toHaveLength(5);
+    expect(tracks[4].id).toBe(c.id);
+  });
+
+  it('appends at the end when atIndex is out of range', () => {
+    const d = createTrack('Landed D');
+    useSessionStore.getState().insertTracks([d], 999);
+    const tracks = useSessionStore.getState().session.tracks;
+    expect(tracks).toHaveLength(5);
+    expect(tracks[4].id).toBe(d.id);
+  });
+
+  it('an empty array is an R3 no-op: same session reference, nothing recorded', () => {
+    const before = useSessionStore.getState().session;
+    useSessionStore.getState().insertTracks([]);
+    expect(useSessionStore.getState().session).toBe(before);
+    expect(canUndoSession()).toBe(false);
   });
 });

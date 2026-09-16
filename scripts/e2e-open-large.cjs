@@ -17,7 +17,7 @@
 // large local files instead, and the run skips with a message when a fixture
 // is absent.
 //
-// Run: npm run build && node scripts/e2e-open-large.cjs [--first=<wav>] [--second=<wav>]
+// Run: pnpm build && node scripts/e2e-open-large.cjs [--first=<wav>] [--second=<wav>]
 
 const path = require('node:path');
 const fs = require('node:fs');
@@ -99,7 +99,7 @@ function waveformDrawnProbe() {
 
 async function main() {
   if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
-    throw new Error('dist/index.html missing — run `npm run build` first');
+    throw new Error('dist/index.html missing — run `pnpm build` first');
   }
   for (const f of [FIRST, SECOND]) {
     if (!fs.existsSync(f)) {
